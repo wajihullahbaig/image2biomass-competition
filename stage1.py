@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import numpy as np
-from pyparsing import Optional
+from typing import Optional
 from sklearn.utils import compute_class_weight
 import torch
 import torch.nn as nn

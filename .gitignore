@@ -1,0 +1,35 @@
+# Data files
+*.csv
+
+# Model checkpoints and artifacts
+*.pth
+*.pt
+
+# Pickle / serialized preprocessing
+*.pkl
+
+# Folders to ignore
+train/
+test/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs and misc
+*.log
+.DS_Store
+Thumbs.db

@@ -1,3 +1,4 @@
+from typing import Optional
 import pandas as pd
 import numpy as np
 import torch
@@ -10,6 +11,18 @@ import joblib
 import os
 from tqdm import tqdm
 
+
+def set_seed(seed: Optional[int] = 42) -> None:
+    """Set all random seeds for reproducibility"""
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ['PYTHONHASHSEED'] = str(seed)
+
+set_seed()        
 # --- CONFIG ---
 # Must match Stage 1 training config
 BACKBONE_SIZE = 'b3' 
@@ -18,6 +31,8 @@ MODEL_NAME_S1 = f'tf_efficientnet_{BACKBONE_SIZE}_ns'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMAGE_SIZE = 224
 BATCH_SIZE = 32
+
+
 
 # --- MODEL CLASSES ---
 

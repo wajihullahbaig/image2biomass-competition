@@ -1,9 +1,11 @@
 import os
 import pandas as pd
 import numpy as np
+from pyparsing import Optional
 from sklearn.utils import compute_class_weight
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
@@ -19,6 +21,17 @@ from sklearn.metrics import r2_score, accuracy_score, f1_score
 # Suppress generic warnings
 warnings.filterwarnings("ignore")
 
+def set_seed(seed: Optional[int] = 42) -> None:
+    """Set all random seeds for reproducibility"""
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ['PYTHONHASHSEED'] = str(seed)
+
+set_seed()
 # --- CONFIG ---
 IMAGE_SIZE = 224
 BATCH_SIZE = 32
@@ -281,7 +294,10 @@ if __name__ == '__main__':
             reg_loss = crit_reg(pred_reg, reg_targets)
             
             # Apply sample weights to total loss
-            loss = (cls_loss + reg_loss) * weights.mean()
+            cls_loss = F.cross_entropy(pred_spec, spec_idx, reduction='none')
+            reg_loss = F.mse_loss(pred_reg, reg_targets, reduction='none').mean(dim=1)
+
+            loss = ((cls_loss + reg_loss) * weights).mean()
             
             loss.backward()
             optimizer.step()

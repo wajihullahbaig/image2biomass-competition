@@ -20,7 +20,7 @@ from tqdm import tqdm
 import warnings
 from sklearn.metrics import r2_score, accuracy_score, f1_score
 
-from common import calculate_sample_weights, print_stratification_stats, set_seed, setup_logging
+from common import calculate_sample_weights, get_season, print_stratification_stats, set_seed, setup_logging
 
 # Suppress generic warnings
 warnings.filterwarnings("ignore")
@@ -166,16 +166,7 @@ if __name__ == '__main__':
     df_unique['month_sin'] = np.sin(2 * np.pi * df_unique['month'] / period)
     df_unique['month_cos'] = np.cos(2 * np.pi * df_unique['month'] / period)
 
-    # Simple Australian Seasons
-    def get_season(month):
-        if month in [12, 1, 2]:
-            return 'Summer'
-        elif month in [3, 4, 5]:
-            return 'Autumn'
-        elif month in [6, 7, 8]:
-            return 'Winter'
-        else:
-            return 'Spring'
+
 
     df_unique['season'] = df_unique['month'].apply(get_season)
     df_unique = df_unique.drop('Sampling_Date', axis=1)

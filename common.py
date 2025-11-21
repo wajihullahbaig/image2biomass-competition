@@ -130,3 +130,14 @@ def print_stratification_stats(df, train_df, val_df,start_col=None, logger=None)
     
     if logger:
         logger.info(f"\nValidation Split (20%):\n{val_stats}")
+
+# Simple Australian Seasons
+def get_season(month):
+    if month in [12, 1, 2]:
+        return 'Summer'
+    elif month in [3, 4, 5]:
+        return 'Autumn'
+    elif month in [6, 7, 8]:
+        return 'Winter'
+    else:
+        return 'Spring'        

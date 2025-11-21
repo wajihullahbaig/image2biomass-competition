@@ -15,7 +15,7 @@ from torchvision import transforms
 from tqdm import tqdm
 import torch.nn.functional as F
 
-from common import print_stratification_stats, set_seed, setup_logging
+from common import get_season, print_stratification_stats, set_seed, setup_logging
 
 
 def prepare_data(df_train, logger=None):
@@ -41,12 +41,6 @@ def prepare_data(df_train, logger=None):
     wide_df['month_sin'] = np.sin(2 * np.pi * wide_df['month'] / period)
     wide_df['month_cos'] = np.cos(2 * np.pi * wide_df['month'] / period)
     
-    # Simple Australian Seasons (approximate) - for categorical feature
-    def get_season(month):
-        if month in [12, 1, 2]: return 'Summer'
-        elif month in [3, 4, 5]: return 'Autumn'
-        elif month in [6, 7, 8]: return 'Winter'
-        else: return 'Spring' # [9, 10, 11]
 
     wide_df['season'] = wide_df['month'].apply(get_season)
     

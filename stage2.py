@@ -59,6 +59,8 @@ def prepare_data(df_train):
     
     wide_df = wide_df.drop('Sampling_Date', axis=1)
     
+    # Log
+    wide_df['Height_Ave_cm'] = np.log1p(wide_df['Height_Ave_cm'])
     # --- FEATURE INTERACTIONS ---  
     wide_df['NDVI_Height_MUL'] = wide_df['Pre_GSHH_NDVI'] * wide_df['Height_Ave_cm']
     wide_df['NDVI_Height_ADD'] = wide_df['Pre_GSHH_NDVI'] + wide_df['Height_Ave_cm']
@@ -383,16 +385,13 @@ if __name__ == '__main__':
 
     train_transform = transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),        
-        transforms.RandomAffine(
-            degrees=15, 
-            translate=(0.1, 0.1), 
-            scale=(0.9, 1.1),     
-            shear=5,
-        ),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.1),
-        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),        
+        transforms.RandomRotation(15),
+        transforms.RandomAutocontrast(),
+        transforms.RandomEqualize(),
+        transforms.RandomAffine(degrees=15, translate=(0.1,0.1), scale=(0.9, 1.1)),
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),        
         transforms.ToTensor(),
         transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
     ])
@@ -553,3 +552,4 @@ if __name__ == '__main__':
             best_val_r2 = official_weighted_r2
             torch.save(model.state_dict(), 'best_multimodal_model_weighted.pth')
             print("Model saved due to improved validation R2.")
+            print(f"  >>> Best Official Weighted R2: {best_val_r2:.4f}")

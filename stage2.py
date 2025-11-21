@@ -1,4 +1,3 @@
-from typing import Optional
 import joblib
 import pandas as pd
 import numpy as np
@@ -8,7 +7,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from PIL import Image
-
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -17,23 +15,18 @@ from torchvision import transforms
 from tqdm import tqdm
 import torch.nn.functional as F
 
-def set_seed(seed: Optional[int] = 42) -> None:
-    """Set all random seeds for reproducibility"""
-    if seed is not None:
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        os.environ['PYTHONHASHSEED'] = str(seed)
+from common import print_stratification_stats, set_seed, setup_logging
 
 
-# Data Preparation and Feature Engineering 
-def prepare_data(df_train):
+def prepare_data(df_train, logger=None):
     """
     Pivots the long-format DataFrame to a wide format for joint training 
     and engineers date-based features (month, season, interactions).
     """
+    if logger:
+        logger.info("Starting data preparation...")
+        logger.debug(f"Input data shape: {df_train.shape}")
+    
     # Pivot to wide format (one row per sample_id, 5 target columns)
     wide_df = df_train.pivot_table(
         index=['sample_id', 'image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm'],
@@ -59,17 +52,23 @@ def prepare_data(df_train):
     
     wide_df = wide_df.drop('Sampling_Date', axis=1)
     
-    # Log
+    # Log transformation
     wide_df['Height_Ave_cm'] = np.log1p(wide_df['Height_Ave_cm'])
-    # --- FEATURE INTERACTIONS ---  
+    
+    # Feature interactions
     wide_df['NDVI_Height_MUL'] = wide_df['Pre_GSHH_NDVI'] * wide_df['Height_Ave_cm']
     wide_df['NDVI_Height_ADD'] = wide_df['Pre_GSHH_NDVI'] + wide_df['Height_Ave_cm']
     ratio = wide_df['Pre_GSHH_NDVI'] / (wide_df['Height_Ave_cm'] + 1e-5) 
     wide_df['NDVI_Height_Ratio'] = ratio
 
+    if logger:
+        logger.info(f"Data preparation complete. Output shape: {wide_df.shape}")
+        logger.debug(f"Engineered features: month_sin, month_cos, season, NDVI_Height interactions")
+    
     return wide_df
 
-def conditional_target_impute(df_to_impute, train_df_for_fit=None):
+
+def conditional_target_impute(df_to_impute, train_df_for_fit=None, logger=None):
     """
     Imputes NaN target values using medians. 
     If train_df_for_fit is provided (i.e., for validation/test sets), 
@@ -78,8 +77,13 @@ def conditional_target_impute(df_to_impute, train_df_for_fit=None):
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     grouping_cols = ['Species', 'State', 'season'] 
 
+    if logger:
+        nan_counts_before = df_to_impute[target_cols].isnull().sum()
+        if nan_counts_before.sum() > 0:
+            logger.info(f"Imputing missing values. NaN counts before: {nan_counts_before.to_dict()}")
+
     if train_df_for_fit is not None:
-        # 1. Use Medians from Training Data
+        # Use Medians from Training Data
         median_map = train_df_for_fit.groupby(grouping_cols)[target_cols].median()
         
         for col in target_cols:
@@ -90,38 +94,50 @@ def conditional_target_impute(df_to_impute, train_df_for_fit=None):
                 axis=1
             )
         
-        # 2. Use Global Median from Training Data for remaining NaNs
+        # Use Global Median from Training Data for remaining NaNs
         global_medians = train_df_for_fit[target_cols].median()
         df_to_impute[target_cols] = df_to_impute[target_cols].fillna(global_medians)
     else:
-        # 1. Calculate and apply group median (for training set)
+        # Calculate and apply group median (for training set)
         df_to_impute[target_cols] = df_to_impute.groupby(grouping_cols)[target_cols].transform(
             lambda x: x.fillna(x.median())
         )
-        # 2. Apply global median (for remaining NaNs in training set)
+        # Apply global median (for remaining NaNs in training set)
         df_to_impute[target_cols] = df_to_impute[target_cols].fillna(df_to_impute[target_cols].median())
+
+    if logger:
+        nan_counts_after = df_to_impute[target_cols].isnull().sum()
+        if nan_counts_after.sum() > 0:
+            logger.warning(f"NaN counts after imputation: {nan_counts_after.to_dict()}")
+        else:
+            logger.info("Target imputation complete. No missing values remain.")
 
     return df_to_impute
 
-def calculate_sample_weights(df, proportions,prop_col, weight_col='sample_weight'):
+
+def calculate_sample_weights(df, proportions, prop_col, weight_col='sample_weight', logger=None):
     """
     Calculates inverse-frequency sample weights based on prop_col proportions distribution.
     The weights are normalized so the mean weight is 1.0.
     """
-    # 1. Calculate inverse proportions and normalize
+    # Calculate inverse proportions and normalize
     inverse_proportions = 1 / proportions
     mean_inverse = inverse_proportions.mean()
     normalized_weights = inverse_proportions / mean_inverse
     
-    # 2. Create the weight map
+    # Create the weight map
     weight_map = normalized_weights.to_dict()
 
-    # 3. Apply the weight to the DataFrame
+    # Apply the weight to the DataFrame
     df[weight_col] = df[prop_col].map(weight_map)
+    
+    if logger:
+        logger.info(f"Sample weights calculated based on '{prop_col}'")
+        logger.debug(f"Weight distribution: {weight_map}")
     
     return df, weight_col
 
-# Custom PyTorch Dataset
+
 class Stage2Dataset(Dataset):
     def __init__(self, df, tabular_features, target_cols, image_dir='train', transform=None, weight_col='sample_weight'):
         self.df = df
@@ -129,7 +145,7 @@ class Stage2Dataset(Dataset):
         self.tabular_features = tabular_features
         self.target_cols = target_cols
         self.transform = transform
-        self.weight_col = weight_col # New: store weight column name
+        self.weight_col = weight_col
 
     def __len__(self):
         return len(self.df)
@@ -151,27 +167,17 @@ class Stage2Dataset(Dataset):
         # Target Variables
         targets = torch.tensor(row[self.target_cols].values.astype(np.float32))
         
-        # New: Sample Weight
+        # Sample Weight
         sample_weight = torch.tensor(row[self.weight_col], dtype=torch.float32)
         
-        return image, tabular_data, targets, sample_weight # Return the weight
+        return image, tabular_data, targets, sample_weight
+
 
 class WeightedMassBalanceLoss(nn.Module):
     def __init__(self, target_weights=None, mass_balance_alpha=0.8):
-        """
-        Custom loss function combining Weighted MSE and Mass-Balance penalties.
-        The loss supports an optional per-sample weight from the DataLoader.
-        
-        Args:
-            target_weights (list or None): Weights for the 5 individual targets. 
-                                            Order: [Clover, Dead, Green, Total, GDM]
-            mass_balance_alpha (float): Weight for the mass balance penalty terms.
-        """
         super().__init__()
-        # Target column indices for slicing:
         self.clover_idx, self.dead_idx, self.green_idx, self.total_idx, self.gdm_idx = 0, 1, 2, 3, 4
         
-        # Default weights: giving Total and GDM twice the importance of components
         if target_weights is None:
             target_weights = [1.0, 1.0, 1.0, 2.0, 2.0]
         
@@ -179,51 +185,33 @@ class WeightedMassBalanceLoss(nn.Module):
         self.alpha = mass_balance_alpha
 
     def forward(self, predictions, targets, sample_weights=None):
-        
-        # 1. Weighted MSE Loss (Per-Target)
-        
-        # Calculate squared error for all 5 targets (shape: [B, 5])
         squared_error = F.mse_loss(predictions, targets, reduction='none')
-        
-        # Apply the custom target weights (shape: [B, 5])
         weighted_error_targets = squared_error * self.target_weights
-        
-        # Calculate the mean weighted MSE for each sample (shape: [B])
         per_sample_weighted_mse = weighted_error_targets.sum(dim=1) / self.target_weights.sum()
 
-        # --- 2. Mass Balance Penalties (Per-Target & Per-Sample) ---
-        
         pred_clover = predictions[:, self.clover_idx]
         pred_dead = predictions[:, self.dead_idx]
         pred_green = predictions[:, self.green_idx]
         pred_total = predictions[:, self.total_idx]
         pred_gdm = predictions[:, self.gdm_idx]
         
-        # Penalty A: Dry Total Mass Balance Violation
         predicted_total_sum = pred_clover + pred_dead + pred_green
-        # MSE_loss(reduction='none') gives the squared error for each sample (shape: [B])
         total_balance_penalty = F.mse_loss(pred_total, predicted_total_sum, reduction='none')
         
-        # Penalty B: GDM Mass Balance Violation
         predicted_gdm_sum = pred_clover + pred_green
         gdm_balance_penalty = F.mse_loss(pred_gdm, predicted_gdm_sum, reduction='none')
 
-        # Total Per-Sample Loss (shape: [B])
         per_sample_loss = per_sample_weighted_mse + self.alpha * (total_balance_penalty + gdm_balance_penalty)
         
-        # 3. Apply Per-Sample (Inverse-Frequency) Weight
         if sample_weights is not None:
-            # sample_weights shape must be [B]
             per_sample_loss = per_sample_loss * sample_weights
 
-        # 4. Final Reduction: Average across the batch
         total_loss = per_sample_loss.mean()
         
         return total_loss
-    
-# Multimodal Model Architecture 
+
+
 class MultiModalModel(nn.Module):
-    # (Model architecture remains the same as it is a standard design)
     def __init__(self, timm_model_name, tabular_feature_size, output_size=5, stage_index=3):
         super().__init__()
         assert stage_index in [0, 1, 2, 3], \
@@ -259,16 +247,34 @@ class MultiModalModel(nn.Module):
 
 
 if __name__ == '__main__':
+
+    logger = setup_logging()
+    
     # Define parameters
     IMAGE_SIZE = 224
     BATCH_SIZE = 16
     NUM_EPOCHS = 50
     LEARNING_RATE = 1e-3
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    set_seed()
+    
+    logger.info("="*80)
+    logger.info("TRAINING CONFIGURATION")
+    logger.info("="*80)
+    logger.info(f"Image Size: {IMAGE_SIZE}")
+    logger.info(f"Batch Size: {BATCH_SIZE}")
+    logger.info(f"Number of Epochs: {NUM_EPOCHS}")
+    logger.info(f"Learning Rate: {LEARNING_RATE}")
+    logger.info(f"Device: {DEVICE}")
+    logger.info("="*80)
+    
+    set_seed(logger=logger)
+    
     # Load and Prepare Data
+    logger.info("Loading training data from 'train.csv'...")
     df_train = pd.read_csv('train.csv')
-    df_wide = prepare_data(df_train)
+    logger.info(f"Loaded {len(df_train)} rows")
+    
+    df_wide = prepare_data(df_train, logger=logger)
     
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     
@@ -276,68 +282,49 @@ if __name__ == '__main__':
     X = df_wide.drop(columns=target_cols)
     y = df_wide[target_cols]
     
-    # Split data STRATIFIED by season
-    # Using X['season'] as the stratification vector
-    # We split X and y separately and re-join them temporarily to ensure stratification
-    # for the entire sample_id row.
-    
-    # Stratified split to ensure all seasons are represented in train/val
+    # Stratified Split
+    logger.info("Performing stratified train-validation split (80/20)...")
+    strat_col = 'season'
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, 
         test_size=0.2, 
         random_state=42, 
-        stratify=X['season'] # Stratify by the engineered 'season' feature
+        stratify=X[strat_col]
     )
 
-    print("\n--- Season Counts Verification (Should show nearly identical proportions) ---")
-
-    # 1. Original Dataset Counts
-    original_counts = X['season'].value_counts()
-    original_proportions = X['season'].value_counts(normalize=True).mul(100).round(2)
-    print("Original Dataset Counts:")
-    print(pd.DataFrame({'Count': original_counts, 'Proportion (%)': original_proportions}))
-
-    print("\nTraining Split Counts (80%):")
-    # 2. Training Split Counts
-    train_counts = X_train['season'].value_counts()
-    train_proportions = X_train['season'].value_counts(normalize=True).mul(100).round(2)
-    print(pd.DataFrame({'Count': train_counts, 'Proportion (%)': train_proportions}))
-
-    print("\nValidation Split Counts (20%):")
-    # 3. Validation Split Counts
-    val_counts = X_val['season'].value_counts()
-    val_proportions = X_val['season'].value_counts(normalize=True).mul(100).round(2)
-    print(pd.DataFrame({'Count': val_counts, 'Proportion (%)': val_proportions}))
-
-    print("--------------------------------------------------------------------------------")
-
-
-    # Re-combine for preprocessing and easy indexing
+   
+    # Re-combine for preprocessing
     train_df = pd.merge(X_train, y_train, left_index=True, right_index=True)
     val_df = pd.merge(X_val, y_val, left_index=True, right_index=True)
 
-    # Perform Imputation on the targets 
-    train_df_imputed = conditional_target_impute(train_df, train_df_for_fit=None)
-    val_df_imputed = conditional_target_impute(val_df, train_df_for_fit=train_df_imputed)
+    print_stratification_stats(df_wide, train_df, val_df,strat_col, logger=logger)
 
-    # CALCULATE AND APPLY INVERSE-FREQUENCY SAMPLE WEIGHTS
+
+    # Perform Imputation
+    logger.info("Imputing missing target values...")
+    train_df_imputed = conditional_target_impute(train_df, train_df_for_fit=None, logger=logger)
+    val_df_imputed = conditional_target_impute(val_df, train_df_for_fit=train_df_imputed, logger=logger)
+
+    # Calculate sample weights
     prop_col = 'Species'
     proportions = train_df_imputed[prop_col].value_counts(normalize=True)
-    train_df_imputed, weight_col = calculate_sample_weights(train_df_imputed, proportions, prop_col, weight_col='sample_weight')
+    train_df_imputed, weight_col = calculate_sample_weights(
+        train_df_imputed, proportions, prop_col, weight_col='sample_weight', logger=logger
+    )
     
-    # Validation set samples should have a weight of 1.0 for loss calculation 
-    # (since the R^2 metric is *not* weighted by season/sample, only by target type).
     val_df_imputed[weight_col] = 1.0 
 
-    # Re-combine again for subsequent code (targets are imputed/processed)
     train_df = train_df_imputed
     val_df = val_df_imputed
     
     # Tabular Feature Preprocessing
-    numerical_features = ['Pre_GSHH_NDVI', 'Height_Ave_cm', 'month', 'month_sin', 'month_cos','NDVI_Height_MUL', 'NDVI_Height_ADD','NDVI_Height_Ratio']
+    numerical_features = ['Pre_GSHH_NDVI', 'Height_Ave_cm', 'month', 'month_sin', 'month_cos',
+                          'NDVI_Height_MUL', 'NDVI_Height_ADD','NDVI_Height_Ratio']
     categorical_features = ['State', 'Species', 'season'] 
 
-    # Create the preprocessing pipeline
+    logger.info(f"Numerical features ({len(numerical_features)}): {numerical_features}")
+    logger.info(f"Categorical features ({len(categorical_features)}): {categorical_features}")
+
     preprocessor = ColumnTransformer(
         transformers=[
             ('num', StandardScaler(), numerical_features),
@@ -346,22 +333,20 @@ if __name__ == '__main__':
         remainder='passthrough'
     )
 
-    # Fit and transform the training data
+    logger.info("Fitting preprocessor on training data...")
     train_processed = preprocessor.fit_transform(train_df)
     
-    # Save the preprocessor object
     try:
         joblib.dump(preprocessor, 'preprocessor.pkl')
-        print("✓ Fitted preprocessor saved as preprocessor.pkl")
+        logger.info("✓ Preprocessor saved as 'preprocessor.pkl'")
     except Exception as e:
-        print(f"Error saving preprocessor: {e}")
+        logger.error(f"Failed to save preprocessor: {e}")
 
-    # Get the column names for the processed tabular features
     ohe_feature_names = list(preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features))
     tabular_feature_names = numerical_features + ohe_feature_names
+    logger.info(f"Total tabular features after preprocessing: {len(tabular_feature_names)}")
     
-    # Recreate the DataFrame for the processed training data
-    non_processed_cols = ['sample_id', 'image_path'] + target_cols + [weight_col] # Keep sample_weight
+    non_processed_cols = ['sample_id', 'image_path'] + target_cols + [weight_col]
     num_processed_cols = len(numerical_features) + len(ohe_feature_names)
     
     train_df_processed = pd.DataFrame(
@@ -371,7 +356,6 @@ if __name__ == '__main__':
     )
     train_df_processed = pd.concat([train_df_processed, train_df[non_processed_cols]], axis=1)
 
-    # Transform validation data
     val_processed = preprocessor.transform(val_df)
     val_df_processed = pd.DataFrame(
         val_processed[:, :num_processed_cols], 
@@ -384,6 +368,7 @@ if __name__ == '__main__':
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 
+    logger.info("Setting up image transformations with augmentations...")
     train_transform = transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.RandomHorizontalFlip(),
@@ -403,28 +388,36 @@ if __name__ == '__main__':
         transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
     ])
     
-    # Initialize Datasets with the weight column
-    train_dataset = Stage2Dataset(train_df_processed, tabular_feature_names, target_cols, transform=train_transform, weight_col=weight_col)
-    val_dataset = Stage2Dataset(val_df_processed, tabular_feature_names, target_cols, transform=val_transform, weight_col=weight_col)
+    # Initialize Datasets
+    logger.info("Creating PyTorch datasets and dataloaders...")
+    train_dataset = Stage2Dataset(train_df_processed, tabular_feature_names, target_cols, 
+                                   transform=train_transform, weight_col=weight_col)
+    val_dataset = Stage2Dataset(val_df_processed, tabular_feature_names, target_cols, 
+                                 transform=val_transform, weight_col=weight_col)
     
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
+    logger.info(f"Training samples: {len(train_dataset)}, Batches: {len(train_loader)}")
+    logger.info(f"Validation samples: {len(val_dataset)}, Batches: {len(val_loader)}")
+
+    # Initialize Model
     tabular_feature_size = len(tabular_feature_names)
+    logger.info(f"Initializing MultiModalModel with tabular feature size: {tabular_feature_size}")
     model = MultiModalModel(
         timm_model_name='swin_base_patch4_window7_224',
         tabular_feature_size=tabular_feature_size,
         stage_index=3
     ).to(DEVICE)
     
-    # Loss function's per-target weights (User-defined for optimization)
-    custom_target_weights = [
-            0.5,  # Dry_Clover_g 
-            1.0,  # Dry_Dead_g 
-            0.5,  # Dry_Green_g 
-            3.0,  # Dry_Total_g 
-            3.0   # GDM_g 
-        ]
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Total parameters: {total_params:,}")
+    logger.info(f"Trainable parameters: {trainable_params:,}")
+    
+    custom_target_weights = [0.5, 1.0, 0.5, 3.0, 3.0]
+    logger.info(f"Custom target weights: {custom_target_weights}")
     
     criterion = WeightedMassBalanceLoss(
         target_weights=custom_target_weights, 
@@ -439,30 +432,30 @@ if __name__ == '__main__':
         eta_min=1e-6
     )
     
-    # --- FULL TRAINING AND VALIDATION LOOP ---
+    logger.info("Optimizer: Adam")
+    logger.info("Scheduler: CosineAnnealingWarmRestarts (T_0=5, T_mult=2)")
+    
+    # Training loop
+    best_val_r2 = -float('inf')
 
-    best_val_r2 = -float('inf') # Track best R2 instead of loss for the competition metric
-
-    print(f"Starting training on {DEVICE} for {NUM_EPOCHS} epochs with scheduler and augmentations...")
+    logger.info("="*80)
+    logger.info("STARTING TRAINING")
+    logger.info("="*80)
 
     for epoch in range(NUM_EPOCHS):
-        # ----------------------------------------------------
-        # 1. Training Phase (Apply Per-Sample Weight)
-        # ----------------------------------------------------
+        # Training Phase
         model.train()
         running_loss = 0.0
         
         train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS} (Train)", leave=False)
         
-        # New: Unpack the sample_weights from the DataLoader
         for batch_idx, (images, tabular_data, targets, sample_weights) in enumerate(train_bar):
             images, tabular_data, targets = images.to(DEVICE), tabular_data.to(DEVICE), targets.to(DEVICE)
-            sample_weights = sample_weights.to(DEVICE) # Move weights to device
+            sample_weights = sample_weights.to(DEVICE)
             
             optimizer.zero_grad()
             outputs = model(images, tabular_data)
             
-            # Pass sample_weights to the modified criterion
             loss = criterion(outputs, targets, sample_weights=sample_weights) 
             
             loss.backward()
@@ -479,9 +472,7 @@ if __name__ == '__main__':
 
         avg_train_loss = running_loss / len(train_loader.dataset)
 
-        # ----------------------------------------------------
-        # 2. Validation Phase (Calculate Official Weighted R^2)
-        # ----------------------------------------------------
+        # Validation Phase
         model.eval()
         val_loss = 0.0
         
@@ -491,14 +482,12 @@ if __name__ == '__main__':
         with torch.no_grad():
             val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS} (Val)", leave=False)
             
-            # New: Unpack the sample_weights (though they are all 1.0 for val set)
             for images, tabular_data, targets, sample_weights in val_bar:
                 images, tabular_data, targets = images.to(DEVICE), tabular_data.to(DEVICE), targets.to(DEVICE)
                 sample_weights = sample_weights.to(DEVICE)
                 
                 outputs = model(images, tabular_data)
                 
-                # Pass sample_weights to the criterion (it will use 1.0 for all)
                 loss = criterion(outputs, targets, sample_weights=sample_weights)
                 
                 val_loss += loss.item() * images.size(0)
@@ -512,28 +501,21 @@ if __name__ == '__main__':
         all_preds = np.concatenate(all_preds, axis=0)
         all_targets = np.concatenate(all_targets, axis=0)
         
-        # --- CRITICAL  Official Weighted R^2 Calculation ---
-        
-        # Official competition weights in the order: 
-        # ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+        # Calculate Official Weighted R²
         official_r2_weights = [0.1, 0.1, 0.1, 0.5, 0.2] 
         
-        # 1. Flatten the target and prediction arrays
         y_true_flat = all_targets.flatten()
         y_pred_flat = all_preds.flatten()
         
-        # 2. Create the sample_weight vector for the R^2 metric
         num_samples = all_targets.shape[0]
         num_targets = all_targets.shape[1]
         
-        # Repeat the official weights for every sample
         official_weights_matrix = np.tile(
             np.array(official_r2_weights).reshape(1, num_targets), 
             (num_samples, 1)
         )
         sample_weights_flat = official_weights_matrix.flatten()
         
-        # 3. Calculate the single, globally weighted R^2 (the competition metric)
         official_weighted_r2 = r2_score(
             y_true_flat, 
             y_pred_flat, 
@@ -542,15 +524,24 @@ if __name__ == '__main__':
         
         current_lr = optimizer.param_groups[0]['lr']
         
-        print(
-            f"Epoch {epoch+1} finished. LR: {current_lr:.6f}, "
-            f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
-            f"Official Weighted R2: {official_weighted_r2:.4f}"
+        # Log epoch results
+        epoch_summary = (
+            f"Epoch {epoch+1}/{NUM_EPOCHS} - "
+            f"LR: {current_lr:.6f}, "
+            f"Train Loss: {avg_train_loss:.4f}, "
+            f"Val Loss: {avg_val_loss:.4f}, "
+            f"Official Weighted R²: {official_weighted_r2:.4f}"
         )
+        logger.info(epoch_summary)
 
-        # Save Best Model based on Official Weighted R2
+        # Save best model
         if official_weighted_r2 > best_val_r2:
+            improvement = official_weighted_r2 - best_val_r2
             best_val_r2 = official_weighted_r2
             torch.save(model.state_dict(), 'best_multimodal_model_weighted.pth')
-            print("Model saved due to improved validation R2.")
-            print(f"  >>> Best Official Weighted R2: {best_val_r2:.4f}")
+            logger.info(f"✓ Model saved! Improved R² by {improvement:.4f} to {best_val_r2:.4f}")
+
+    logger.info("="*80)
+    logger.info("TRAINING COMPLETE")
+    logger.info(f"Best Validation R²: {best_val_r2:.4f}")
+    logger.info("="*80)

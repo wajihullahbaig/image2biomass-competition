@@ -103,13 +103,13 @@ def conditional_target_impute(df_to_impute, train_df_for_fit=None):
 
     return df_to_impute
 
-def calculate_sample_weights(df, season_proportions, weight_col='sample_weight'):
+def calculate_sample_weights(df, proportions,prop_col, weight_col='sample_weight'):
     """
-    Calculates inverse-frequency sample weights based on season distribution.
+    Calculates inverse-frequency sample weights based on prop_col proportions distribution.
     The weights are normalized so the mean weight is 1.0.
     """
     # 1. Calculate inverse proportions and normalize
-    inverse_proportions = 1 / season_proportions
+    inverse_proportions = 1 / proportions
     mean_inverse = inverse_proportions.mean()
     normalized_weights = inverse_proportions / mean_inverse
     
@@ -117,7 +117,7 @@ def calculate_sample_weights(df, season_proportions, weight_col='sample_weight')
     weight_map = normalized_weights.to_dict()
 
     # 3. Apply the weight to the DataFrame
-    df[weight_col] = df['season'].map(weight_map)
+    df[weight_col] = df[prop_col].map(weight_map)
     
     return df, weight_col
 
@@ -321,8 +321,9 @@ if __name__ == '__main__':
     val_df_imputed = conditional_target_impute(val_df, train_df_for_fit=train_df_imputed)
 
     # CALCULATE AND APPLY INVERSE-FREQUENCY SAMPLE WEIGHTS
-    season_proportions = train_df_imputed['season'].value_counts(normalize=True)
-    train_df_imputed, weight_col = calculate_sample_weights(train_df_imputed, season_proportions)
+    prop_col = 'Species'
+    proportions = train_df_imputed[prop_col].value_counts(normalize=True)
+    train_df_imputed, weight_col = calculate_sample_weights(train_df_imputed, proportions, prop_col, weight_col='sample_weight')
     
     # Validation set samples should have a weight of 1.0 for loss calculation 
     # (since the R^2 metric is *not* weighted by season/sample, only by target type).

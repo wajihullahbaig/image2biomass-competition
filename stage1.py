@@ -157,19 +157,19 @@ def impute_missing_features(train_df, val_df=None):
         val_df[feature_cols] = val_df[feature_cols].fillna(train_medians)
 
     return train_df, val_df
-    return train_df
 
 
-def calculate_sample_weights(df, species_proportions=None, weight_col='sample_weight'):
+
+def calculate_sample_weights(df, proportions=None,prop_col=None, weight_col='sample_weight'):
     """
-    Calculates inverse-frequency sample weights based on species distribution.
+    Calculates inverse-frequency sample weights based on propc_col distribution.
     The weights are normalized so the mean weight is 1.0.
     """
-    if species_proportions is None:
-        species_proportions = df['Species'].value_counts(normalize=True)
+    if proportions is None:
+        proportions = df[prop_col].value_counts(normalize=True)
 
     # 1. Calculate inverse proportions and normalize
-    inverse_proportions = 1 / species_proportions
+    inverse_proportions = 1 / proportions
     mean_inverse = inverse_proportions.mean()
     normalized_weights = inverse_proportions / mean_inverse
 
@@ -177,7 +177,7 @@ def calculate_sample_weights(df, species_proportions=None, weight_col='sample_we
     weight_map = normalized_weights.to_dict()
 
     # 3. Apply the weight to the DataFrame
-    df[weight_col] = df['Species'].map(weight_map)
+    df[weight_col] = df[prop_col].map(weight_map)
 
     return df, weight_col
 
@@ -224,9 +224,9 @@ if __name__ == '__main__':
     # STRATIFIED Split by Species
     train_df, val_df = train_test_split(
         df_unique,
-        test_size=0.15,
+        test_size=0.2,
         random_state=42,
-        stratify=df_unique['Species']  # Key stratification parameter
+        stratify=df_unique['season']  # Key stratification parameter
     )
 
     # Print stratification statistics
@@ -237,8 +237,12 @@ if __name__ == '__main__':
     print("Missing feature values imputed using training set medians.")
 
     # Calculate Sample Weights (based on Species distribution)
+    prop_col = 'Species'
     train_df, weight_col = calculate_sample_weights(train_df)
-    val_df, _ = calculate_sample_weights(val_df, species_proportions=train_df['Species'].value_counts(normalize=True))
+    proportions=train_df[prop_col].value_counts(normalize=True)
+    val_df, _ = calculate_sample_weights(val_df, proportions=proportions, prop_col=prop_col)
+    # Validation set samples should have a weight of 1.0 for loss calculation 
+    # (since the R^2 metric is *not* weighted by season/sample, only by target type).
     val_df[weight_col] = 1.0  # Validation samples have weight 1
     print(f"Sample weights calculated. Weight column: '{weight_col}'")
 

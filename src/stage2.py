@@ -265,7 +265,7 @@ if __name__ == '__main__':
     
     # Load and Prepare Data
     logger.info("Loading training data from 'train.csv'...")
-    df_train = pd.read_csv('train.csv')
+    df_train = pd.read_csv('./train.csv')
     logger.info(f"Loaded {len(df_train)} rows")
     
     df_wide = prepare_data(df_train, logger=logger)
@@ -300,7 +300,7 @@ if __name__ == '__main__':
     val_df_imputed = conditional_target_impute(val_df, train_df_for_fit=train_df_imputed, logger=logger)
 
     # Calculate sample weights
-    prop_col = 'Species'
+    prop_col = 'season'
     proportions = train_df_imputed[prop_col].value_counts(normalize=True)
     train_df_imputed, weight_col = calculate_sample_weights(
         train_df_imputed, proportions, prop_col, weight_col='sample_weight', logger=logger
@@ -331,7 +331,7 @@ if __name__ == '__main__':
     train_processed = preprocessor.fit_transform(train_df)
     
     try:
-        joblib.dump(preprocessor, 'preprocessor.pkl')
+        joblib.dump(preprocessor, 'stage2_preprocessor.pkl')
         logger.info("✓ Preprocessor saved as 'preprocessor.pkl'")
     except Exception as e:
         logger.error(f"Failed to save preprocessor: {e}")
@@ -433,7 +433,7 @@ if __name__ == '__main__':
     best_val_r2 = -float('inf')
 
     logger.info("="*80)
-    logger.info("STARTING TRAINING")
+    logger.info("STARTING TRAINING - STAGE 2")
     logger.info("="*80)
 
     for epoch in range(NUM_EPOCHS):

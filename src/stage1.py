@@ -56,9 +56,15 @@ class Stage1Dataset(Dataset):
 
         # Get sample weight
         weight = row[self.weight_col]
+        
+        # Extract temporal features
+        month_sin = row['month_sin']
+        month_cos = row['month_cos']
+        temporal_features = torch.tensor([month_sin, month_cos], dtype=torch.float32)
 
         return (
             image,
+            temporal_features,
             torch.tensor(species_idx, dtype=torch.long),
             torch.tensor([ndvi, height], dtype=torch.float32),
             torch.tensor(weight, dtype=torch.float32)
@@ -66,15 +72,25 @@ class Stage1Dataset(Dataset):
 
 
 class InputPredictorModel(nn.Module):
-    def __init__(self, num_species, model_name='tf_efficientnet_b3_ns'):
+    def __init__(self, num_species, temporal_dim=2, model_name='tf_efficientnet_b3_ns'):
         super().__init__()
         self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
         in_features = self.backbone.num_features
+        
+        # Process temporal features
+        self.temporal_processor = nn.Sequential(
+            nn.Linear(temporal_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2)
+        )
+        
+        # Combine CNN features with temporal features
+        combined_features = in_features + 64
 
         # Head 1: Species Classification
         self.species_head = nn.Sequential(
             nn.Dropout(0.2),
-            nn.Linear(in_features, 512),
+            nn.Linear(combined_features, 512),
             nn.ReLU(),
             nn.Linear(512, num_species)
         )
@@ -82,15 +98,23 @@ class InputPredictorModel(nn.Module):
         # Head 2: Regression (NDVI & Log-Height)
         self.reg_head = nn.Sequential(
             nn.Dropout(0.2),
-            nn.Linear(in_features, 256),
+            nn.Linear(combined_features, 256),
             nn.ReLU(),
             nn.Linear(256, 2)
         )
 
-    def forward(self, x):
-        features = self.backbone(x)
-        return self.species_head(features), self.reg_head(features)
-
+    def forward(self, x, temporal_features):
+        # Extract image features
+        img_features = self.backbone(x)
+        
+        # Process temporal features
+        temporal_encoded = self.temporal_processor(temporal_features)
+        
+        # Combine features
+        combined = torch.cat([img_features, temporal_encoded], dim=1)
+        
+        # Pass through prediction heads
+        return self.species_head(combined), self.reg_head(combined)
 
 
 def impute_missing_features(train_df, val_df=None, logger=None):
@@ -124,7 +148,6 @@ def impute_missing_features(train_df, val_df=None, logger=None):
     return train_df, val_df
 
 
-
 if __name__ == '__main__':
     # Setup logging first
     logger = setup_logging()
@@ -153,7 +176,7 @@ if __name__ == '__main__':
 
     # Load Data
     logger.info("Loading training data from 'train.csv'...")
-    df = pd.read_csv('train.csv')
+    df = pd.read_csv('./train.csv')
     df_unique = df.drop_duplicates(subset=['image_path']).reset_index(drop=True)
     logger.info(f"Original rows: {len(df)}")
     logger.info(f"Unique images: {len(df_unique)}")
@@ -166,8 +189,6 @@ if __name__ == '__main__':
     df_unique['month_sin'] = np.sin(2 * np.pi * df_unique['month'] / period)
     df_unique['month_cos'] = np.cos(2 * np.pi * df_unique['month'] / period)
 
-
-
     df_unique['season'] = df_unique['month'].apply(get_season)
     df_unique = df_unique.drop('Sampling_Date', axis=1)
     logger.info("Date features created: month_sin, month_cos, season")
@@ -178,7 +199,7 @@ if __name__ == '__main__':
     le.fit(df_unique['Species'])
     
     try:
-        joblib.dump(le, 'stage1_species_encoder.pkl')
+        joblib.dump(le, 'stage1_encoder.pkl')
         logger.info(f"✓ Species encoder saved. Number of classes: {len(le.classes_)}")
         logger.debug(f"Species classes: {le.classes_.tolist()}")
     except Exception as e:
@@ -194,7 +215,7 @@ if __name__ == '__main__':
         stratify=df_unique[strat_col]
     )
 
-    print_stratification_stats(df_unique, train_df, val_df,strat_col, logger=logger)
+    print_stratification_stats(df_unique, train_df, val_df, strat_col, logger=logger)
 
     train_df, val_df = impute_missing_features(train_df, val_df, logger=logger)
 
@@ -259,9 +280,13 @@ if __name__ == '__main__':
     logger.info(f"Training samples: {len(train_df)}, Batches: {len(train_loader)}")
     logger.info(f"Validation samples: {len(val_df)}, Batches: {len(val_loader)}")
 
-    # Initialize Model
-    logger.info(f"Initializing {MODEL_NAME} model...")
-    model = InputPredictorModel(len(le.classes_), MODEL_NAME).to(DEVICE)
+    # Initialize Model with temporal features
+    logger.info(f"Initializing {MODEL_NAME} model with temporal features...")
+    model = InputPredictorModel(
+        num_species=len(le.classes_), 
+        temporal_dim=2,
+        model_name=MODEL_NAME
+    ).to(DEVICE)
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -288,7 +313,7 @@ if __name__ == '__main__':
     best_loss = float('inf')
 
     logger.info("="*80)
-    logger.info("STARTING TRAINING")
+    logger.info("STARTING TRAINING - STAGE 1")
     logger.info("="*80)
 
     for epoch in range(EPOCHS):
@@ -297,11 +322,15 @@ if __name__ == '__main__':
         train_loss = 0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
         
-        for imgs, spec_idx, reg_targets, weights in pbar:
-            imgs, spec_idx, reg_targets = imgs.to(DEVICE), spec_idx.to(DEVICE), reg_targets.to(DEVICE)
+        for imgs, temporal_feats, spec_idx, reg_targets, weights in pbar:
+            imgs = imgs.to(DEVICE)
+            temporal_feats = temporal_feats.to(DEVICE)
+            spec_idx = spec_idx.to(DEVICE)
+            reg_targets = reg_targets.to(DEVICE)
             weights = weights.to(DEVICE)
+            
             optimizer.zero_grad()
-            pred_spec, pred_reg = model(imgs)
+            pred_spec, pred_reg = model(imgs, temporal_feats)
 
             # Calculate losses with sample weights
             cls_loss = F.cross_entropy(pred_spec, spec_idx, reduction='none')
@@ -324,13 +353,14 @@ if __name__ == '__main__':
         all_reg_true = []
 
         with torch.no_grad():
-            for imgs, spec_idx, reg_targets, weights in val_loader:
+            for imgs, temporal_feats, spec_idx, reg_targets, weights in val_loader:
                 imgs = imgs.to(DEVICE)
+                temporal_feats = temporal_feats.to(DEVICE)
                 spec_idx = spec_idx.to(DEVICE)
                 reg_targets = reg_targets.to(DEVICE)
 
                 # Forward pass
-                pred_spec_logits, pred_reg = model(imgs)
+                pred_spec_logits, pred_reg = model(imgs, temporal_feats)
 
                 # Calculate Loss (no sample weights for validation)
                 loss = crit_cls(pred_spec_logits, spec_idx) + crit_reg(pred_reg, reg_targets)

@@ -430,6 +430,7 @@ if __name__ == '__main__':
     logger.info("Scheduler: CosineAnnealingWarmRestarts (T_0=5, T_mult=2)")
     
     # Training loop
+    # Training loop with detailed metrics
     best_val_r2 = -float('inf')
 
     logger.info("="*80)
@@ -437,9 +438,11 @@ if __name__ == '__main__':
     logger.info("="*80)
 
     for epoch in range(NUM_EPOCHS):
-        # Training Phase
+        # ==================== TRAINING PHASE ====================
         model.train()
         running_loss = 0.0
+        train_preds = []
+        train_targets = []
         
         train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS} (Train)", leave=False)
         
@@ -458,20 +461,28 @@ if __name__ == '__main__':
             current_step = epoch + batch_idx / len(train_loader)
             scheduler.step(current_step)
             
-            running_loss += loss.item() * images.size(0) 
+            running_loss += loss.item() * images.size(0)
+            
+            # Store predictions and targets for metrics
+            train_preds.append(outputs.detach().cpu().numpy())
+            train_targets.append(targets.cpu().numpy())
+            
             train_bar.set_postfix({
                 'loss': f'{loss.item():.4f}',
                 'lr': f'{optimizer.param_groups[0]["lr"]:.6f}'
             })
 
         avg_train_loss = running_loss / len(train_loader.dataset)
+        
+        # Concatenate training predictions and targets
+        train_preds = np.concatenate(train_preds, axis=0)
+        train_targets = np.concatenate(train_targets, axis=0)
 
-        # Validation Phase
+        # ==================== VALIDATION PHASE ====================
         model.eval()
         val_loss = 0.0
-        
-        all_preds = []
-        all_targets = []
+        val_preds = []
+        val_targets = []
         
         with torch.no_grad():
             val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS} (Val)", leave=False)
@@ -487,55 +498,193 @@ if __name__ == '__main__':
                 val_loss += loss.item() * images.size(0)
                 val_bar.set_postfix({'val_loss': f'{loss.item():.4f}'})
                 
-                all_preds.append(outputs.cpu().numpy())
-                all_targets.append(targets.cpu().numpy())
+                val_preds.append(outputs.cpu().numpy())
+                val_targets.append(targets.cpu().numpy())
 
         avg_val_loss = val_loss / len(val_loader.dataset)
         
-        all_preds = np.concatenate(all_preds, axis=0)
-        all_targets = np.concatenate(all_targets, axis=0)
+        val_preds = np.concatenate(val_preds, axis=0)
+        val_targets = np.concatenate(val_targets, axis=0)
         
-        # Calculate Official Weighted R²
-        official_r2_weights = [0.1, 0.1, 0.1, 0.5, 0.2] 
+        # ==================== CALCULATE DETAILED METRICS ====================
         
-        y_true_flat = all_targets.flatten()
-        y_pred_flat = all_preds.flatten()
+        # Official Competition Weighted R²
+        official_r2_weights = [0.1, 0.1, 0.1, 0.5, 0.2]
         
-        num_samples = all_targets.shape[0]
-        num_targets = all_targets.shape[1]
+        def calculate_weighted_r2(y_true, y_pred, weights):
+            """Calculate official weighted R² score"""
+            y_true_flat = y_true.flatten()
+            y_pred_flat = y_pred.flatten()
+            
+            num_samples = y_true.shape[0]
+            num_targets = y_true.shape[1]
+            
+            weights_matrix = np.tile(
+                np.array(weights).reshape(1, num_targets), 
+                (num_samples, 1)
+            )
+            sample_weights_flat = weights_matrix.flatten()
+            
+            return r2_score(y_true_flat, y_pred_flat, sample_weight=sample_weights_flat)
         
-        official_weights_matrix = np.tile(
-            np.array(official_r2_weights).reshape(1, num_targets), 
-            (num_samples, 1)
-        )
-        sample_weights_flat = official_weights_matrix.flatten()
+        # Calculate per-target R² scores
+        def calculate_per_target_metrics(y_true, y_pred, target_names):
+            """Calculate R², MAE, and RMSE for each target"""
+            metrics = {}
+            for i, name in enumerate(target_names):
+                true_vals = y_true[:, i]
+                pred_vals = y_pred[:, i]
+                
+                # R² score
+                r2 = r2_score(true_vals, pred_vals)
+                
+                # MAE (Mean Absolute Error)
+                mae = np.mean(np.abs(true_vals - pred_vals))
+                
+                # RMSE (Root Mean Squared Error)
+                rmse = np.sqrt(np.mean((true_vals - pred_vals) ** 2))
+                
+                # MAPE (Mean Absolute Percentage Error) - avoid division by zero
+                mask = true_vals != 0
+                if mask.sum() > 0:
+                    mape = np.mean(np.abs((true_vals[mask] - pred_vals[mask]) / true_vals[mask])) * 100
+                else:
+                    mape = 0.0
+                
+                metrics[name] = {
+                    'R²': r2,
+                    'MAE': mae,
+                    'RMSE': rmse,
+                    'MAPE': mape
+                }
+            
+            return metrics
         
-        official_weighted_r2 = r2_score(
-            y_true_flat, 
-            y_pred_flat, 
-            sample_weight=sample_weights_flat
-        )
+        # Calculate mass balance metrics
+        def calculate_mass_balance_metrics(y_pred):
+            """Calculate how well mass balance constraints are satisfied"""
+            pred_clover = y_pred[:, 0]
+            pred_dead = y_pred[:, 1]
+            pred_green = y_pred[:, 2]
+            pred_total = y_pred[:, 3]
+            pred_gdm = y_pred[:, 4]
+            
+            # Total balance: Clover + Dead + Green = Total
+            total_sum = pred_clover + pred_dead + pred_green
+            total_balance_error = np.mean(np.abs(pred_total - total_sum))
+            total_balance_rel_error = np.mean(np.abs((pred_total - total_sum) / (pred_total + 1e-6))) * 100
+            
+            # GDM balance: Clover + Green = GDM
+            gdm_sum = pred_clover + pred_green
+            gdm_balance_error = np.mean(np.abs(pred_gdm - gdm_sum))
+            gdm_balance_rel_error = np.mean(np.abs((pred_gdm - gdm_sum) / (pred_gdm + 1e-6))) * 100
+            
+            return {
+                'total_mae': total_balance_error,
+                'total_mape': total_balance_rel_error,
+                'gdm_mae': gdm_balance_error,
+                'gdm_mape': gdm_balance_rel_error
+            }
         
+        # Training Metrics
+        train_official_r2 = calculate_weighted_r2(train_targets, train_preds, official_r2_weights)
+        train_per_target = calculate_per_target_metrics(train_targets, train_preds, target_cols)
+        train_mass_balance = calculate_mass_balance_metrics(train_preds)
+        
+        # Validation Metrics
+        val_official_r2 = calculate_weighted_r2(val_targets, val_preds, official_r2_weights)
+        val_per_target = calculate_per_target_metrics(val_targets, val_preds, target_cols)
+        val_mass_balance = calculate_mass_balance_metrics(val_preds)
+        
+        # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
         
-        # Log epoch results
-        epoch_summary = (
-            f"Epoch {epoch+1}/{NUM_EPOCHS} - "
-            f"LR: {current_lr:.6f}, "
-            f"Train Loss: {avg_train_loss:.4f}, "
-            f"Val Loss: {avg_val_loss:.4f}, "
-            f"Official Weighted R²: {official_weighted_r2:.4f}"
-        )
-        logger.info(epoch_summary)
+        # ==================== LOG DETAILED RESULTS ====================
+        logger.info("="*80)
+        logger.info(f"Epoch {epoch+1}/{NUM_EPOCHS} Summary")
+        logger.info("-"*80)
+        logger.info(f"Learning Rate: {current_lr:.6f}")
+        logger.info("-"*80)
+        
+        # Loss Summary
+        logger.info("Loss Summary:")
+        logger.info(f"  Train Loss: {avg_train_loss:.4f}")
+        logger.info(f"  Val Loss:   {avg_val_loss:.4f}")
+        logger.info("-"*80)
+        
+        # Official Weighted R²
+        logger.info("Official Competition Metric (Weighted R²):")
+        logger.info(f"  Train: {train_official_r2:.4f}")
+        logger.info(f"  Val:   {val_official_r2:.4f}")
+        logger.info("-"*80)
+        
+        # Per-Target Metrics
+        logger.info("Per-Target Metrics:")
+        logger.info("")
+        logger.info("TRAINING SET:")
+        for target_name in target_cols:
+            metrics = train_per_target[target_name]
+            logger.info(f"  {target_name}:")
+            logger.info(f"    R²:   {metrics['R²']:>7.4f}  |  MAE:  {metrics['MAE']:>7.3f}  |  "
+                       f"RMSE: {metrics['RMSE']:>7.3f}  |  MAPE: {metrics['MAPE']:>6.2f}%")
+        
+        logger.info("")
+        logger.info("VALIDATION SET:")
+        for target_name in target_cols:
+            metrics = val_per_target[target_name]
+            logger.info(f"  {target_name}:")
+            logger.info(f"    R²:   {metrics['R²']:>7.4f}  |  MAE:  {metrics['MAE']:>7.3f}  |  "
+                       f"RMSE: {metrics['RMSE']:>7.3f}  |  MAPE: {metrics['MAPE']:>6.2f}%")
+        logger.info("-"*80)
+        
+        # Mass Balance Constraint Metrics
+        logger.info("Mass Balance Constraint Adherence:")
+        logger.info("")
+        logger.info("TRAINING SET:")
+        logger.info(f"  Total Balance (Clover+Dead+Green=Total):")
+        logger.info(f"    MAE:  {train_mass_balance['total_mae']:.4f}  |  MAPE: {train_mass_balance['total_mape']:.2f}%")
+        logger.info(f"  GDM Balance (Clover+Green=GDM):")
+        logger.info(f"    MAE:  {train_mass_balance['gdm_mae']:.4f}  |  MAPE: {train_mass_balance['gdm_mape']:.2f}%")
+        
+        logger.info("")
+        logger.info("VALIDATION SET:")
+        logger.info(f"  Total Balance (Clover+Dead+Green=Total):")
+        logger.info(f"    MAE:  {val_mass_balance['total_mae']:.4f}  |  MAPE: {val_mass_balance['total_mape']:.2f}%")
+        logger.info(f"  GDM Balance (Clover+Green=GDM):")
+        logger.info(f"    MAE:  {val_mass_balance['gdm_mae']:.4f}  |  MAPE: {val_mass_balance['gdm_mape']:.2f}%")
+        logger.info("="*80)
+        logger.info("")
 
-        # Save best model
-        if official_weighted_r2 > best_val_r2:
-            improvement = official_weighted_r2 - best_val_r2
-            best_val_r2 = official_weighted_r2
-            torch.save(model.state_dict(), 'best_multimodal_model_weighted.pth')
-            logger.info(f"✓ Model saved! Improved R² by {improvement:.4f} to {best_val_r2:.4f}")
+        # ==================== SAVE BEST MODEL ====================
+        if val_official_r2 > best_val_r2:
+            improvement = val_official_r2 - best_val_r2
+            best_val_r2 = val_official_r2
+            
+            # Save model checkpoint with metrics
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_r2': best_val_r2,
+                'val_loss': avg_val_loss,
+                'train_loss': avg_train_loss,
+                'val_per_target_metrics': val_per_target,
+                'val_mass_balance': val_mass_balance
+            }
+            
+            torch.save(checkpoint, 'stage2_model_checkpoint.pth')
+            torch.save(model.state_dict(), 'stage2_model_weighted.pth')
+            
+            logger.info("✓" * 40)
+            logger.info(f"✓ NEW BEST MODEL SAVED!")
+            logger.info(f"✓ Improved Official R² by {improvement:.4f}")
+            logger.info(f"✓ New best Official R²: {best_val_r2:.4f}")
+            logger.info(f"✓ Validation Loss: {avg_val_loss:.4f}")
+            logger.info("✓" * 40)
+            logger.info("")
 
     logger.info("="*80)
     logger.info("STAGE 2 TRAINING COMPLETE")
-    logger.info(f"Best Validation R²: {best_val_r2:.4f}")
+    logger.info(f"Best Validation Official R²: {best_val_r2:.4f}")
     logger.info("="*80)

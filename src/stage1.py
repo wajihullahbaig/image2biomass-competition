@@ -13,12 +13,14 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
 import timm
 import joblib
 from tqdm import tqdm
 import warnings
-from sklearn.metrics import r2_score, accuracy_score, f1_score
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
 from common import calculate_sample_weights, get_season, print_stratification_stats, set_seed, setup_logging
 
@@ -26,11 +28,11 @@ from common import calculate_sample_weights, get_season, print_stratification_st
 warnings.filterwarnings("ignore")
 
 class Stage1Dataset(Dataset):
-    def __init__(self, df, image_dir, transform=None, label_encoder=None, weight_col='sample_weight'):
+    def __init__(self, df, tabular_features, image_dir, transform=None, weight_col='sample_weight'):
         self.df = df
+        self.tabular_features = tabular_features
         self.image_dir = image_dir
         self.transform = transform
-        self.le = label_encoder
         self.weight_col = weight_col
 
     def __len__(self):
@@ -48,72 +50,64 @@ class Stage1Dataset(Dataset):
         if self.transform:
             image = self.transform(image)
 
-        # Targets
-        species_idx = self.le.transform([row['Species']])[0]
+        # Tabular features (includes species one-hot, count features, etc.)
+        tabular_data = torch.tensor(row[self.tabular_features].values.astype(np.float32))
+
+        # Regression Targets (NDVI & Log-Height)
         ndvi = row['Pre_GSHH_NDVI']
         height = np.log1p(row['Height_Ave_cm'])
-
-        # Count features as inputs
-        species_count = row.get('species_count', 0)
-        species_freq = row.get('species_frequency', 0.0)
-        count_features = torch.tensor([species_count, species_freq], dtype=torch.float32)
+        reg_targets = torch.tensor([ndvi, height], dtype=torch.float32)
 
         # Get sample weight
         weight = row[self.weight_col]
 
         return (
             image,
-            count_features,  # New: count features as input
-            torch.tensor(species_idx, dtype=torch.long),
-            torch.tensor([ndvi, height], dtype=torch.float32),
+            tabular_data,
+            reg_targets,
             torch.tensor(weight, dtype=torch.float32)
         )
 
 
 class InputPredictorModel(nn.Module):
-    def __init__(self, num_species, model_name='tf_efficientnet_b3_ns'):
+    def __init__(self, tabular_feature_size, model_name='tf_efficientnet_b3_ns'):
         super().__init__()
         self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
         in_features = self.backbone.num_features
         
-        # Project count features to embedding space
-        self.count_projection = nn.Sequential(
-            nn.Linear(2, 64),  # 2 input features: count and frequency
+        # Project tabular features (species one-hot + count features)
+        self.tabular_projection = nn.Sequential(
+            nn.Linear(tabular_feature_size, 128),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(64, 32)
+            nn.Dropout(0.2),
+            nn.Linear(128, 64)
         )
         
         # Combined features dimension
-        combined_features = in_features + 32
+        combined_features = in_features + 64
 
-        # Head 1: Species Classification
-        self.species_head = nn.Sequential(
-            nn.Dropout(0.2),
-            nn.Linear(combined_features, 512),
-            nn.ReLU(),
-            nn.Linear(512, num_species)
-        )
-
-        # Head 2: Regression (NDVI & Log-Height)
+        # Regression Head (NDVI & Log-Height)
         self.reg_head = nn.Sequential(
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),
             nn.Linear(combined_features, 256),
             nn.ReLU(),
-            nn.Linear(256, 2)
+            nn.Dropout(0.2),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2)  # Output: [NDVI, log(Height)]
         )
 
-    def forward(self, x, count_features):
+    def forward(self, x, tabular_features):
         # Extract image features
         img_features = self.backbone(x)
         
-        # Project count features
-        count_embed = self.count_projection(count_features)
+        # Project tabular features
+        tab_embed = self.tabular_projection(tabular_features)
         
-        # Concatenate image and count features
-        features = torch.cat([img_features, count_embed], dim=1)
+        # Concatenate image and tabular features
+        features = torch.cat([img_features, tab_embed], dim=1)
         
-        return self.species_head(features), self.reg_head(features)
+        return self.reg_head(features)
 
 
 def impute_missing_features(train_df, val_df=None, logger=None):
@@ -147,7 +141,6 @@ def impute_missing_features(train_df, val_df=None, logger=None):
     return train_df, val_df
 
 
-
 if __name__ == '__main__':
     # Setup logging first
     logger = setup_logging()
@@ -162,7 +155,7 @@ if __name__ == '__main__':
     MODEL_NAME = f'tf_efficientnet_{BACKBONE_SIZE}_ns'
     
     logger.info("="*80)
-    logger.info("STAGE 1: TRAINING INPUT FEATURE PREDICTOR")
+    logger.info("STAGE 1: TRAINING INPUT FEATURE PREDICTOR (NDVI & HEIGHT)")
     logger.info("="*80)
     logger.info(f"Backbone Model: {MODEL_NAME}")
     logger.info(f"Image Size: {IMAGE_SIZE}")
@@ -188,24 +181,9 @@ if __name__ == '__main__':
     period = 12
     df_unique['month_sin'] = np.sin(2 * np.pi * df_unique['month'] / period)
     df_unique['month_cos'] = np.cos(2 * np.pi * df_unique['month'] / period)
-
-
-
     df_unique['season'] = df_unique['month'].apply(get_season)
     df_unique = df_unique.drop('Sampling_Date', axis=1)
     logger.info("Date features created: month_sin, month_cos, season")
-
-    # Encode Species
-    logger.info("Encoding species labels...")
-    le = LabelEncoder()
-    le.fit(df_unique['Species'])
-    
-    try:
-        joblib.dump(le, 'stage1_encoder.pkl')
-        logger.info(f"✓ Species encoder saved. Number of classes: {len(le.classes_)}")
-        logger.debug(f"Species classes: {le.classes_.tolist()}")
-    except Exception as e:
-        logger.error(f"Failed to save species encoder: {e}")
 
     # Stratified Split
     logger.info("Performing stratified train-validation split (80/20)...")
@@ -217,57 +195,88 @@ if __name__ == '__main__':
         stratify=df_unique[strat_col]
     )
 
-   # After train/val split
-    logger.info("Adding species count features...")
+    print_stratification_stats(df_unique, train_df, val_df, strat_col, logger=logger)
 
-    # Calculate species counts from training set only (to avoid data leakage)
+    # Add Species Count Features
+    logger.info("Adding species count features...")
     species_counts = train_df['Species'].value_counts()
     species_freq = species_counts / len(train_df)
-
-    # Normalize counts (optional but recommended)
-    from sklearn.preprocessing import StandardScaler
-    count_scaler = StandardScaler()
-    normalized_counts = count_scaler.fit_transform(species_counts.values.reshape(-1, 1))
-    species_counts_norm = pd.Series(normalized_counts.flatten(), index=species_counts.index)
-
-    # Add to train set
-    train_df['species_count'] = train_df['Species'].map(species_counts_norm)
+    
+    # Log transform counts for better scaling
+    species_counts_log = np.log1p(species_counts)
+    
+    # Add to dataframes
+    train_df['species_count'] = train_df['Species'].map(species_counts_log)
     train_df['species_frequency'] = train_df['Species'].map(species_freq)
-
-    # Add to val set (using training statistics)
-    val_df['species_count'] = val_df['Species'].map(species_counts_norm).fillna(0)
+    
+    val_df['species_count'] = val_df['Species'].map(species_counts_log).fillna(0)
     val_df['species_frequency'] = val_df['Species'].map(species_freq).fillna(species_freq.mean())
-
+    
     logger.info(f"Species count range: {train_df['species_count'].min():.4f} to {train_df['species_count'].max():.4f}")
     logger.info(f"Species frequency range: {train_df['species_frequency'].min():.4f} to {train_df['species_frequency'].max():.4f}")
 
-    # Save the scaler for inference
-    joblib.dump(count_scaler, 'stage1_count_scaler.pkl')
-    joblib.dump(species_freq.to_dict(), 'stage1_species_freq.pkl')
-    logger.info("✓ Count scaler and frequency mapping saved")
-
-
-    print_stratification_stats(df_unique, train_df, val_df,strat_col, logger=logger)
-
+    # Impute missing features
     train_df, val_df = impute_missing_features(train_df, val_df, logger=logger)
 
+    # Calculate sample weights
     logger.info("Calculating sample weights for training...")
     prop_col = 'Species'
     train_df, weight_col = calculate_sample_weights(train_df, prop_col=prop_col, logger=logger)
     val_df[weight_col] = 1.0
     logger.info("Sample weights applied. Validation weights set to 1.0")
 
-    # Calculate Class Weights
-    logger.info("Calculating class weights for balanced training...")
-    train_labels = train_df[prop_col].values
-    class_weights = compute_class_weight(
-        class_weight='balanced',
-        classes=np.unique(train_labels),
-        y=train_labels
+    # Define tabular features for preprocessing
+    numerical_features = ['species_count', 'species_frequency']
+    categorical_features = ['Species']
+    
+    logger.info(f"Numerical features ({len(numerical_features)}): {numerical_features}")
+    logger.info(f"Categorical features ({len(categorical_features)}): {categorical_features}")
+
+    # Create preprocessor
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', StandardScaler(), numerical_features),
+            ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
+        ],
+        remainder='passthrough'
     )
-    class_weights = torch.tensor(class_weights, dtype=torch.float32).to(DEVICE)
-    logger.info(f"Class weights range: {class_weights.min():.2f} to {class_weights.max():.2f}")
-    logger.debug(f"Class weights: {class_weights.cpu().numpy()}")
+
+    # Prepare data for preprocessing (only tabular features)
+    tabular_cols = numerical_features + categorical_features
+    
+    logger.info("Fitting preprocessor on training data...")
+    train_tabular = preprocessor.fit_transform(train_df[tabular_cols])
+    
+    # Save preprocessor
+    try:
+        joblib.dump(preprocessor, 'stage1_preprocessor.pkl')
+        logger.info("✓ Preprocessor saved as 'stage1_preprocessor.pkl'")
+    except Exception as e:
+        logger.error(f"Failed to save preprocessor: {e}")
+
+    # Get feature names
+    ohe_feature_names = list(preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features))
+    tabular_feature_names = numerical_features + ohe_feature_names
+    logger.info(f"Total tabular features after preprocessing: {len(tabular_feature_names)}")
+    logger.debug(f"Tabular features: {tabular_feature_names}")
+    
+    # Create processed dataframes
+    non_processed_cols = ['sample_id', 'image_path', 'Pre_GSHH_NDVI', 'Height_Ave_cm', weight_col]
+    
+    train_df_processed = pd.DataFrame(
+        train_tabular,
+        columns=tabular_feature_names,
+        index=train_df.index
+    )
+    train_df_processed = pd.concat([train_df_processed, train_df[non_processed_cols]], axis=1)
+
+    val_tabular = preprocessor.transform(val_df[tabular_cols])
+    val_df_processed = pd.DataFrame(
+        val_tabular,
+        columns=tabular_feature_names,
+        index=val_df.index
+    )
+    val_df_processed = pd.concat([val_df_processed, val_df[non_processed_cols]], axis=1)
 
     # Image Transformations
     logger.info("Setting up image transformations with augmentations...")
@@ -296,25 +305,26 @@ if __name__ == '__main__':
     # Create Dataloaders
     logger.info("Creating PyTorch datasets and dataloaders...")
     train_loader = DataLoader(
-        Stage1Dataset(train_df, 'train', train_transform, le, weight_col=weight_col),
+        Stage1Dataset(train_df_processed, tabular_feature_names, 'train', train_transform, weight_col=weight_col),
         batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=4
     )
 
     val_loader = DataLoader(
-        Stage1Dataset(val_df, 'train', val_transform, le, weight_col=weight_col),
+        Stage1Dataset(val_df_processed, tabular_feature_names, 'train', val_transform, weight_col=weight_col),
         batch_size=BATCH_SIZE,
         shuffle=False,
         num_workers=4
     )
     
-    logger.info(f"Training samples: {len(train_df)}, Batches: {len(train_loader)}")
-    logger.info(f"Validation samples: {len(val_df)}, Batches: {len(val_loader)}")
+    logger.info(f"Training samples: {len(train_df_processed)}, Batches: {len(train_loader)}")
+    logger.info(f"Validation samples: {len(val_df_processed)}, Batches: {len(val_loader)}")
 
     # Initialize Model
-    logger.info(f"Initializing {MODEL_NAME} model...")
-    model = InputPredictorModel(len(le.classes_), MODEL_NAME).to(DEVICE)
+    tabular_feature_size = len(tabular_feature_names)
+    logger.info(f"Initializing {MODEL_NAME} model with {tabular_feature_size} tabular features...")
+    model = InputPredictorModel(tabular_feature_size, MODEL_NAME).to(DEVICE)
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -330,13 +340,12 @@ if __name__ == '__main__':
         optimizer,
         mode='min',
         factor=0.5,
-        patience=2,
+        patience=3,
         verbose=True
     )
-    logger.info("Scheduler: ReduceLROnPlateau (factor=0.5, patience=2)")
+    logger.info("Scheduler: ReduceLROnPlateau (factor=0.5, patience=3)")
 
-    # Loss functions
-    crit_cls = nn.CrossEntropyLoss(weight=class_weights)
+    # Loss function
     crit_reg = nn.MSELoss()
     best_loss = float('inf')
 
@@ -348,114 +357,99 @@ if __name__ == '__main__':
         # ==================== TRAINING PHASE ====================
         model.train()
         train_loss = 0
-        train_cls_loss = 0
-        train_reg_loss = 0
+        train_preds = []
+        train_targets = []
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
         
-        for imgs, count_feats, spec_idx, reg_targets, weights in pbar:
+        for imgs, tabular_feats, reg_targets, weights in pbar:
             # Move to device
             imgs = imgs.to(DEVICE)
-            count_feats = count_feats.to(DEVICE)
-            spec_idx = spec_idx.to(DEVICE)
+            tabular_feats = tabular_feats.to(DEVICE)
             reg_targets = reg_targets.to(DEVICE)
             weights = weights.to(DEVICE)
             
             # Zero gradients
             optimizer.zero_grad()
             
-            # Forward pass with count features
-            pred_spec, pred_reg = model(imgs, count_feats)
+            # Forward pass with tabular features
+            pred_reg = model(imgs, tabular_feats)
 
-            # Calculate losses with sample weights
-            cls_loss = F.cross_entropy(pred_spec, spec_idx, reduction='none')
+            # Calculate loss with sample weights
             reg_loss = F.mse_loss(pred_reg, reg_targets, reduction='none').mean(dim=1)
-            loss = ((cls_loss + reg_loss) * weights).mean()
+            loss = (reg_loss * weights).mean()
 
             # Backward pass
             loss.backward()
             optimizer.step()
             
-            # Accumulate losses
+            # Accumulate
             train_loss += loss.item()
-            train_cls_loss += cls_loss.mean().item()
-            train_reg_loss += reg_loss.mean().item()
+            train_preds.append(pred_reg.detach().cpu().numpy())
+            train_targets.append(reg_targets.cpu().numpy())
             
-            # Update progress bar
-            pbar.set_postfix({
-                'loss': loss.item(),
-                'cls': cls_loss.mean().item(),
-                'reg': reg_loss.mean().item()
-            })
+            pbar.set_postfix({'loss': loss.item()})
 
-        # Calculate average training losses
         avg_train_loss = train_loss / len(train_loader)
-        avg_train_cls_loss = train_cls_loss / len(train_loader)
-        avg_train_reg_loss = train_reg_loss / len(train_loader)
+        
+        # Concatenate training predictions
+        train_preds = np.concatenate(train_preds)
+        train_targets = np.concatenate(train_targets)
 
         # ==================== VALIDATION PHASE ====================
         model.eval()
         val_loss = 0.0
-        val_cls_loss = 0.0
-        val_reg_loss = 0.0
-        
-        all_species_preds = []
-        all_species_true = []
-        all_reg_preds = []
-        all_reg_true = []
+        val_preds = []
+        val_targets = []
 
         with torch.no_grad():
-            for imgs, count_feats, spec_idx, reg_targets, weights in val_loader:
+            for imgs, tabular_feats, reg_targets, weights in val_loader:
                 # Move to device
                 imgs = imgs.to(DEVICE)
-                count_feats = count_feats.to(DEVICE)
-                spec_idx = spec_idx.to(DEVICE)
+                tabular_feats = tabular_feats.to(DEVICE)
                 reg_targets = reg_targets.to(DEVICE)
 
-                # Forward pass with count features
-                pred_spec_logits, pred_reg = model(imgs, count_feats)
+                # Forward pass
+                pred_reg = model(imgs, tabular_feats)
 
-                # Calculate losses (no sample weights for validation)
-                cls_loss = crit_cls(pred_spec_logits, spec_idx)
-                reg_loss = crit_reg(pred_reg, reg_targets)
-                loss = cls_loss + reg_loss
-                
-                # Accumulate losses
+                # Calculate Loss (no sample weights for validation)
+                loss = crit_reg(pred_reg, reg_targets)
                 val_loss += loss.item()
-                val_cls_loss += cls_loss.item()
-                val_reg_loss += reg_loss.item()
 
-                # Store predictions for metrics
-                species_probs = torch.softmax(pred_spec_logits, dim=1)
-                species_preds = torch.argmax(species_probs, dim=1)
-                
-                all_species_preds.append(species_preds.cpu().numpy())
-                all_species_true.append(spec_idx.cpu().numpy())
-                all_reg_preds.append(pred_reg.cpu().numpy())
-                all_reg_true.append(reg_targets.cpu().numpy())
+                # Store predictions
+                val_preds.append(pred_reg.cpu().numpy())
+                val_targets.append(reg_targets.cpu().numpy())
 
-        # Calculate average validation losses
+        # Calculate average validation loss
         avg_val_loss = val_loss / len(val_loader)
-        avg_val_cls_loss = val_cls_loss / len(val_loader)
-        avg_val_reg_loss = val_reg_loss / len(val_loader)
         
         # Step the scheduler
         scheduler.step(avg_val_loss)
 
+        # Concatenate validation predictions
+        val_preds = np.concatenate(val_preds)
+        val_targets = np.concatenate(val_targets)
+
         # ==================== CALCULATE METRICS ====================
-        # Concatenate all batches
-        all_species_preds = np.concatenate(all_species_preds)
-        all_species_true = np.concatenate(all_species_true)
-        all_reg_preds = np.concatenate(all_reg_preds)
-        all_reg_true = np.concatenate(all_reg_true)
+        # Training Metrics
+        train_ndvi_r2 = r2_score(train_targets[:, 0], train_preds[:, 0])
+        train_height_r2 = r2_score(train_targets[:, 1], train_preds[:, 1])
+        train_ndvi_mae = mean_absolute_error(train_targets[:, 0], train_preds[:, 0])
+        train_height_mae = mean_absolute_error(train_targets[:, 1], train_preds[:, 1])
+        train_ndvi_rmse = np.sqrt(mean_squared_error(train_targets[:, 0], train_preds[:, 0]))
+        train_height_rmse = np.sqrt(mean_squared_error(train_targets[:, 1], train_preds[:, 1]))
+        
+        # Validation Metrics
+        val_ndvi_r2 = r2_score(val_targets[:, 0], val_preds[:, 0])
+        val_height_r2 = r2_score(val_targets[:, 1], val_preds[:, 1])
+        val_ndvi_mae = mean_absolute_error(val_targets[:, 0], val_preds[:, 0])
+        val_height_mae = mean_absolute_error(val_targets[:, 1], val_preds[:, 1])
+        val_ndvi_rmse = np.sqrt(mean_squared_error(val_targets[:, 0], val_preds[:, 0]))
+        val_height_rmse = np.sqrt(mean_squared_error(val_targets[:, 1], val_preds[:, 1]))
 
-        # Classification Metrics
-        val_acc = accuracy_score(all_species_true, all_species_preds)
-        val_f1 = f1_score(all_species_true, all_species_preds, average='weighted')
-
-        # Regression Metrics (R²)
-        ndvi_r2 = r2_score(all_reg_true[:, 0], all_reg_preds[:, 0])
-        height_r2 = r2_score(all_reg_true[:, 1], all_reg_preds[:, 1])
+        # Average R² (equal weight)
+        train_avg_r2 = (train_ndvi_r2 + train_height_r2) / 2
+        val_avg_r2 = (val_ndvi_r2 + val_height_r2) / 2
 
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -466,22 +460,29 @@ if __name__ == '__main__':
         logger.info("-"*80)
         logger.info(f"Learning Rate: {current_lr:.6f}")
         logger.info("-"*80)
-        logger.info("Training Losses:")
-        logger.info(f"  Total Loss:          {avg_train_loss:.4f}")
-        logger.info(f"  Classification Loss: {avg_train_cls_loss:.4f}")
-        logger.info(f"  Regression Loss:     {avg_train_reg_loss:.4f}")
+        logger.info("Loss Summary:")
+        logger.info(f"  Train Loss: {avg_train_loss:.4f}")
+        logger.info(f"  Val Loss:   {avg_val_loss:.4f}")
         logger.info("-"*80)
-        logger.info("Validation Losses:")
-        logger.info(f"  Total Loss:          {avg_val_loss:.4f}")
-        logger.info(f"  Classification Loss: {avg_val_cls_loss:.4f}")
-        logger.info(f"  Regression Loss:     {avg_val_reg_loss:.4f}")
+        logger.info("Average R² Score:")
+        logger.info(f"  Train: {train_avg_r2:.4f}")
+        logger.info(f"  Val:   {val_avg_r2:.4f}")
         logger.info("-"*80)
-        logger.info("Validation Metrics:")
-        logger.info(f"  Species Accuracy:    {val_acc * 100:.2f}%")
-        logger.info(f"  Species F1 Score:    {val_f1:.4f}")
-        logger.info(f"  NDVI R²:             {ndvi_r2:.4f}")
-        logger.info(f"  Height R² (log):     {height_r2:.4f}")
+        logger.info("Detailed Metrics:")
+        logger.info("")
+        logger.info("TRAINING SET:")
+        logger.info(f"  NDVI:")
+        logger.info(f"    R²:   {train_ndvi_r2:>7.4f}  |  MAE: {train_ndvi_mae:>7.4f}  |  RMSE: {train_ndvi_rmse:>7.4f}")
+        logger.info(f"  Height (log):")
+        logger.info(f"    R²:   {train_height_r2:>7.4f}  |  MAE: {train_height_mae:>7.4f}  |  RMSE: {train_height_rmse:>7.4f}")
+        logger.info("")
+        logger.info("VALIDATION SET:")
+        logger.info(f"  NDVI:")
+        logger.info(f"    R²:   {val_ndvi_r2:>7.4f}  |  MAE: {val_ndvi_mae:>7.4f}  |  RMSE: {val_ndvi_rmse:>7.4f}")
+        logger.info(f"  Height (log):")
+        logger.info(f"    R²:   {val_height_r2:>7.4f}  |  MAE: {val_height_mae:>7.4f}  |  RMSE: {val_height_rmse:>7.4f}")
         logger.info("="*80)
+        logger.info("")
 
         # ==================== SAVE BEST MODEL ====================
         if avg_val_loss < best_loss:
@@ -495,10 +496,9 @@ if __name__ == '__main__':
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'best_loss': best_loss,
-                'val_acc': val_acc,
-                'val_f1': val_f1,
-                'ndvi_r2': ndvi_r2,
-                'height_r2': height_r2,
+                'val_ndvi_r2': val_ndvi_r2,
+                'val_height_r2': val_height_r2,
+                'val_avg_r2': val_avg_r2,
             }
             
             torch.save(checkpoint, 'stage1_model_checkpoint.pth')
@@ -508,17 +508,11 @@ if __name__ == '__main__':
             logger.info(f"✓ NEW BEST MODEL SAVED!")
             logger.info(f"✓ Improved validation loss by {improvement:.4f}")
             logger.info(f"✓ New best validation loss: {best_loss:.4f}")
-            logger.info(f"✓ Validation Accuracy: {val_acc * 100:.2f}%")
+            logger.info(f"✓ Validation Avg R²: {val_avg_r2:.4f}")
             logger.info("✓" * 40)
-        
-        logger.info("")  # Empty line for readability
+            logger.info("")
 
-    # ==================== TRAINING COMPLETE ====================
     logger.info("="*80)
     logger.info("STAGE 1 TRAINING COMPLETE")
-    logger.info("="*80)
     logger.info(f"Best Validation Loss: {best_loss:.4f}")
-    logger.info(f"Total Epochs Trained: {EPOCHS}")
-    logger.info(f"Model saved to: stage1_model.pth")
-    logger.info(f"Checkpoint saved to: stage1_model_checkpoint.pth")
     logger.info("="*80)

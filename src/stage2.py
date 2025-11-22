@@ -41,7 +41,6 @@ def prepare_data(df_train, logger=None):
     wide_df['month_sin'] = np.sin(2 * np.pi * wide_df['month'] / period)
     wide_df['month_cos'] = np.cos(2 * np.pi * wide_df['month'] / period)
     
-
     wide_df['season'] = wide_df['month'].apply(get_season)
     
     wide_df = wide_df.drop('Sampling_Date', axis=1)
@@ -247,12 +246,12 @@ if __name__ == '__main__':
     # Define parameters
     IMAGE_SIZE = 224
     BATCH_SIZE = 16
-    NUM_EPOCHS = 50
+    NUM_EPOCHS = 100
     LEARNING_RATE = 1e-3
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     logger.info("="*80)
-    logger.info("TRAINING CONFIGURATION")
+    logger.info("STAGE 2: TRAINING CONFIGURATION")
     logger.info("="*80)
     logger.info(f"Image Size: {IMAGE_SIZE}")
     logger.info(f"Batch Size: {BATCH_SIZE}")
@@ -286,13 +285,11 @@ if __name__ == '__main__':
         stratify=X[strat_col]
     )
 
-   
     # Re-combine for preprocessing
     train_df = pd.merge(X_train, y_train, left_index=True, right_index=True)
     val_df = pd.merge(X_val, y_val, left_index=True, right_index=True)
 
-    print_stratification_stats(df_wide, train_df, val_df,strat_col, logger=logger)
-
+    print_stratification_stats(df_wide, train_df, val_df, strat_col, logger=logger)
 
     # Perform Imputation
     logger.info("Imputing missing target values...")
@@ -311,9 +308,37 @@ if __name__ == '__main__':
     train_df = train_df_imputed
     val_df = val_df_imputed
     
+    # Add Species Count Features (calculated from training set only)
+    logger.info("Adding species count features...")
+    species_counts = train_df['Species'].value_counts()
+    species_freq = species_counts / len(train_df)
+    
+    # Log transform counts for better scaling
+    species_counts_log = np.log1p(species_counts)
+    
+    # Add to training dataframe
+    train_df['species_count'] = train_df['Species'].map(species_counts_log)
+    train_df['species_frequency'] = train_df['Species'].map(species_freq)
+    
+    # Add to validation dataframe (using training statistics)
+    val_df['species_count'] = val_df['Species'].map(species_counts_log).fillna(0)
+    val_df['species_frequency'] = val_df['Species'].map(species_freq).fillna(species_freq.mean())
+    
+    logger.info(f"Species count range: {train_df['species_count'].min():.4f} to {train_df['species_count'].max():.4f}")
+    logger.info(f"Species frequency range: {train_df['species_frequency'].min():.4f} to {train_df['species_frequency'].max():.4f}")
+    
+    # Save species statistics for inference
+    species_stats = {
+        'counts_log': species_counts_log.to_dict(),
+        'frequencies': species_freq.to_dict()
+    }
+    joblib.dump(species_stats, 'stage2_species_stats.pkl')
+    logger.info("✓ Species statistics saved")
+    
     # Tabular Feature Preprocessing
     numerical_features = ['Pre_GSHH_NDVI', 'Height_Ave_cm', 'month', 'month_sin', 'month_cos',
-                          'NDVI_Height_MUL', 'NDVI_Height_ADD','NDVI_Height_Ratio']
+                          'NDVI_Height_MUL', 'NDVI_Height_ADD', 'NDVI_Height_Ratio',
+                          'species_count', 'species_frequency']
     categorical_features = ['State', 'Species', 'season'] 
 
     logger.info(f"Numerical features ({len(numerical_features)}): {numerical_features}")
@@ -332,7 +357,7 @@ if __name__ == '__main__':
     
     try:
         joblib.dump(preprocessor, 'stage2_preprocessor.pkl')
-        logger.info("✓ Preprocessor saved as 'preprocessor.pkl'")
+        logger.info("✓ Preprocessor saved as 'stage2_preprocessor.pkl'")
     except Exception as e:
         logger.error(f"Failed to save preprocessor: {e}")
 
@@ -429,7 +454,6 @@ if __name__ == '__main__':
     logger.info("Optimizer: Adam")
     logger.info("Scheduler: CosineAnnealingWarmRestarts (T_0=5, T_mult=2)")
     
-    # Training loop
     # Training loop with detailed metrics
     best_val_r2 = -float('inf')
 

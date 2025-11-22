@@ -536,6 +536,6 @@ if __name__ == '__main__':
             logger.info(f"✓ Model saved! Improved R² by {improvement:.4f} to {best_val_r2:.4f}")
 
     logger.info("="*80)
-    logger.info("TRAINING COMPLETE")
+    logger.info("STAGE 2 TRAINING COMPLETE")
     logger.info(f"Best Validation R²: {best_val_r2:.4f}")
     logger.info("="*80)

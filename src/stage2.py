@@ -241,11 +241,11 @@ class MultiModalModel(nn.Module):
 
 if __name__ == '__main__':
 
-    logger = setup_logging()
+    logger = setup_logging(file_name_part="stage2_training")
     
     # Define parameters
     IMAGE_SIZE = 224
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
     NUM_EPOCHS = 100
     LEARNING_RATE = 1e-3
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -701,7 +701,7 @@ if __name__ == '__main__':
             torch.save(model.state_dict(), 'stage2_model_weighted.pth')
             
             logger.info("✓" * 40)
-            logger.info(f"✓ NEW BEST MODEL SAVED!")
+            logger.info(f"✓ NEW BEST MODEL SAVED FOR STAGE 2!")
             logger.info(f"✓ Improved Official R² by {improvement:.4f}")
             logger.info(f"✓ New best Official R²: {best_val_r2:.4f}")
             logger.info(f"✓ Validation Loss: {avg_val_loss:.4f}")

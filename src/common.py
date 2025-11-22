@@ -21,7 +21,7 @@ import warnings
 from sklearn.metrics import r2_score, accuracy_score, f1_score
 
 
-def setup_logging(log_dir='logs'):
+def setup_logging(log_dir='logs',file_name_part =None) -> logging.Logger:
     """
     Set up logging to both console and file with timestamps.
     Creates a new log file for each run.
@@ -30,7 +30,7 @@ def setup_logging(log_dir='logs'):
     
     # Create log filename with timestamp
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_file = os.path.join(log_dir, f'stage1_training_{timestamp}.log')
+    log_file = os.path.join(log_dir, f'{file_name_part}_{timestamp}.log')
     
     # Create logger
     logger = logging.getLogger('Stage1Logger')

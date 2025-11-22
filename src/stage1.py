@@ -148,7 +148,7 @@ if __name__ == '__main__':
     # Configuration
     IMAGE_SIZE = 224
     BATCH_SIZE = 32
-    EPOCHS = 50
+    EPOCHS = 100
     LR = 3e-4
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     BACKBONE_SIZE = 'b3'

@@ -51,14 +51,19 @@ class Stage1Dataset(Dataset):
         # Targets
         species_idx = self.le.transform([row['Species']])[0]
         ndvi = row['Pre_GSHH_NDVI']
-        # Log transform height for stability
         height = np.log1p(row['Height_Ave_cm'])
+
+        # Count features as inputs
+        species_count = row.get('species_count', 0)
+        species_freq = row.get('species_frequency', 0.0)
+        count_features = torch.tensor([species_count, species_freq], dtype=torch.float32)
 
         # Get sample weight
         weight = row[self.weight_col]
 
         return (
             image,
+            count_features,  # New: count features as input
             torch.tensor(species_idx, dtype=torch.long),
             torch.tensor([ndvi, height], dtype=torch.float32),
             torch.tensor(weight, dtype=torch.float32)
@@ -70,11 +75,22 @@ class InputPredictorModel(nn.Module):
         super().__init__()
         self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
         in_features = self.backbone.num_features
+        
+        # Project count features to embedding space
+        self.count_projection = nn.Sequential(
+            nn.Linear(2, 64),  # 2 input features: count and frequency
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 32)
+        )
+        
+        # Combined features dimension
+        combined_features = in_features + 32
 
         # Head 1: Species Classification
         self.species_head = nn.Sequential(
             nn.Dropout(0.2),
-            nn.Linear(in_features, 512),
+            nn.Linear(combined_features, 512),
             nn.ReLU(),
             nn.Linear(512, num_species)
         )
@@ -82,15 +98,22 @@ class InputPredictorModel(nn.Module):
         # Head 2: Regression (NDVI & Log-Height)
         self.reg_head = nn.Sequential(
             nn.Dropout(0.2),
-            nn.Linear(in_features, 256),
+            nn.Linear(combined_features, 256),
             nn.ReLU(),
             nn.Linear(256, 2)
         )
 
-    def forward(self, x):
-        features = self.backbone(x)
+    def forward(self, x, count_features):
+        # Extract image features
+        img_features = self.backbone(x)
+        
+        # Project count features
+        count_embed = self.count_projection(count_features)
+        
+        # Concatenate image and count features
+        features = torch.cat([img_features, count_embed], dim=1)
+        
         return self.species_head(features), self.reg_head(features)
-
 
 
 def impute_missing_features(train_df, val_df=None, logger=None):
@@ -194,6 +217,36 @@ if __name__ == '__main__':
         stratify=df_unique[strat_col]
     )
 
+   # After train/val split
+    logger.info("Adding species count features...")
+
+    # Calculate species counts from training set only (to avoid data leakage)
+    species_counts = train_df['Species'].value_counts()
+    species_freq = species_counts / len(train_df)
+
+    # Normalize counts (optional but recommended)
+    from sklearn.preprocessing import StandardScaler
+    count_scaler = StandardScaler()
+    normalized_counts = count_scaler.fit_transform(species_counts.values.reshape(-1, 1))
+    species_counts_norm = pd.Series(normalized_counts.flatten(), index=species_counts.index)
+
+    # Add to train set
+    train_df['species_count'] = train_df['Species'].map(species_counts_norm)
+    train_df['species_frequency'] = train_df['Species'].map(species_freq)
+
+    # Add to val set (using training statistics)
+    val_df['species_count'] = val_df['Species'].map(species_counts_norm).fillna(0)
+    val_df['species_frequency'] = val_df['Species'].map(species_freq).fillna(species_freq.mean())
+
+    logger.info(f"Species count range: {train_df['species_count'].min():.4f} to {train_df['species_count'].max():.4f}")
+    logger.info(f"Species frequency range: {train_df['species_frequency'].min():.4f} to {train_df['species_frequency'].max():.4f}")
+
+    # Save the scaler for inference
+    joblib.dump(count_scaler, 'stage1_count_scaler.pkl')
+    joblib.dump(species_freq.to_dict(), 'stage1_species_freq.pkl')
+    logger.info("✓ Count scaler and frequency mapping saved")
+
+
     print_stratification_stats(df_unique, train_df, val_df,strat_col, logger=logger)
 
     train_df, val_df = impute_missing_features(train_df, val_df, logger=logger)
@@ -292,65 +345,105 @@ if __name__ == '__main__':
     logger.info("="*80)
 
     for epoch in range(EPOCHS):
-        # Training Phase
+        # ==================== TRAINING PHASE ====================
         model.train()
         train_loss = 0
+        train_cls_loss = 0
+        train_reg_loss = 0
+        
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
         
-        for imgs, spec_idx, reg_targets, weights in pbar:
-            imgs, spec_idx, reg_targets = imgs.to(DEVICE), spec_idx.to(DEVICE), reg_targets.to(DEVICE)
+        for imgs, count_feats, spec_idx, reg_targets, weights in pbar:
+            # Move to device
+            imgs = imgs.to(DEVICE)
+            count_feats = count_feats.to(DEVICE)
+            spec_idx = spec_idx.to(DEVICE)
+            reg_targets = reg_targets.to(DEVICE)
             weights = weights.to(DEVICE)
+            
+            # Zero gradients
             optimizer.zero_grad()
-            pred_spec, pred_reg = model(imgs)
+            
+            # Forward pass with count features
+            pred_spec, pred_reg = model(imgs, count_feats)
 
             # Calculate losses with sample weights
             cls_loss = F.cross_entropy(pred_spec, spec_idx, reduction='none')
             reg_loss = F.mse_loss(pred_reg, reg_targets, reduction='none').mean(dim=1)
             loss = ((cls_loss + reg_loss) * weights).mean()
 
+            # Backward pass
             loss.backward()
             optimizer.step()
+            
+            # Accumulate losses
             train_loss += loss.item()
-            pbar.set_postfix({'loss': loss.item()})
+            train_cls_loss += cls_loss.mean().item()
+            train_reg_loss += reg_loss.mean().item()
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'loss': loss.item(),
+                'cls': cls_loss.mean().item(),
+                'reg': reg_loss.mean().item()
+            })
 
+        # Calculate average training losses
         avg_train_loss = train_loss / len(train_loader)
+        avg_train_cls_loss = train_cls_loss / len(train_loader)
+        avg_train_reg_loss = train_reg_loss / len(train_loader)
 
-        # Validation Phase
+        # ==================== VALIDATION PHASE ====================
         model.eval()
         val_loss = 0.0
+        val_cls_loss = 0.0
+        val_reg_loss = 0.0
+        
         all_species_preds = []
         all_species_true = []
         all_reg_preds = []
         all_reg_true = []
 
         with torch.no_grad():
-            for imgs, spec_idx, reg_targets, weights in val_loader:
+            for imgs, count_feats, spec_idx, reg_targets, weights in val_loader:
+                # Move to device
                 imgs = imgs.to(DEVICE)
+                count_feats = count_feats.to(DEVICE)
                 spec_idx = spec_idx.to(DEVICE)
                 reg_targets = reg_targets.to(DEVICE)
 
-                # Forward pass
-                pred_spec_logits, pred_reg = model(imgs)
+                # Forward pass with count features
+                pred_spec_logits, pred_reg = model(imgs, count_feats)
 
-                # Calculate Loss (no sample weights for validation)
-                loss = crit_cls(pred_spec_logits, spec_idx) + crit_reg(pred_reg, reg_targets)
+                # Calculate losses (no sample weights for validation)
+                cls_loss = crit_cls(pred_spec_logits, spec_idx)
+                reg_loss = crit_reg(pred_reg, reg_targets)
+                loss = cls_loss + reg_loss
+                
+                # Accumulate losses
                 val_loss += loss.item()
+                val_cls_loss += cls_loss.item()
+                val_reg_loss += reg_loss.item()
 
-                # Store Predictions
+                # Store predictions for metrics
                 species_probs = torch.softmax(pred_spec_logits, dim=1)
                 species_preds = torch.argmax(species_probs, dim=1)
+                
                 all_species_preds.append(species_preds.cpu().numpy())
                 all_species_true.append(spec_idx.cpu().numpy())
                 all_reg_preds.append(pred_reg.cpu().numpy())
                 all_reg_true.append(reg_targets.cpu().numpy())
 
-        # Calculate Metrics
+        # Calculate average validation losses
         avg_val_loss = val_loss / len(val_loader)
+        avg_val_cls_loss = val_cls_loss / len(val_loader)
+        avg_val_reg_loss = val_reg_loss / len(val_loader)
         
-        # Step Scheduler
+        # Step the scheduler
         scheduler.step(avg_val_loss)
 
-        # Concatenate batches
+        # ==================== CALCULATE METRICS ====================
+        # Concatenate all batches
         all_species_preds = np.concatenate(all_species_preds)
         all_species_true = np.concatenate(all_species_true)
         all_reg_preds = np.concatenate(all_reg_preds)
@@ -367,25 +460,65 @@ if __name__ == '__main__':
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
 
-        # Log epoch results
-        epoch_summary = (
-            f"Epoch {epoch + 1}/{EPOCHS} - "
-            f"LR: {current_lr:.6f}, "
-            f"Train Loss: {avg_train_loss:.4f}, "
-            f"Val Loss: {avg_val_loss:.4f}"
-        )
-        logger.info(epoch_summary)
-        logger.info(f"  Species - Accuracy: {val_acc * 100:.2f}%, F1: {val_f1:.4f}")
-        logger.info(f"  Regression - NDVI R²: {ndvi_r2:.4f}, Height R² (log): {height_r2:.4f}")
+        # ==================== LOG EPOCH RESULTS ====================
+        logger.info("="*80)
+        logger.info(f"Epoch {epoch + 1}/{EPOCHS} Summary")
+        logger.info("-"*80)
+        logger.info(f"Learning Rate: {current_lr:.6f}")
+        logger.info("-"*80)
+        logger.info("Training Losses:")
+        logger.info(f"  Total Loss:          {avg_train_loss:.4f}")
+        logger.info(f"  Classification Loss: {avg_train_cls_loss:.4f}")
+        logger.info(f"  Regression Loss:     {avg_train_reg_loss:.4f}")
+        logger.info("-"*80)
+        logger.info("Validation Losses:")
+        logger.info(f"  Total Loss:          {avg_val_loss:.4f}")
+        logger.info(f"  Classification Loss: {avg_val_cls_loss:.4f}")
+        logger.info(f"  Regression Loss:     {avg_val_reg_loss:.4f}")
+        logger.info("-"*80)
+        logger.info("Validation Metrics:")
+        logger.info(f"  Species Accuracy:    {val_acc * 100:.2f}%")
+        logger.info(f"  Species F1 Score:    {val_f1:.4f}")
+        logger.info(f"  NDVI R²:             {ndvi_r2:.4f}")
+        logger.info(f"  Height R² (log):     {height_r2:.4f}")
+        logger.info("="*80)
 
-        # Save best model
+        # ==================== SAVE BEST MODEL ====================
         if avg_val_loss < best_loss:
             improvement = best_loss - avg_val_loss
             best_loss = avg_val_loss
+            
+            # Save model checkpoint
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_loss': best_loss,
+                'val_acc': val_acc,
+                'val_f1': val_f1,
+                'ndvi_r2': ndvi_r2,
+                'height_r2': height_r2,
+            }
+            
+            torch.save(checkpoint, 'stage1_model_checkpoint.pth')
             torch.save(model.state_dict(), 'stage1_model.pth')
-            logger.info(f"✓ Model saved! Improved validation loss by {improvement:.4f} to {best_loss:.4f}")
+            
+            logger.info("✓" * 40)
+            logger.info(f"✓ NEW BEST MODEL SAVED!")
+            logger.info(f"✓ Improved validation loss by {improvement:.4f}")
+            logger.info(f"✓ New best validation loss: {best_loss:.4f}")
+            logger.info(f"✓ Validation Accuracy: {val_acc * 100:.2f}%")
+            logger.info("✓" * 40)
+        
+        logger.info("")  # Empty line for readability
 
+    # ==================== TRAINING COMPLETE ====================
     logger.info("="*80)
     logger.info("STAGE 1 TRAINING COMPLETE")
+    logger.info("="*80)
     logger.info(f"Best Validation Loss: {best_loss:.4f}")
+    logger.info(f"Total Epochs Trained: {EPOCHS}")
+    logger.info(f"Model saved to: stage1_model.pth")
+    logger.info(f"Checkpoint saved to: stage1_model_checkpoint.pth")
     logger.info("="*80)

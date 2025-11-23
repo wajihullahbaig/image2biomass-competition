@@ -21,6 +21,41 @@ import warnings
 from sklearn.metrics import r2_score, accuracy_score, f1_score
 
 
+# CONFIGURATIONS
+IMAGE_SIZE = 224
+BATCH_SIZE = 32
+NUM_EPOCHS = 100
+LEARNING_RATE = 3e-4
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
+
+
+def get_image_data_transforms()->tuple:
+    """
+    Returns the training and validation data augmentation transforms.
+    """
+    # Data Augmentation Transforms
+    train_transform = transforms.Compose([
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomVerticalFlip(),
+                transforms.RandomRotation(15),
+                transforms.RandomAutocontrast(),
+                transforms.RandomEqualize(),
+                transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+            ])
+
+    val_transform = transforms.Compose([
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+            ])
+    return train_transform, val_transform       
+
 def setup_logging(log_dir='logs',file_name_part =None) -> logging.Logger:
     """
     Set up logging to both console and file with timestamps.
@@ -141,3 +176,52 @@ def get_season(month):
         return 'Winter'
     else:
         return 'Spring'        
+    
+
+from torch.utils.data import Sampler
+import random
+
+class SeasonalCurriculumSampler(Sampler):
+    """
+    Samples batches in seasonal order: Summer → Autumn → Winter → Spring
+    Then repeats. Great for learning phenology.
+    """
+    def __init__(self, data_df, batch_size, shuffle_within_season=True, seed=42):
+        self.batch_size = batch_size
+        self.shuffle_within_season = shuffle_within_season
+        random.seed(seed)
+        np.random.seed(seed)
+
+        # Group indices by season
+        self.indices_by_season = {
+            'Summer': [],
+            'Autumn': [],
+            'Winter': [],
+            'Spring': []
+        }
+        for idx, row in data_df.iterrows():
+            season = get_season(row['Sampling_Date'].month)
+            self.indices_by_season[season].append(idx)
+
+        # Shuffle within each season
+        if shuffle_within_season:
+            for season in self.indices_by_season:
+                random.shuffle(self.indices_by_season[season])
+
+        # Create ordered list: Summer → Autumn → Winter → Spring
+        self.ordered_indices = []
+        for season in ['Summer', 'Autumn', 'Winter', 'Spring']:
+            self.ordered_indices.extend(self.indices_by_season[season])
+
+        self.total_samples = len(self.ordered_indices)
+
+    def __iter__(self):
+        # Create batches from the curriculum order
+        indices = self.ordered_indices.copy()
+        batches = [indices[i:i + self.batch_size] for i in range(0, len(indices), self.batch_size)]
+        random.shuffle(batches)  # optional: shuffle batch order, keep seasonal flow inside
+        for batch in batches:
+            yield batch
+
+    def __len__(self):
+        return (self.total_samples + self.batch_size - 1) // self.batch_size    

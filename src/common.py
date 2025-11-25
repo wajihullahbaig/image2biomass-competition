@@ -1,24 +1,14 @@
+# common.py
 import os
 import pandas as pd
 import numpy as np
 import logging
 from datetime import datetime
 from typing import Optional
-from sklearn.utils import compute_class_weight
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from PIL import Image
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import timm
-import joblib
-from tqdm import tqdm
-import warnings
-from sklearn.metrics import r2_score, accuracy_score, f1_score
+from torch.utils.data import Sampler
+import random
 
 
 # CONFIGURATIONS
@@ -177,51 +167,44 @@ def get_season(month):
     else:
         return 'Spring'        
     
-
-from torch.utils.data import Sampler
-import random
-
 class SeasonalCurriculumSampler(Sampler):
     """
-    Samples batches in seasonal order: Summer → Autumn → Winter → Spring
-    Then repeats. Great for learning phenology.
+    Samples indices in seasonal order: Summer → Autumn → Winter → Spring.
+    Yields individual indices. The DataLoader handles the batching.
     """
-    def __init__(self, data_df, batch_size, shuffle_within_season=True, seed=42):
-        self.batch_size = batch_size
+    def __init__(self, data_df, shuffle_within_season=True, seed=42):
+        self.data_df = data_df
         self.shuffle_within_season = shuffle_within_season
-        random.seed(seed)
-        np.random.seed(seed)
+        self.seed = seed
+        self.season_order = ['Summer', 'Autumn', 'Winter', 'Spring']
+        self._generate_indices()
 
-        # Group indices by season
-        self.indices_by_season = {
-            'Summer': [],
-            'Autumn': [],
-            'Winter': [],
-            'Spring': []
-        }
-        for idx, row in data_df.iterrows():
-            season = get_season(row['Sampling_Date'].month)
-            self.indices_by_season[season].append(idx)
+    def _generate_indices(self):
+        # Reset seeds so order is deterministic per epoch if needed
+        # (Move this to __iter__ if you want different shuffles every epoch)
+        random.seed(self.seed) 
+        
+        # 1. Group indices by season
+        indices_by_season = {s: [] for s in self.season_order}
+        
+        # Iterate efficiently
+        for idx in range(len(self.data_df)):
+            # Ensure we access the 'season' column safely
+            # We use iloc to get the row by integer position, regardless of DataFrame index
+            season = self.data_df.iloc[idx]['season']
+            if season in indices_by_season:
+                indices_by_season[season].append(idx)
 
-        # Shuffle within each season
-        if shuffle_within_season:
-            for season in self.indices_by_season:
-                random.shuffle(self.indices_by_season[season])
-
-        # Create ordered list: Summer → Autumn → Winter → Spring
+        # 2. Shuffle within seasons and flatten list
         self.ordered_indices = []
-        for season in ['Summer', 'Autumn', 'Winter', 'Spring']:
-            self.ordered_indices.extend(self.indices_by_season[season])
-
-        self.total_samples = len(self.ordered_indices)
+        for season in self.season_order:
+            season_ind = indices_by_season[season]
+            if self.shuffle_within_season:
+                random.shuffle(season_ind)
+            self.ordered_indices.extend(season_ind)
 
     def __iter__(self):
-        # Create batches from the curriculum order
-        indices = self.ordered_indices.copy()
-        batches = [indices[i:i + self.batch_size] for i in range(0, len(indices), self.batch_size)]
-        random.shuffle(batches)  # optional: shuffle batch order, keep seasonal flow inside
-        for batch in batches:
-            yield batch
+        return iter(self.ordered_indices)
 
     def __len__(self):
-        return (self.total_samples + self.batch_size - 1) // self.batch_size    
+        return len(self.data_df)

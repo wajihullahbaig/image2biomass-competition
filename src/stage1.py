@@ -1,3 +1,4 @@
+# stage1.py
 import os
 import pandas as pd
 import numpy as np
@@ -22,7 +23,7 @@ from tqdm import tqdm
 import warnings
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
-from common import BATCH_SIZE, DEVICE, NUM_EPOCHS, IMAGE_SIZE, LEARNING_RATE, calculate_sample_weights, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging
+from common import BATCH_SIZE, DEVICE, NUM_EPOCHS, IMAGE_SIZE, LEARNING_RATE, SeasonalCurriculumSampler, calculate_sample_weights, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging
 
 # Suppress generic warnings
 warnings.filterwarnings("ignore")
@@ -75,7 +76,6 @@ class InputPredictorModel(nn.Module):
         self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
         in_features = self.backbone.num_features
         
-        # Project tabular features (species one-hot + count features)
         self.tabular_projection = nn.Sequential(
             nn.Linear(tabular_feature_size, 128),
             nn.ReLU(),
@@ -83,10 +83,8 @@ class InputPredictorModel(nn.Module):
             nn.Linear(128, 64)
         )
         
-        # Combined features dimension
         combined_features = in_features + 64
 
-        # Regression Head (NDVI & Log-Height)
         self.reg_head = nn.Sequential(
             nn.Dropout(0.3),
             nn.Linear(combined_features, 256),
@@ -94,20 +92,36 @@ class InputPredictorModel(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Linear(128, 2)  # Output: [NDVI, log(Height)]
+            nn.Linear(128, 2)  # Raw Output: [NDVI, log(Height)]
         )
 
     def forward(self, x, tabular_features):
-        # Extract image features
         img_features = self.backbone(x)
-        
-        # Project tabular features
         tab_embed = self.tabular_projection(tabular_features)
-        
-        # Concatenate image and tabular features
         features = torch.cat([img_features, tab_embed], dim=1)
         
-        return self.reg_head(features)
+        # Get the raw, unconstrained output from the regression head
+        raw_preds = self.reg_head(features)
+        
+        # Split the output into its two components
+        # raw_preds[:, 0] is for NDVI
+        # raw_preds[:, 1] is for log_height
+        raw_ndvi, raw_log_height = raw_preds.split(1, dim=1)
+
+        # ------------------------------------------------------------------
+        # APPLY PHYSICAL CONSTRAINTS
+        # ------------------------------------------------------------------
+        # 1. Constrain NDVI to be between -1 and 1
+        pred_ndvi = torch.tanh(raw_ndvi)
+        
+        # 2. Constrain log(Height) to be non-negative (since Height >= 0)
+        pred_log_height = F.softplus(raw_log_height)
+        # ------------------------------------------------------------------
+        
+        # Concatenate the constrained predictions back together
+        constrained_preds = torch.cat([pred_ndvi, pred_log_height], dim=1)
+        
+        return constrained_preds
 
 
 def impute_missing_features(train_df, val_df=None, logger=None):
@@ -143,7 +157,7 @@ def impute_missing_features(train_df, val_df=None, logger=None):
 
 if __name__ == '__main__':
     # Setup logging first
-    for b in ['b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7']:
+    for b in ['b0','b1','b2','b3','b4','b5','b6' ,'b7']:
         logger = setup_logging(file_name_part=f"stage1_training_{b}")
         
         BACKBONE_SIZE = b
@@ -320,7 +334,7 @@ if __name__ == '__main__':
         logger.debug(f"Tabular features: {tabular_feature_names}")
         
         # Create processed dataframes
-        non_processed_cols = ['sample_id', 'image_path', 'Pre_GSHH_NDVI', 'Height_Ave_cm', weight_col]
+        non_processed_cols = ['sample_id', 'image_path', 'Pre_GSHH_NDVI', 'Height_Ave_cm', weight_col,'season']
         
         train_df_processed = pd.DataFrame(
             train_tabular,
@@ -337,6 +351,12 @@ if __name__ == '__main__':
         )
         val_df_processed = pd.concat([val_df_processed, val_df[non_processed_cols]], axis=1)
 
+        # Use SeasonalCurriculumSampler for training
+        train_sampler = SeasonalCurriculumSampler(
+            data_df=train_df_processed,
+            shuffle_within_season=False,
+            seed=42
+        )
         # Image Transformations
         logger.info("Setting up image transformations with augmentations...")
         train_transform, val_transform = get_image_data_transforms()
@@ -345,8 +365,10 @@ if __name__ == '__main__':
         train_loader = DataLoader(
             Stage1Dataset(train_df_processed, tabular_feature_names, 'train', train_transform, weight_col=weight_col),
             batch_size=BATCH_SIZE,
-            shuffle=True,
-            num_workers=4
+            shuffle=False,
+            num_workers=4,
+            sampler=train_sampler,
+            drop_last=True          
         )
 
         val_loader = DataLoader(

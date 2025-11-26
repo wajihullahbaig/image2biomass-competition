@@ -1,3 +1,4 @@
+# stage2.py
 import joblib
 import pandas as pd
 import numpy as np
@@ -16,7 +17,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 
 # Assuming these exist in your common.py
-from common import BATCH_SIZE, DEVICE, IMAGE_SIZE, LEARNING_RATE, NUM_EPOCHS, SeasonalCurriculumSampler, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging
+from common import BATCH_SIZE, DEVICE, IMAGE_SIZE, LEARNING_RATE, NUM_EPOCHS, SeasonalCurriculumSampler, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging, calculate_count_frequency_features
 
 # -------------------------------------------------------------------
 # 1. HELPER FUNCTIONS
@@ -328,23 +329,23 @@ if __name__ == '__main__':
         train_df = train_df_imputed
         val_df = val_df_imputed
         
-        # Species Features
-        logger.info("Adding species count features...")
-        species_counts = train_df['Species'].value_counts()
-        species_freq = species_counts / len(train_df)
-        species_counts_log = np.log1p(species_counts)
-        
-        train_df['species_count'] = train_df['Species'].map(species_counts_log)
-        train_df['species_frequency'] = train_df['Species'].map(species_freq)
-        val_df['species_count'] = val_df['Species'].map(species_counts_log).fillna(0)
-        val_df['species_frequency'] = val_df['Species'].map(species_freq).fillna(species_freq.mean())
-        
-        joblib.dump({'counts_log': species_counts_log.to_dict(), 'frequencies': species_freq.to_dict()}, 'stage2_species_stats.pkl')
+        # ============================================================================
+        # REFACTORED: ADD SPECIES COUNT FEATURES (GLOBAL AND SEASONAL)
+        # ============================================================================
+        train_df, val_df, count_freq_features = calculate_count_frequency_features(
+            train_df=train_df,
+            val_df=val_df,
+            group_col='Species',
+            local_group_col='season',
+            logger=logger
+        )
         
         # Preprocessing
-        numerical_features = ['Pre_GSHH_NDVI', 'Height_Ave_cm', 'month', 'month_sin', 'month_cos',
-                            'NDVI_Height_MUL', 'NDVI_Height_ADD', 'NDVI_Height_Ratio',
-                            'species_count', 'species_frequency']
+        base_numerical_features = [
+            'Pre_GSHH_NDVI', 'Height_Ave_cm', 'month', 'month_sin', 'month_cos',
+            'NDVI_Height_MUL', 'NDVI_Height_ADD', 'NDVI_Height_Ratio'
+        ]
+        numerical_features = base_numerical_features + count_freq_features
         categorical_features = ['State', 'Species', 'season'] 
 
         preprocessor = ColumnTransformer(

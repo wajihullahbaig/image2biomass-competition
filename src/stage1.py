@@ -23,7 +23,7 @@ from tqdm import tqdm
 import warnings
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
-from common import BATCH_SIZE, DEVICE, NUM_EPOCHS, IMAGE_SIZE, LEARNING_RATE, SeasonalCurriculumSampler, calculate_sample_weights, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging
+from common import BATCH_SIZE, DEVICE, NUM_EPOCHS, IMAGE_SIZE, LEARNING_RATE, SeasonalCurriculumSampler, calculate_sample_weights, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging, calculate_count_frequency_features
 
 # Suppress generic warnings
 warnings.filterwarnings("ignore")
@@ -207,82 +207,16 @@ if __name__ == '__main__':
         print_stratification_stats(df_unique, train_df, val_df, strat_col, logger=logger)
 
         # ============================================================================
-        # ADD SPECIES COUNT FEATURES (GLOBAL AND SEASONAL) - NO LEAKAGE
+        # REFACTORED: ADD SPECIES COUNT FEATURES (GLOBAL AND SEASONAL)
         # ============================================================================
-        logger.info("Adding species count features (global and seasonal)...")
-        
-        # GLOBAL SPECIES COUNTS (from training set only)
-        species_counts_global = train_df['Species'].value_counts()
-        species_freq_global = species_counts_global / len(train_df)
-        species_counts_global_log = np.log1p(species_counts_global)
-        
-        logger.info(f"Total unique species in training: {len(species_counts_global)}")
-        
-        # SEASONAL SPECIES COUNTS (from training set only)
-        season_species_counts = train_df.groupby(['season', 'Species']).size()
-        season_species_counts_log = np.log1p(season_species_counts)
-        
-        # Calculate frequency within each season
-        season_totals = train_df.groupby('season').size()
-        season_species_freq = season_species_counts / season_species_counts.index.map(
-            lambda x: season_totals[x[0]]
+        train_df, val_df, count_freq_features = calculate_count_frequency_features(
+            train_df=train_df,
+            val_df=val_df,
+            group_col='Species',
+            local_group_col='season',
+            logger=logger
         )
         
-        logger.info(f"Season distribution in training: {season_totals.to_dict()}")
-        
-        # ADD FEATURES TO TRAINING SET
-        # Global counts
-        train_df['species_count_global'] = train_df['Species'].map(species_counts_global_log)
-        train_df['species_freq_global'] = train_df['Species'].map(species_freq_global)
-        
-        # Seasonal counts
-        train_df['species_count_seasonal'] = train_df.apply(
-            lambda row: season_species_counts_log.get((row['season'], row['Species']), 0),
-            axis=1
-        )
-        train_df['species_freq_seasonal'] = train_df.apply(
-            lambda row: season_species_freq.get((row['season'], row['Species']), 0),
-            axis=1
-        )
-        
-        logger.info("Training set feature statistics:")
-        logger.info(f"  Global count range: {train_df['species_count_global'].min():.4f} to {train_df['species_count_global'].max():.4f}")
-        logger.info(f"  Global freq range: {train_df['species_freq_global'].min():.4f} to {train_df['species_freq_global'].max():.4f}")
-        logger.info(f"  Seasonal count range: {train_df['species_count_seasonal'].min():.4f} to {train_df['species_count_seasonal'].max():.4f}")
-        logger.info(f"  Seasonal freq range: {train_df['species_freq_seasonal'].min():.4f} to {train_df['species_freq_seasonal'].max():.4f}")
-        
-        # ADD FEATURES TO VALIDATION SET (using training statistics only - NO LEAKAGE)
-        train_mean_freq_global = species_freq_global.mean()
-        train_mean_freq_seasonal = season_species_freq.mean()
-        
-        val_df['species_count_global'] = val_df['Species'].map(species_counts_global_log).fillna(0)
-        val_df['species_freq_global'] = val_df['Species'].map(species_freq_global).fillna(train_mean_freq_global)
-        
-        val_df['species_count_seasonal'] = val_df.apply(
-            lambda row: season_species_counts_log.get((row['season'], row['Species']), 0),
-            axis=1
-        )
-        val_df['species_freq_seasonal'] = val_df.apply(
-            lambda row: season_species_freq.get((row['season'], row['Species']), train_mean_freq_seasonal),
-            axis=1
-        )
-        
-        logger.info("Validation set feature statistics:")
-        logger.info(f"  Global count range: {val_df['species_count_global'].min():.4f} to {val_df['species_count_global'].max():.4f}")
-        logger.info(f"  Global freq range: {val_df['species_freq_global'].min():.4f} to {val_df['species_freq_global'].max():.4f}")
-        logger.info(f"  Seasonal count range: {val_df['species_count_seasonal'].min():.4f} to {val_df['species_count_seasonal'].max():.4f}")
-        logger.info(f"  Seasonal freq range: {val_df['species_freq_seasonal'].min():.4f} to {val_df['species_freq_seasonal'].max():.4f}")
-        
-        # Check for unseen combinations
-        val_combinations = set(zip(val_df['season'], val_df['Species']))
-        train_combinations = set(season_species_counts.index)
-        unseen_combinations = val_combinations - train_combinations
-        if unseen_combinations:
-            logger.info(f"Warning: {len(unseen_combinations)} species-season combinations in validation not seen in training")
-            logger.info(f"These will use default values (0 for count, {train_mean_freq_seasonal:.4f} for frequency)")
-        else:
-            logger.info("✓ All validation species-season combinations were seen in training")
-
         # Impute missing features
         train_df, val_df = impute_missing_features(train_df, val_df, logger=logger)
 
@@ -294,12 +228,7 @@ if __name__ == '__main__':
         logger.info("Sample weights applied. Validation weights set to 1.0")
 
         # Define tabular features for preprocessing
-        numerical_features = [
-            'species_count_global', 
-            'species_freq_global',
-            'species_count_seasonal',
-            'species_freq_seasonal'
-        ]
+        numerical_features = count_freq_features
         categorical_features = ['Species']
         
         logger.info(f"Numerical features ({len(numerical_features)}): {numerical_features}")
@@ -408,6 +337,7 @@ if __name__ == '__main__':
         # Loss function
         crit_reg = nn.MSELoss()
         best_loss = float('inf')
+        best_val_avg_r2 = -float('inf')
 
         logger.info("="*80)
         logger.info("STARTING TRAINING - STAGE 1")
@@ -548,6 +478,7 @@ if __name__ == '__main__':
             if avg_val_loss < best_loss:
                 improvement = best_loss - avg_val_loss
                 best_loss = avg_val_loss
+                best_val_avg_r2 = val_avg_r2
                 
                 # Save model checkpoint
                 checkpoint = {
@@ -568,11 +499,12 @@ if __name__ == '__main__':
                 logger.info(f"✓ NEW BEST MODEL SAVED FOR STAGE 1!")
                 logger.info(f"✓ Improved validation loss by {improvement:.4f}")
                 logger.info(f"✓ New best validation loss: {best_loss:.4f}")
-                logger.info(f"✓ Validation Avg R²: {val_avg_r2:.4f}")
+                logger.info(f"✓ Best Validation Avg R²: {best_val_avg_r2:.4f}")
                 logger.info("✓" * 40)
                 logger.info("")
 
         logger.info("="*80)
         logger.info("STAGE 1 TRAINING COMPLETE")
         logger.info(f"Best Validation Loss: {best_loss:.4f}")
+        logger.info(f"Best Validation Avg R²: {best_val_avg_r2:.4f}")
         logger.info("="*80)

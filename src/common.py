@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 import torch
 from torchvision import transforms
 from torch.utils.data import Sampler
@@ -124,7 +124,95 @@ def calculate_sample_weights(df, proportions=None, prop_col=None, weight_col='sa
 
     return df, weight_col
 
+def calculate_count_frequency_features(
+    train_df: pd.DataFrame, 
+    val_df: pd.DataFrame, 
+    group_col: str, 
+    local_group_col: Optional[str] = None, 
+    logger: Optional[logging.Logger] = None
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
+    """
+    Calculates and adds global and optional local count/frequency features.
+    
+    - Statistics are calculated ONLY from the training set to prevent data leakage.
+    - The validation set is imputed using the training set statistics.
+    - Unseen categories in validation are handled by filling with 0 for log-counts
+      and the mean of training frequencies for frequencies.
+    
+    Returns:
+        A tuple containing (processed_train_df, processed_val_df, list_of_new_features).
+    """
+    if logger:
+        logger.info("-" * 50)
+        logger.info("Calculating count and frequency features...")
+        
+    # --- Create copies to avoid SettingWithCopyWarning ---
+    train_df = train_df.copy()
+    val_df = val_df.copy()
 
+    # --- Feature Names ---
+    global_count_feat = f'{group_col.lower()}_count_global'
+    global_freq_feat = f'{group_col.lower()}_freq_global'
+    
+    # --- 1. GLOBAL FEATURES (calculated from training set) ---
+    if logger: logger.info(f"Calculating global features for '{group_col}'...")
+    
+    global_counts = train_df[group_col].value_counts()
+    global_freq = global_counts / len(train_df)
+    global_counts_log = np.log1p(global_counts)
+    
+    # Map to train_df
+    train_df[global_count_feat] = train_df[group_col].map(global_counts_log)
+    train_df[global_freq_feat] = train_df[group_col].map(global_freq)
+    
+    # Map to val_df and impute unseen values
+    val_df[global_count_feat] = val_df[group_col].map(global_counts_log).fillna(0)
+    val_df[global_freq_feat] = val_df[group_col].map(global_freq).fillna(global_freq.mean())
+
+    new_features = [global_count_feat, global_freq_feat]
+
+    # --- 2. LOCAL FEATURES (optional, calculated from training set) ---
+    if local_group_col:
+        local_count_feat = f'{group_col.lower()}_count_{local_group_col.lower()}'
+        local_freq_feat = f'{group_col.lower()}_freq_{local_group_col.lower()}'
+        new_features.extend([local_count_feat, local_freq_feat])
+        
+        if logger: logger.info(f"Calculating local features for '{group_col}' grouped by '{local_group_col}'...")
+
+        # Calculate stats from training set
+        local_counts = train_df.groupby([local_group_col, group_col]).size()
+        local_counts_log = np.log1p(local_counts)
+        
+        # Calculate frequency within each local group
+        local_group_totals = train_df.groupby(local_group_col).size()
+        local_freq = local_counts / local_counts.index.map(lambda x: local_group_totals[x[0]])
+
+        # Map to train_df
+        train_df[local_count_feat] = train_df.apply(
+            lambda row: local_counts_log.get((row[local_group_col], row[group_col]), 0),
+            axis=1
+        )
+        train_df[local_freq_feat] = train_df.apply(
+            lambda row: local_freq.get((row[local_group_col], row[group_col]), 0),
+            axis=1
+        )
+        
+        # Map to val_df and impute unseen values
+        val_df[local_count_feat] = val_df.apply(
+            lambda row: local_counts_log.get((row[local_group_col], row[group_col]), 0),
+            axis=1
+        )
+        # Use the mean of all local frequencies as a robust fallback for unseen combinations
+        val_df[local_freq_feat] = val_df.apply(
+            lambda row: local_freq.get((row[local_group_col], row[group_col]), local_freq.mean()),
+            axis=1
+        )
+
+    if logger:
+        logger.info(f"Successfully added features: {new_features}")
+        logger.info("-" * 50)
+        
+    return train_df, val_df, new_features
 
 
 def print_stratification_stats(df, train_df, val_df,start_col=None, logger=None):

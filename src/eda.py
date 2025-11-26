@@ -57,6 +57,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     
     print("Engineering interaction features...")
     wide_df['NDVI_x_logHeight'] = wide_df['Pre_GSHH_NDVI'] * wide_df['log_Height_Ave_cm']
+    wide_df['NDVI_+_logHeight'] = wide_df['Pre_GSHH_NDVI'] + wide_df['log_Height_Ave_cm']
+    ratio = wide_df['Pre_GSHH_NDVI'] / (wide_df['Height_Ave_cm'] + 1e-5) 
+    wide_df['NDVI_log_Height_Ratio'] = ratio
 
     print("Engineering count and frequency features...")
     # Global Species Features

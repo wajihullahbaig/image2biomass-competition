@@ -228,7 +228,11 @@ if __name__ == '__main__':
         logger.info("Sample weights applied. Validation weights set to 1.0")
 
         # Define tabular features for preprocessing
-        numerical_features = count_freq_features
+        # Preprocessing
+        base_numerical_features = [
+            'month', 'month_sin', 'month_cos',
+        ]
+        numerical_features = base_numerical_features + count_freq_features
         categorical_features = ['Species']
         
         logger.info(f"Numerical features ({len(numerical_features)}): {numerical_features}")

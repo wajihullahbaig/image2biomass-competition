@@ -17,7 +17,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 
 # Assuming these exist in your common.py
-from common import BATCH_SIZE, DEVICE, IMAGE_SIZE, LEARNING_RATE, NUM_EPOCHS, SeasonalCurriculumSampler, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging, calculate_count_frequency_features
+from common import BATCH_SIZE, DEVICE, IMAGE_SIZE, LEARNING_RATE, NUM_EPOCHS, SeasonalCurriculumSampler, calculate_sample_weights, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging, calculate_count_frequency_features
 
 # -------------------------------------------------------------------
 # 1. HELPER FUNCTIONS
@@ -101,18 +101,6 @@ def conditional_target_impute(df_to_impute, train_df_for_fit=None, logger=None):
 
     return df_to_impute
 
-
-def calculate_sample_weights(df, proportions, prop_col, weight_col='sample_weight', logger=None):
-    inverse_proportions = 1 / proportions
-    mean_inverse = inverse_proportions.mean()
-    normalized_weights = inverse_proportions / mean_inverse
-    weight_map = normalized_weights.to_dict()
-    df[weight_col] = df[prop_col].map(weight_map)
-    
-    if logger:
-        logger.info(f"Sample weights calculated based on '{prop_col}'")
-    
-    return df, weight_col
 
 
 def enforce_physical_constraints(predictions_real_scale):
@@ -320,9 +308,12 @@ if __name__ == '__main__':
 
         # Calculate sample weights
         prop_col = 'season'
-        proportions = train_df_imputed[prop_col].value_counts(normalize=True)
         train_df_imputed, weight_col = calculate_sample_weights(
-            train_df_imputed, proportions, prop_col, weight_col='sample_weight', logger=logger
+            train_df_imputed, 
+            prop_col=prop_col, 
+            weight_col='sample_weight', 
+            smooth=10.0, 
+            logger=logger
         )
         
         val_df_imputed[weight_col] = 1.0 
@@ -392,7 +383,7 @@ if __name__ == '__main__':
             stage_index=stage_idx
         ).to(DEVICE)
         
-        custom_target_weights = [0.5, 1.0, 0.5, 3.0, 3.0]
+        custom_target_weights = [1.0, 1.0, 1.0, 5.0, 2.0]
         criterion = WeightedMassBalanceLoss(target_weights=custom_target_weights, mass_balance_alpha=0.5).to(DEVICE) 
 
         optimizer = torch.optim.Adam(model.mlp.parameters(), lr=LEARNING_RATE) 

@@ -99,29 +99,35 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         if logger:
             logger.info(f"Random seed set to {seed} for reproducibility")
 
-def calculate_sample_weights(df, proportions=None, prop_col=None, weight_col='sample_weight', logger=None):
-    """
-    Calculates inverse-frequency sample weights based on prop_col distribution.
-    The weights are normalized so the mean weight is 1.0.
-    """
-    if proportions is None:
-        proportions = df[prop_col].value_counts(normalize=True)
-
-    # Calculate inverse proportions and normalize
+def calculate_sample_weights(df, proportions, prop_col, weight_col='sample_weight', logger=None):
     inverse_proportions = 1 / proportions
     mean_inverse = inverse_proportions.mean()
     normalized_weights = inverse_proportions / mean_inverse
-
-    # Create the weight map
     weight_map = normalized_weights.to_dict()
-
-    # Apply the weight to the DataFrame
     df[weight_col] = df[prop_col].map(weight_map)
     
     if logger:
         logger.info(f"Sample weights calculated based on '{prop_col}'")
-        logger.debug(f"Weight distribution: {weight_map}")
+    
+    return df, weight_col
 
+
+def calculate_sample_weights(df, group_col, weight_col='sample_weight', smooth=10.0, logger=None):
+    """
+    Calculates sample weights using smoothed inverse frequency.
+    Normalizes by median so the majority class has weight ~1.0.
+    """
+    counts = df[group_col].value_counts()    
+    weights = 1.0 / (df[group_col].map(counts) + smooth)    
+    weights = weights / weights.median()
+    df[weight_col] = weights.astype('float32')
+    
+    if logger:
+        # Calculate average weight per group for logging verification
+        avg_weights = df.groupby(group_col)[weight_col].mean().to_dict()
+        logger.info(f"Sample weights calculated based on '{group_col}' with smoothing={smooth}")
+        logger.info(f"Average weights per group: {avg_weights}")
+        
     return df, weight_col
 
 def calculate_count_frequency_features(

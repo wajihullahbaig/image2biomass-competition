@@ -276,7 +276,7 @@ if __name__ == '__main__':
         # Calculate sample weights
         logger.info("Calculating sample weights for training...")
         prop_col = 'Species'
-        train_df, weight_col = calculate_sample_weights(train_df, prop_col=prop_col, logger=logger)
+        train_df, weight_col = calculate_sample_weights(train_df, group_col=prop_col, logger=logger)
         val_df[weight_col] = 1.0
         logger.info("Sample weights applied. Validation weights set to 1.0")
 

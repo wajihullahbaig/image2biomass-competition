@@ -99,17 +99,17 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         if logger:
             logger.info(f"Random seed set to {seed} for reproducibility")
 
-def calculate_sample_weights(df, proportions, prop_col, weight_col='sample_weight', logger=None):
-    inverse_proportions = 1 / proportions
-    mean_inverse = inverse_proportions.mean()
-    normalized_weights = inverse_proportions / mean_inverse
-    weight_map = normalized_weights.to_dict()
-    df[weight_col] = df[prop_col].map(weight_map)
+# def calculate_sample_weights(df, proportions, prop_col, weight_col='sample_weight', logger=None):
+#     inverse_proportions = 1 / proportions
+#     mean_inverse = inverse_proportions.mean()
+#     normalized_weights = inverse_proportions / mean_inverse
+#     weight_map = normalized_weights.to_dict()
+#     df[weight_col] = df[prop_col].map(weight_map)
     
-    if logger:
-        logger.info(f"Sample weights calculated based on '{prop_col}'")
+#     if logger:
+#         logger.info(f"Sample weights calculated based on '{prop_col}'")
     
-    return df, weight_col
+#     return df, weight_col
 
 
 def calculate_sample_weights(df, group_col, weight_col='sample_weight', smooth=10.0, logger=None):
@@ -126,7 +126,8 @@ def calculate_sample_weights(df, group_col, weight_col='sample_weight', smooth=1
         # Calculate average weight per group for logging verification
         avg_weights = df.groupby(group_col)[weight_col].mean().to_dict()
         logger.info(f"Sample weights calculated based on '{group_col}' with smoothing={smooth}")
-        logger.info(f"Average weights per group: {avg_weights}")
+        for group, avg_weight in avg_weights.items():
+            logger.info(f"  {group}: {avg_weight:.4f}")
         
     return df, weight_col
 

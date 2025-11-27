@@ -310,7 +310,7 @@ if __name__ == '__main__':
         prop_col = 'season'
         train_df_imputed, weight_col = calculate_sample_weights(
             train_df_imputed, 
-            prop_col=prop_col, 
+            group_col=prop_col, 
             weight_col='sample_weight', 
             smooth=10.0, 
             logger=logger

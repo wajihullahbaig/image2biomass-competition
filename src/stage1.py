@@ -280,13 +280,17 @@ if __name__ == '__main__':
         val_df[weight_col] = 1.0
         logger.info("Sample weights applied. Validation weights set to 1.0")
 
-        # Define tabular features for preprocessing
-        numerical_features = [
+        count_freq_features = [
             'species_count_global', 
             'species_freq_global',
             'species_count_seasonal',
             'species_freq_seasonal'
         ]
+        base_numerical_features = [
+            'month', 'month_sin', 'month_cos',
+        ]
+
+        numerical_features = base_numerical_features + count_freq_features
         categorical_features = ['Species']
         
         logger.info(f"Numerical features ({len(numerical_features)}): {numerical_features}")
@@ -341,7 +345,7 @@ if __name__ == '__main__':
         # Use SeasonalCurriculumSampler for training
         train_sampler = SeasonalCurriculumSampler(
             data_df=train_df_processed,
-            shuffle_within_season=True,
+            shuffle_within_season=False,
             seed=42
         )
         # Image Transformations

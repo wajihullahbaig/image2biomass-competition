@@ -331,7 +331,6 @@ if __name__ == '__main__':
             logger=logger
         )
         
-        # Preprocessing
         base_numerical_features = [
             'Pre_GSHH_NDVI', 'Height_Ave_cm', 'month', 'month_sin', 'month_cos',
             'NDVI_Height_MUL', 'NDVI_Height_ADD', 'NDVI_Height_Ratio'

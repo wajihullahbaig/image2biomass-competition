@@ -19,15 +19,15 @@ from tqdm import tqdm
 from common import (
     DEVICE, IMAGE_SIZE, BATCH_SIZE, NUM_EPOCHS, LEARNING_RATE, 
     calculate_sample_weights_mean, calculate_sample_weights,
-    get_image_data_transforms, setup_logging, set_seed,
+    get_image_data_transforms, print_stratification_stats, setup_logging, set_seed,
     SeasonalCurriculumSampler, get_season, calculate_count_frequency_features
 )
 
 set_seed(42)
 
 # ====================== CONFIG ======================
-STAGE1_EPOCHS = 2
-STAGE2_EPOCHS = 15
+STAGE1_EPOCHS = 50
+STAGE2_EPOCHS = 50
 BACKBONE_S1 = 'tf_efficientnet_b3_ns'        
 BACKBONE_S2 = 'swin_base_patch4_window7_224' 
 
@@ -41,7 +41,7 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
 
 # Logger: Get instance globally, but configure file in __main__ (Multiprocessing safe)
-logger = logging.getLogger('Stage1Logger')
+logger = logging.getLogger('System Logger')
 logger.setLevel(logging.INFO)
 
 # ====================== DATA PREP ======================
@@ -161,7 +161,6 @@ def train_stage1(df_wide):
     
     # 1. Stratified Split
     train_df, val_df = train_test_split(df_wide, test_size=0.2, stratify=df_wide['season'], random_state=42)
-    
     # 2. Datasets
     train_dataset = Stage1Dataset(train_df, transform=get_image_data_transforms()[0], 
                                   fit_le=True, use_weights=USE_SAMPLE_WEIGHTS_S1)
@@ -185,14 +184,18 @@ def train_stage1(df_wide):
     mse_loss_none = nn.MSELoss(reduction='none')
 
     best_val_loss = float('inf')
-    save_path = 'stage1_package.pth' # Standardized filename
+    save_path = 'stage1_package.pth'
 
     for epoch in range(STAGE1_EPOCHS):
-        # === TRAIN ===
         model.train()
-        train_loss = 0.0
+        train_loss_total = 0.0
+        train_loss_species = 0.0
+        train_loss_ndvi = 0.0
+        train_loss_height = 0.0
+        train_loss_month = 0.0
         
-        for batch in train_loader:
+        pbar = tqdm(train_loader, desc=f"S1 Epoch {epoch+1}")
+        for batch in pbar:
             img, sp, ndvi, hlog, month, weight, mask = [x.to(DEVICE) for x in batch]
             
             optimizer.zero_grad()
@@ -200,9 +203,19 @@ def train_stage1(df_wide):
                 sp_pred, ndvi_pred, h_pred, month_pred = model(img)
                 
                 loss_vec = torch.zeros(img.size(0), device=DEVICE)
-                if mask[:,0].any(): loss_vec += 0.4 * ce_loss_none(sp_pred, sp) * mask[:,0].float()
-                if mask[:,1].any(): loss_vec += 0.3 * mse_loss_none(ndvi_pred, ndvi) * mask[:,1].float()
-                if mask[:,2].any(): loss_vec += 0.2 * mse_loss_none(h_pred, hlog) * mask[:,2].float()
+                l_sp = l_ndvi = l_h = l_month = torch.tensor(0.0, device=DEVICE)
+                
+                if mask[:,0].any(): 
+                    l_sp = (ce_loss_none(sp_pred, sp) * mask[:,0].float()).mean()
+                    loss_vec += 0.4 * ce_loss_none(sp_pred, sp) * mask[:,0].float()
+                if mask[:,1].any(): 
+                    l_ndvi = (mse_loss_none(ndvi_pred, ndvi) * mask[:,1].float()).mean()
+                    loss_vec += 0.3 * mse_loss_none(ndvi_pred, ndvi) * mask[:,1].float()
+                if mask[:,2].any(): 
+                    l_h = (mse_loss_none(h_pred, hlog) * mask[:,2].float()).mean()
+                    loss_vec += 0.2 * mse_loss_none(h_pred, hlog) * mask[:,2].float()
+                
+                l_month = ce_loss_none(month_pred, month).mean()
                 loss_vec += 0.1 * ce_loss_none(month_pred, month)
 
                 loss = (loss_vec * weight).mean()
@@ -211,47 +224,81 @@ def train_stage1(df_wide):
             scaler.step(optimizer)
             scaler.update()
             
-            train_loss += loss.item()            
+            train_loss_total += loss.item()
+            train_loss_species += l_sp.item()
+            train_loss_ndvi += l_ndvi.item()
+            train_loss_height += l_h.item()
+            train_loss_month += l_month.item()
+            
+            pbar.set_postfix({
+                'total': f'{loss.item():.4f}',
+                'sp': f'{l_sp.item():.4f}',
+                'ndvi': f'{l_ndvi.item():.4f}',
+                'h': f'{l_h.item():.4f}',
+                'mon': f'{l_month.item():.4f}'
+            })
 
         # === VAL ===
         model.eval()
-        val_loss = 0.0
+        val_loss_total = 0.0
+        val_loss_species = 0.0
+        val_loss_ndvi = 0.0
+        val_loss_height = 0.0
+        val_loss_month = 0.0
+        
         with torch.no_grad():
             for batch in val_loader:
                 img, sp, ndvi, hlog, month, _, mask = [x.to(DEVICE) for x in batch]
                 with torch.amp.autocast('cuda'):
                     sp_pred, ndvi_pred, h_pred, month_pred = model(img)
-                    l = 0.0
-                    if mask[:,0].any(): l += 0.4 * F.cross_entropy(sp_pred[mask[:,0]], sp[mask[:,0]], ignore_index=-1)
-                    if mask[:,1].any(): l += 0.3 * F.mse_loss(ndvi_pred[mask[:,1]], ndvi[mask[:,1]])
-                    if mask[:,2].any(): l += 0.2 * F.mse_loss(h_pred[mask[:,2]], hlog[mask[:,2]])
-                    l += 0.1 * F.cross_entropy(month_pred, month)
-                    val_loss += l.item()
+                    
+                    l_sp = l_ndvi = l_h = l_month = 0.0
+                    if mask[:,0].any(): 
+                        l_sp = F.cross_entropy(sp_pred[mask[:,0]], sp[mask[:,0]], ignore_index=-1)
+                        val_loss_species += l_sp.item()
+                    if mask[:,1].any(): 
+                        l_ndvi = F.mse_loss(ndvi_pred[mask[:,1]], ndvi[mask[:,1]])
+                        val_loss_ndvi += l_ndvi.item()
+                    if mask[:,2].any(): 
+                        l_h = F.mse_loss(h_pred[mask[:,2]], hlog[mask[:,2]])
+                        val_loss_height += l_h.item()
+                    
+                    l_month = F.cross_entropy(month_pred, month)
+                    val_loss_month += l_month.item()
+                    
+                    val_loss_total += (l_sp + l_ndvi + l_h + l_month)
 
-        val_loss /= len(val_loader)
-        logger.info(f"Epoch {epoch+1} | Train Loss: {train_loss/len(train_loader):.4f} | Val Loss: {val_loss:.4f}")
+        n_train = len(train_loader)
+        n_val = len(val_loader)
+        
+        logger.info(
+            f"Epoch {epoch+1} | "
+            f"Train [Total: {train_loss_total/n_train:.4f}, Species: {train_loss_species/n_train:.4f}, "
+            f"NDVI: {train_loss_ndvi/n_train:.4f}, Height: {train_loss_height/n_train:.4f}, "
+            f"Month: {train_loss_month/n_train:.4f}] | "
+            f"Val [Total: {val_loss_total/n_val:.4f}, Species: {val_loss_species/n_val:.4f}, "
+            f"NDVI: {val_loss_ndvi/n_val:.4f}, Height: {val_loss_height/n_val:.4f}, "
+            f"Month: {val_loss_month/n_val:.4f}]"
+        )
 
         # === SAVE ===
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            logger.info(f"New best val loss: {best_val_loss:.4f}")
-            # Save the full package needed for inference
+        if val_loss_total/n_val < best_val_loss:
+            best_val_loss = val_loss_total/n_val
             checkpoint = {
                 'model_state_dict': model.state_dict(),
                 'species_encoder': species_le,
                 'backbone_name': BACKBONE_S1
             }
             torch.save(checkpoint, save_path)
-            logger.info(f"New best model saved to {save_path}")
+            logger.info(f"Epoch {epoch+1}: New best model saved with Val Loss: {best_val_loss:.4f} to {save_path}")
 
     # === LOAD BEST ===
     if os.path.exists(save_path):
-        # We must load with weights_only=False because we are loading the LabelEncoder (pickle)
         checkpoint = torch.load(save_path, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
         logger.info(f"Loaded best model from {save_path} (Val Loss: {best_val_loss:.4f})")
     else:
-        logger.warning(f"File {save_path} not found! (Did training fail or produce NaNs?). Returning last epoch model.")
+        logger.warning(f"File {save_path} not found! Returning last epoch model.")
     
     return model, species_le
 
@@ -418,12 +465,10 @@ def train_stage2(df_enhanced):
     train_df_raw, val_df_raw = train_test_split(
         df_enhanced, test_size=0.2, stratify=df_enhanced['season_final'], random_state=42
     )
-
-    # 2. Feature Engineering (Count features on Train only, map to Val)
+    # 2. Feature Engineering
     extra_feats = []
     if USE_COUNT_FEATURES:
         logger.info("Generating Count/Frequency features...")
-        # Note: We use 'Species_final' and 'season_final' because they have no NaNs
         train_df_raw, val_df_raw, extra_feats = calculate_count_frequency_features(
             train_df=train_df_raw,
             val_df=val_df_raw,
@@ -432,12 +477,9 @@ def train_stage2(df_enhanced):
             logger=logger
         )
 
-    # 3. LEAKAGE-FREE IMPUTATION (Refactored for Inference Saving)
+    # 3. Imputation
     logger.info("Calculating imputation stats on Train set...")
-    # A. Calculate Stats on TRAIN only
     median_map, global_medians = get_imputation_stats(train_df_raw, TARGET_COLS)
-    
-    # B. Apply to Train and Val
     train_df = apply_imputation(train_df_raw, median_map, global_medians, TARGET_COLS)
     val_df = apply_imputation(val_df_raw, median_map, global_medians, TARGET_COLS)
 
@@ -445,7 +487,6 @@ def train_stage2(df_enhanced):
     train_ds = Stage2Dataset(train_df, extra_features=extra_feats, transform=get_image_data_transforms()[0])
     val_ds = Stage2Dataset(val_df, extra_features=extra_feats, transform=get_image_data_transforms()[1])
     
-    # Capture the exact column order for inference!
     final_tabular_cols = train_ds.tabular_cols
     logger.info(f"Final Tabular Columns ({len(final_tabular_cols)}): {final_tabular_cols}")
 
@@ -467,9 +508,15 @@ def train_stage2(df_enhanced):
     # 6. Training Loop
     for epoch in range(STAGE2_EPOCHS):
         model.train()
-        train_loss = 0.0
+        train_loss_total = 0.0
+        train_loss_clover = 0.0
+        train_loss_dead = 0.0
+        train_loss_green = 0.0
+        train_loss_total_mass = 0.0
+        train_loss_gdm = 0.0
         
-        for img, tab, targets, sample_weight in train_loader:
+        pbar = tqdm(train_loader, desc=f"S2 Epoch {epoch+1}")
+        for img, tab, targets, sample_weight in pbar:
             img = img.to(DEVICE)
             tab = tab.to(DEVICE)
             targets = targets.to(DEVICE)
@@ -477,33 +524,51 @@ def train_stage2(df_enhanced):
             
             optimizer.zero_grad()
             
-            # Use new AMP syntax
             with torch.amp.autocast('cuda'):
                 pred = model(img, tab)
                 
-                # --- DOUBLE WEIGHTING STRATEGY ---
-                # 1. Squared Error [Batch, 5]
+                # Calculate per-component losses
                 squared_err = (pred - targets) ** 2
-                
-                # 2. Column Weighting (Official Metric) [Batch, 5]
                 col_weighted = squared_err * COL_WEIGHTS_TENSOR
-                
-                # 3. Sum Elements [Batch]
                 loss_per_img = col_weighted.sum(dim=1)
-                
-                # 4. Sample Weighting (Rare Species)
                 loss = (loss_per_img * sample_weight).mean()
+                
+                # Track individual component losses (unweighted for interpretability)
+                l_clover = squared_err[:, 0].mean()
+                l_dead = squared_err[:, 1].mean()
+                l_green = squared_err[:, 2].mean()
+                l_total = squared_err[:, 3].mean()
+                l_gdm = squared_err[:, 4].mean()
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             
-            train_loss += loss.item()
+            train_loss_total += loss.item()
+            train_loss_clover += l_clover.item()
+            train_loss_dead += l_dead.item()
+            train_loss_green += l_green.item()
+            train_loss_total_mass += l_total.item()
+            train_loss_gdm += l_gdm.item()
             
+            pbar.set_postfix({
+                'total': f'{loss.item():.4f}',
+                'clov': f'{l_clover.item():.2f}',
+                'dead': f'{l_dead.item():.2f}',
+                'green': f'{l_green.item():.2f}',
+                'tot': f'{l_total.item():.2f}',
+                'gdm': f'{l_gdm.item():.2f}'
+            })
+
         # Validation
         model.eval()
         all_preds, all_trues = [], []
-        val_loss = 0.0
+        val_loss_total = 0.0
+        val_loss_clover = 0.0
+        val_loss_dead = 0.0
+        val_loss_green = 0.0
+        val_loss_total_mass = 0.0
+        val_loss_gdm = 0.0
         
         with torch.no_grad():
             for img, tab, targets, sample_weight in val_loader:
@@ -514,32 +579,47 @@ def train_stage2(df_enhanced):
 
                 with torch.amp.autocast('cuda'):
                     pred = model(img, tab)
-                    # Track validation loss using the same weighted metric
+                    
                     sq_err = (pred - targets) ** 2
-                    val_loss += ((sq_err * COL_WEIGHTS_TENSOR).sum(1) * sample_weight).mean().item()
+                    val_loss_total += ((sq_err * COL_WEIGHTS_TENSOR).sum(1) * sample_weight).mean().item()
+                    
+                    val_loss_clover += sq_err[:, 0].mean().item()
+                    val_loss_dead += sq_err[:, 1].mean().item()
+                    val_loss_green += sq_err[:, 2].mean().item()
+                    val_loss_total_mass += sq_err[:, 3].mean().item()
+                    val_loss_gdm += sq_err[:, 4].mean().item()
 
                 all_preds.append(pred.float().cpu().numpy())
                 all_trues.append(targets.float().cpu().numpy())
 
-        val_loss /= len(val_loader)
+        n_train = len(train_loader)
+        n_val = len(val_loader)
+        
         pred_arr = np.concatenate(all_preds, axis=0)
         true_arr = np.concatenate(all_trues, axis=0)
         
-        # Calculate R2 using Official Weights for final score
         weights_flat = np.tile(OFFICIAL_WEIGHTS, (len(true_arr), 1)).flatten()
         score = r2_score(true_arr.flatten(), pred_arr.flatten(), sample_weight=weights_flat)
 
-        logger.info(f"Epoch {epoch+1} | Val Loss: {val_loss:.4f} | Weighted R²: {score:.5f}")
+        logger.info(
+            f"Epoch {epoch+1} | "
+            f"Train [Total: {train_loss_total/n_train:.4f}, Clover: {train_loss_clover/n_train:.2f}, "
+            f"Dead: {train_loss_dead/n_train:.2f}, Green: {train_loss_green/n_train:.2f}, "
+            f"TotalMass: {train_loss_total_mass/n_train:.2f}, GDM: {train_loss_gdm/n_train:.2f}] | "
+            f"Val [Total: {val_loss_total/n_val:.4f}, Clover: {val_loss_clover/n_val:.2f}, "
+            f"Dead: {val_loss_dead/n_val:.2f}, Green: {val_loss_green/n_val:.2f}, "
+            f"TotalMass: {val_loss_total_mass/n_val:.2f}, GDM: {val_loss_gdm/n_val:.2f}, "
+            f"Weighted R²: {score:.5f}]"
+        )
 
         # Save Best Model Package
         if score > best_score:
             best_score = score
-            logger.info(f"New best score: {best_score:.4f}")
-            # === SAVING FULL INFERENCE PACKAGE ===
+            
             checkpoint = {
                 'model_state_dict': model.state_dict(),
-                'tabular_cols': final_tabular_cols,     # Save exact column order
-                'imputation_stats': {                   # Save math for Test set
+                'tabular_cols': final_tabular_cols,
+                'imputation_stats': {
                     'median_map': median_map,
                     'global_medians': global_medians
                 },
@@ -547,8 +627,6 @@ def train_stage2(df_enhanced):
                 'score': best_score
             }
             torch.save(checkpoint, 'stage2_package.pth')
-            # =====================================
-            
             logger.info(f"NEW BEST R²: {best_score:.5f} (Saved to stage2_package.pth)")
             
         scheduler.step()

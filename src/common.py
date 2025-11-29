@@ -19,6 +19,7 @@ LEARNING_RATE = 3e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
+USE_COUNT_FEATURES = True
 
 
 def get_image_data_transforms()->tuple:
@@ -273,7 +274,7 @@ class SeasonalCurriculumSampler(Sampler):
     Samples indices in seasonal order: Summer → Autumn → Winter → Spring.
     Yields individual indices. The DataLoader handles the batching.
     """
-    def __init__(self, data_df, shuffle_within_season=True, seed=42):
+    def __init__(self, data_df, shuffle_within_season=False, seed=42):
         self.data_df = data_df
         self.shuffle_within_season = shuffle_within_season
         self.seed = seed
@@ -309,3 +310,28 @@ class SeasonalCurriculumSampler(Sampler):
 
     def __len__(self):
         return len(self.data_df)
+    
+
+def enforce_physical_constraints(predictions_real_scale):
+    """
+    OPTION B: Post-processing to enforce strict mass balance.
+    Input: Numpy array of predictions in REAL GRAMS (not log).
+    Order: [Clover, Dead, Green, Total, GDM]
+    """
+    # 1. Enforce Non-Negativity (Safety net)
+    preds = np.maximum(predictions_real_scale, 0)
+    
+    # 2. Extract components
+    clover = preds[:, 0]
+    dead = preds[:, 1]
+    green = preds[:, 2]
+    
+    # 3. Recalculate Aggregates based on components
+    new_gdm = clover + green
+    new_total = clover + dead + green
+    
+    # 4. Update the prediction array
+    preds[:, 3] = new_total  # Total
+    preds[:, 4] = new_gdm    # GDM
+    
+    return preds    

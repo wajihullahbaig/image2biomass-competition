@@ -17,7 +17,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 
 # Assuming these exist in your common.py
-from common import BATCH_SIZE, DEVICE, IMAGE_SIZE, LEARNING_RATE, NUM_EPOCHS, SeasonalCurriculumSampler, calculate_sample_weights, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging, calculate_count_frequency_features
+from common import BATCH_SIZE, DEVICE, IMAGE_SIZE, LEARNING_RATE, NUM_EPOCHS, SeasonalCurriculumSampler, calculate_sample_weights, calculate_sample_weights_mean, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging, calculate_count_frequency_features
 
 # -------------------------------------------------------------------
 # 1. HELPER FUNCTIONS
@@ -308,11 +308,10 @@ if __name__ == '__main__':
 
         # Calculate sample weights
         prop_col = 'season'
-        train_df_imputed, weight_col = calculate_sample_weights(
+        train_df_imputed, weight_col = calculate_sample_weights_mean(
             train_df_imputed, 
             group_col=prop_col, 
             weight_col='sample_weight', 
-            smooth=10.0, 
             logger=logger
         )
         

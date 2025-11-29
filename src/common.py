@@ -47,7 +47,7 @@ def get_image_data_transforms()->tuple:
             ])
     return train_transform, val_transform       
 
-def setup_logging(log_dir='logs',file_name_part =None) -> logging.Logger:
+def setup_logging(logger_name = "System Logger",log_dir='logs',file_name_part =None) -> logging.Logger:
     """
     Set up logging to both console and file with timestamps.
     Creates a new log file for each run.
@@ -59,7 +59,7 @@ def setup_logging(log_dir='logs',file_name_part =None) -> logging.Logger:
     log_file = os.path.join(log_dir, f'{file_name_part}_{timestamp}.log')
     
     # Create logger
-    logger = logging.getLogger('Stage1Logger')
+    logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
     
     # Remove any existing handlers

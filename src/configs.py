@@ -10,8 +10,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 # Training
-STAGE1_EPOCHS = 20
-STAGE2_EPOCHS = 100
+STAGE1_EPOCHS = 1
+STAGE2_EPOCHS = 2
 BACKBONE_S1 = 'tf_efficientnet_b3_ns'        
 BACKBONE_S2 = 'swin_base_patch4_window7_224' 
 # Feature Flags

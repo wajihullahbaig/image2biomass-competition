@@ -18,7 +18,7 @@ from tqdm import tqdm
 # ====================== COMMON IMPORTS ======================
 from configs import (
     DEVICE, IMAGE_SIZE, BATCH_SIZE, 
-    BACKBONE_S1, BACKBONE_S2, 
+    BACKBONE_S1, BACKBONE_S2, LEARNING_RATE, 
     N_FOLDS,
     USE_SAMPLE_WEIGHTS_S1, 
     STAGE1_EPOCHS, 
@@ -234,7 +234,7 @@ def train_stage1_kfold(df_wide):
 
         # Model & Optimization
         model = Stage1Model(num_species=num_species).to(DEVICE)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-5)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
         scaler = torch.amp.GradScaler("cuda")
         
         ce_loss_none = nn.CrossEntropyLoss(ignore_index=-1, reduction='none')

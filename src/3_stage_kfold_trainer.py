@@ -16,58 +16,68 @@ import os
 from tqdm import tqdm
 
 # ====================== COMMON IMPORTS ======================
+from configs import (
+    DEVICE, IMAGE_SIZE, BATCH_SIZE, 
+    BACKBONE_S1, BACKBONE_S2, 
+    N_FOLDS,
+    USE_SAMPLE_WEIGHTS_S1, 
+    STAGE1_EPOCHS, 
+    STAGE2_EPOCHS, 
+    TARGET_COLS, 
+    USE_COUNT_FEATURES,
+    OFFICIAL_WEIGHTS,
+    COL_WEIGHTS_TENSOR
+)
 from common import (
-    DEVICE, IMAGE_SIZE, BATCH_SIZE, NUM_EPOCHS, LEARNING_RATE, 
-    calculate_sample_weights_mean, calculate_sample_weights,
-    get_image_data_transforms, print_stratification_stats, setup_logging, set_seed,
-    SeasonalCurriculumSampler, get_season, calculate_count_frequency_features
+    calculate_global_weighted_r2, calculate_sample_weights_mean, calculate_sample_weights,
+    get_image_data_transforms, setup_logging, set_seed,
+    get_season, calculate_count_frequency_features
 )
 
 set_seed(42)
 
-# ====================== CONFIG ======================
-STAGE1_EPOCHS = 2
-STAGE2_EPOCHS = 10
-BACKBONE_S1 = 'tf_efficientnet_b3_ns'        
-BACKBONE_S2 = 'swin_base_patch4_window7_224' 
 
-# Feature Flags
-USE_COUNT_FEATURES = False        # Use Global/Seasonal counts in Stage 2
-USE_SAMPLE_WEIGHTS_S1 = False     # Use Hard Balancing for Stage 1
-
-TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-# Official Weights: Clover, Dead, Green, Total, GDM
-OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
-COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
-N_FOLDS = 5
 
 # Logger: Get instance globally, but configure file in __main__ (Multiprocessing safe)
 logger = logging.getLogger('System Logger')
 logger.setLevel(logging.INFO)
 
 # ====================== DATA PREP ======================
-def load_and_pivot_train(csv_path='train.csv'):
-    df = pd.read_csv(csv_path)
-    logger.info(f"Loaded train.csv: {len(df)} rows")
-
-    wide = df.pivot_table(
-        index=['sample_id', 'image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm'],
-        columns='target_name',
+def load_data():
+    df = pd.read_csv('train.csv')
+    
+    # 1. PIVOT TARGETS ONLY (Strictly on sample_id)
+    # This guarantees 1 row per sample_id with 5 target columns
+    targets = df.pivot_table(
+        index='sample_id', 
+        columns='target_name', 
         values='target'
     ).reset_index()
-
+    
+    # 2. EXTRACT METADATA (Drop duplicates)
+    # We take the first valid metadata entry for each sample_id
+    meta_cols = ['sample_id', 'image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm']
+    meta = df[meta_cols].drop_duplicates(subset=['sample_id']).reset_index(drop=True)
+    
+    # 3. MERGE
+    wide = pd.merge(meta, targets, on='sample_id', how='left')
+    
+    # 4. DATA CLEANING
     wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'])
     wide['month'] = wide['Sampling_Date'].dt.month
     wide['season'] = wide['month'].apply(get_season)
-
-    # Force base numeric types to avoid object issues later
+    
+    # Force numeric and fill NaNs in metadata (not targets)
     wide['Height_Ave_cm'] = pd.to_numeric(wide['Height_Ave_cm'], errors='coerce')
     wide['Pre_GSHH_NDVI'] = pd.to_numeric(wide['Pre_GSHH_NDVI'], errors='coerce')
-    
-    # Log height for Stage 1 features
     wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'].fillna(0))
-
-    logger.info(f"Pivoted to wide format: {len(wide)} unique samples")
+    
+    # CRITICAL: Fill Target NaNs with 0.0
+    # If a target is missing after pivot, it implies 0g for that component
+    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    wide[target_cols] = wide[target_cols].fillna(0.0)
+    
+    print(f"Loaded Data: {len(wide)} unique samples.")
     return wide
 
 # ====================== STAGE 1: AUXILIARY MULTI-TASK ======================
@@ -186,7 +196,9 @@ def train_stage1_kfold(df_wide):
     oof_df['pred_ndvi'] = np.nan
     oof_df['pred_height_log'] = np.nan
     oof_df['pred_month'] = -1
-
+    oof_df['pred_mon_sin'] = np.nan
+    oof_df['pred_mon_cos'] = np.nan
+    
     model_save_dir = 'models_stage1'
     os.makedirs(model_save_dir, exist_ok=True)
     
@@ -338,7 +350,7 @@ def train_stage1_kfold(df_wide):
         model.load_state_dict(torch.load(fold_save_path, weights_only=True))
         model.eval()
         
-        preds = {'sp': [], 'ndvi': [], 'h': [], 'mon': []}
+        preds = {'sp': [], 'ndvi': [], 'h': [], 'mon': [], 'sin': [], 'cos': []}
         
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="OOF Preds"):
@@ -349,12 +361,16 @@ def train_stage1_kfold(df_wide):
                 preds['ndvi'].extend(nd_p.cpu().numpy())
                 preds['h'].extend(h_p.cpu().numpy())
                 preds['mon'].extend(torch.argmax(m_p, 1).cpu().numpy())
+                preds['sin'].extend(m_p[:, 0].cpu().numpy())
+                preds['cos'].extend(m_p[:, 1].cpu().numpy())
         
         # Assign to OOF dataframe
         oof_df.loc[val_idx, 'pred_species_idx'] = preds['sp']
         oof_df.loc[val_idx, 'pred_ndvi'] = preds['ndvi']
         oof_df.loc[val_idx, 'pred_height_log'] = preds['h']
         oof_df.loc[val_idx, 'pred_month'] = preds['mon']
+        oof_df.loc[val_idx, 'pred_mon_sin'] = preds['sin']
+        oof_df.loc[val_idx, 'pred_mon_cos'] = preds['cos']
 
     # --- FINALIZE OOF DATAFRAME ---
     # Convert indices back to human readable
@@ -375,301 +391,176 @@ def train_stage1_kfold(df_wide):
 
 # ====================== STAGE 2: PHYSICS-INFORMED BIOMASS ======================
 class Stage2Dataset(Dataset):
-    def __init__(self, df, extra_features=None, transform=None):
+    def __init__(self, df, transform=None):
         self.df = df.copy().reset_index(drop=True)
         self.transform = transform
         
-        # 1. Base Engineering
-        self.df['NDVI_final'] = pd.to_numeric(self.df['NDVI_final'], errors='coerce').fillna(0.0)
-        self.df['Height_final_log'] = pd.to_numeric(self.df['Height_final_log'], errors='coerce').fillna(0.0)
-
+        # Use OOF Predictions for training features
+        # Ensuring float32
+        self.df['NDVI_final'] = pd.to_numeric(self.df['pred_ndvi'], errors='coerce').fillna(0.0).astype(np.float32)
+        self.df['Height_final_log'] = pd.to_numeric(self.df['pred_height_log'], errors='coerce').fillna(0.0).astype(np.float32)
+        
+        # Engineering
         self.df['ndvi_h_mul'] = self.df['NDVI_final'] * self.df['Height_final_log']
         self.df['ndvi_h_ratio'] = self.df['NDVI_final'] / (self.df['Height_final_log'] + 1e-6)
         
-        self.tabular_cols = ['NDVI_final', 'Height_final_log', 'ndvi_h_mul', 'ndvi_h_ratio']
-        self.df['month_sin'] = np.sin(2 * np.pi * self.df['month'] / 12.0)
-        self.df['month_cos'] = np.cos(2 * np.pi * self.df['month'] / 12.0)
+        self.df['mon_sin'] = pd.to_numeric(self.df['pred_mon_sin'], errors='coerce').fillna(0.0).astype(np.float32)
+        self.df['mon_cos'] = pd.to_numeric(self.df['pred_mon_cos'], errors='coerce').fillna(0.0).astype(np.float32)
         
-        # 2. Add Count Features
-        if extra_features:
-            self.tabular_cols.extend(extra_features)
-            
-        # 3. CRITICAL: Force all tab cols to float32 NOW to prevent TypeError in __getitem__
-        for col in self.tabular_cols:
-            self.df[col] = pd.to_numeric(self.df[col], errors='coerce').fillna(0.0).astype(np.float32)
+        self.tab_cols = ['NDVI_final', 'Height_final_log', 'ndvi_h_mul', 'ndvi_h_ratio', 'mon_sin', 'mon_cos']
         
-        # 4. Sample Weights (Smooth Balancing for Regression on SPECIES)
-        self.df, _ = calculate_sample_weights_mean(self.df, group_col='Species_final')
-        # Clip to prevent exploding gradients
+        # If the tabular data contains NaNs, the model instantly outputs NaNs
+        if self.df[self.tab_cols].isnull().any().any():
+            logger.warnning ("WARNING: NaNs found in tabular inputs! Filling with 0.")
+            self.df[self.tab_cols] = self.df[self.tab_cols].fillna(0.0)
+
+        # Targets: Real and Log1p
+        self.y_real = self.df[TARGET_COLS].values.astype(np.float32)
+        self.y_log = np.log1p(self.y_real)
+        
+        # Weights for Balancing (Optional, but good for stability)
+        self.df, _ = calculate_sample_weights(self.df, 'pred_species') # Use predicted species group
         self.df['sample_weight'] = self.df['sample_weight'].clip(0.1, 10.0)
 
-    def __len__(self):
-        return len(self.df)
-
+    def __len__(self): return len(self.df)
+    
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        
         try:
-            img_path = f"train/{row['image_path'].split('/')[-1]}"
-            img = Image.open(img_path).convert('RGB')
+            img = Image.open(f"train/{row['image_path'].split('/')[-1]}").convert('RGB')
         except:
             img = Image.new('RGB', (IMAGE_SIZE, IMAGE_SIZE))
             
-        if self.transform:
-            img = self.transform(img)
+        if self.transform: img = self.transform(img)
+        
+        tab = torch.tensor(row[self.tab_cols].values.astype(np.float32))
+        y_log = torch.tensor(self.y_log[idx])
+        y_real = torch.tensor(self.y_real[idx])
+        w = torch.tensor(row['sample_weight'], dtype=torch.float32)
+        
+        return img, tab, y_log, y_real, w
 
-        # Fast and type-safe now
-        # Tabular
-        tab = torch.from_numpy(row[self.tabular_cols].values.astype(np.float32))        
-        targets = torch.tensor(row[TARGET_COLS].values.astype(np.float32), dtype=torch.float32)
-        weight = torch.tensor(row['sample_weight'], dtype=torch.float32)
-
-        return img, tab, targets, weight
-
-class Stage2Model(nn.Module):
-    def __init__(self, tab_size):
+class Stage2ModelLog(nn.Module):
+    def __init__(self, tab_dim):
         super().__init__()
         self.backbone = timm.create_model(BACKBONE_S2, pretrained=True, num_classes=0)
-        img_feat = self.backbone.num_features
-
         self.mlp = nn.Sequential(
-            nn.Linear(img_feat + tab_size, 512),
-            nn.BatchNorm1d(512),
-            nn.SiLU(inplace=True),
-            nn.Dropout(0.4),
+            nn.Linear(self.backbone.num_features + tab_dim, 512),
+            nn.BatchNorm1d(512), nn.SiLU(), nn.Dropout(0.3),
             nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.SiLU(inplace=True),
-            nn.Dropout(0.3),
+            nn.BatchNorm1d(256), nn.SiLU()
         )
-        self.head = nn.Linear(256, 3) # Predict Clover, Dead, Green
+        self.head = nn.Linear(256, 3) # Log(1+C), Log(1+D), Log(1+G)
 
     def forward(self, img, tab):
         f = self.backbone(img)
         if len(f.shape) > 2: f = f.mean([2, 3])
-
+        
         x = torch.cat([f, tab], dim=1)
-        feat = self.mlp(x)
-        components = F.softplus(self.head(feat))
+        # Softplus ensures positive mass output
+        log_comp = F.softplus(self.head(self.mlp(x)))
+        log_comp = torch.clamp(log_comp, max=10.0) 
+        l_c, l_d, l_g = log_comp[:, 0:1], log_comp[:, 1:2], log_comp[:, 2:3]
         
-        clover = components[:, 0:1]
-        dead   = components[:, 1:2]
-        green  = components[:, 2:3]
-        total = clover + dead + green
-        gdm   = clover + green
+        # Physics: Log -> Real
+        r_c = torch.expm1(l_c)
+        r_d = torch.expm1(l_d)
+        r_g = torch.expm1(l_g)
         
-        return torch.cat([clover, dead, green, total, gdm], dim=1)
-
-# ====================== IMPUTATION HELPERS ======================
-def get_imputation_stats(df, target_cols):
-    """
-    Calculates median statistics from the TRAIN set to save for Inference.
-    """
-    group_cols = ['Species', 'State', 'season']
-    
-    # Calculate stats
-    median_map = df.groupby(group_cols)[target_cols].median()
-    global_medians = df[target_cols].median()
-    
-    return median_map, global_medians
-
-def apply_imputation(df, median_map, global_medians, target_cols):
-    """
-    Applies saved stats to a dataframe (Train, Val, or Test).
-    """
-    df = df.copy()
-    group_cols = ['Species', 'State', 'season']
-    
-    # Set index to group_cols for fast mapping
-    # Note: We reset index at the end to return original structure
-    df_idx = df.set_index(group_cols)
-    
-    for col in target_cols:
-        # Map specific medians based on the index (Species, State, season)
-        mapped_vals = median_map[col].reindex(df_idx.index)
+        # Physics: Summation
+        r_tot = r_c + r_d + r_g
+        r_gdm = r_c + r_g
         
-        # Create Series with original dataframe index to satisfy pandas type check
-        fill_values = pd.Series(mapped_vals.values, index=df.index)
+        # Physics: Real -> Log (For Loss)
+        l_tot = torch.log1p(r_tot)
+        l_gdm = torch.log1p(r_gdm)
         
-        # Fill logic: 1. Try Group Median, 2. Fallback to Global Median
-        df[col] = df[col].fillna(fill_values)
-        df[col] = df[col].fillna(global_medians[col])
+        # Concatenate outputs
+        pred_log = torch.cat([l_c, l_d, l_g, l_tot, l_gdm], dim=1)
+        pred_real = torch.cat([r_c, r_d, r_g, r_tot, r_gdm], dim=1)
         
-    return df
+        return pred_log, pred_real
 
-# ====================== STAGE 2 TRAINING LOOP ======================
-def train_stage2(df_enhanced):
-    logger.info(f"=== STAGE 2: Physics-Informed Training (CountFeats={USE_COUNT_FEATURES}) ===")
+def train_stage2(df):
     
-    # 1. Stratified Split
-    train_df_raw, val_df_raw = train_test_split(
-        df_enhanced, test_size=0.2, stratify=df_enhanced['season_final'], random_state=42
-    )
-    # 2. Feature Engineering
-    extra_feats = []
-    if USE_COUNT_FEATURES:
-        logger.info("Generating Count/Frequency features...")
-        train_df_raw, val_df_raw, extra_feats = calculate_count_frequency_features(
-            train_df=train_df_raw,
-            val_df=val_df_raw,
-            group_col='Species_final',
-            local_group_col='season_final',
-            logger=logger
-        )
-
-    # 3. Imputation
-    logger.info("Calculating imputation stats on Train set...")
-    median_map, global_medians = get_imputation_stats(train_df_raw, TARGET_COLS)
-    train_df = apply_imputation(train_df_raw, median_map, global_medians, TARGET_COLS)
-    val_df = apply_imputation(val_df_raw, median_map, global_medians, TARGET_COLS)
-
-    # 4. Data Loaders
-    train_ds = Stage2Dataset(train_df, extra_features=extra_feats, transform=get_image_data_transforms()[0])
-    val_ds = Stage2Dataset(val_df, extra_features=extra_feats, transform=get_image_data_transforms()[1])
+    # Standard split
+    tr_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
     
-    final_tabular_cols = train_ds.tabular_cols
-    logger.info(f"Final Tabular Columns ({len(final_tabular_cols)}): {final_tabular_cols}")
-
-    train_loader = DataLoader(
-        train_ds, batch_size=BATCH_SIZE, 
-        sampler=SeasonalCurriculumSampler(train_ds.df), 
-        num_workers=4, pin_memory=True
-    )
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
-
-    # 5. Model Setup
-    model = Stage2Model(tab_size=len(final_tabular_cols)).to(DEVICE)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=STAGE2_EPOCHS)
-    scaler = torch.amp.GradScaler("cuda") 
-
-    best_score = -float('inf')
-
-    # 6. Training Loop
-    for epoch in range(STAGE2_EPOCHS):
+    tr_ds = Stage2Dataset(tr_df, get_image_data_transforms()[0])
+    val_ds = Stage2Dataset(val_df, get_image_data_transforms()[1])
+    
+    tr_load = DataLoader(tr_ds, BATCH_SIZE, shuffle=True, num_workers=4)
+    val_load = DataLoader(val_ds, BATCH_SIZE, shuffle=False, num_workers=4)
+    
+    model = Stage2ModelLog(len(tr_ds.tab_cols)).to(DEVICE)
+    optim = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=STAGE2_EPOCHS)
+    scaler = torch.amp.GradScaler("cuda")
+    
+    # Huber Loss on Log Targets
+    criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    
+    best_r2 = -float('inf')
+    
+    for ep in range(STAGE2_EPOCHS):
         model.train()
-        train_loss_total = 0.0
-        train_loss_clover = 0.0
-        train_loss_dead = 0.0
-        train_loss_green = 0.0
-        train_loss_total_mass = 0.0
-        train_loss_gdm = 0.0
+        logs = {'loss': 0}
         
-        pbar = tqdm(train_loader, desc=f"S2 Epoch {epoch+1}")
-        for img, tab, targets, sample_weight in pbar:
-            img = img.to(DEVICE)
-            tab = tab.to(DEVICE)
-            targets = targets.to(DEVICE)
-            sample_weight = sample_weight.to(DEVICE)
+        pbar = tqdm(tr_load, leave=False, desc=f"Ep {ep+1}")
+        for img, tab, y_log, _, w in pbar:
+            img, tab, y_log, w = img.to(DEVICE), tab.to(DEVICE), y_log.to(DEVICE), w.to(DEVICE)
             
-            optimizer.zero_grad()
-            
+            optim.zero_grad()
             with torch.amp.autocast('cuda'):
-                pred = model(img, tab)
+                p_log, _ = model(img, tab)
+                # Weighted Loss
+                loss_vec = (criterion(p_log, y_log) * COL_WEIGHTS_TENSOR).sum(1)
+                loss = (loss_vec * w).mean()
                 
-                # Calculate per-component losses
-                squared_err = (pred - targets) ** 2
-                col_weighted = squared_err * COL_WEIGHTS_TENSOR
-                loss_per_img = col_weighted.sum(dim=1)
-                loss = (loss_per_img * sample_weight).mean()
-                
-                # Track individual component losses (unweighted for interpretability)
-                l_clover = squared_err[:, 0].mean()
-                l_dead = squared_err[:, 1].mean()
-                l_green = squared_err[:, 2].mean()
-                l_total = squared_err[:, 3].mean()
-                l_gdm = squared_err[:, 4].mean()
-
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
+            scaler.step(optim)
             scaler.update()
             
-            train_loss_total += loss.item()
-            train_loss_clover += l_clover.item()
-            train_loss_dead += l_dead.item()
-            train_loss_green += l_green.item()
-            train_loss_total_mass += l_total.item()
-            train_loss_gdm += l_gdm.item()
+            logs['loss'] += loss.item()
             
-            pbar.set_postfix({
-                'total': f'{loss.item():.4f}',
-                'clov': f'{l_clover.item():.2f}',
-                'dead': f'{l_dead.item():.2f}',
-                'green': f'{l_green.item():.2f}',
-                'tot': f'{l_total.item():.2f}',
-                'gdm': f'{l_gdm.item():.2f}'
-            })
-
         # Validation
         model.eval()
-        all_preds, all_trues = [], []
-        val_loss_total = 0.0
-        val_loss_clover = 0.0
-        val_loss_dead = 0.0
-        val_loss_green = 0.0
-        val_loss_total_mass = 0.0
-        val_loss_gdm = 0.0
+        all_pred, all_true = [], []
+        val_log_loss = 0
         
         with torch.no_grad():
-            for img, tab, targets, sample_weight in val_loader:
-                img = img.to(DEVICE)
-                tab = tab.to(DEVICE)
-                targets = targets.to(DEVICE)
-                sample_weight = sample_weight.to(DEVICE)
-
+            for img, tab, y_log, y_real, _ in val_load:
+                img, tab, y_log = img.to(DEVICE), tab.to(DEVICE), y_log.to(DEVICE)
                 with torch.amp.autocast('cuda'):
-                    pred = model(img, tab)
-                    
-                    sq_err = (pred - targets) ** 2
-                    val_loss_total += ((sq_err * COL_WEIGHTS_TENSOR).sum(1) * sample_weight).mean().item()
-                    
-                    val_loss_clover += sq_err[:, 0].mean().item()
-                    val_loss_dead += sq_err[:, 1].mean().item()
-                    val_loss_green += sq_err[:, 2].mean().item()
-                    val_loss_total_mass += sq_err[:, 3].mean().item()
-                    val_loss_gdm += sq_err[:, 4].mean().item()
-
-                all_preds.append(pred.float().cpu().numpy())
-                all_trues.append(targets.float().cpu().numpy())
-
-        n_train = len(train_loader)
-        n_val = len(val_loader)
+                    p_log, p_real = model(img, tab)
+                    val_log_loss += (criterion(p_log, y_log) * COL_WEIGHTS_TENSOR).sum().item()
+                
+                all_pred.append(p_real.float().cpu().numpy())
+                all_true.append(y_real.float().cpu().numpy())
         
-        pred_arr = np.concatenate(all_preds, axis=0)
-        true_arr = np.concatenate(all_trues, axis=0)
+        # Metrics
+        y_p_arr = np.concatenate(all_pred)
+        y_t_arr = np.concatenate(all_true)
         
-        weights_flat = np.tile(OFFICIAL_WEIGHTS, (len(true_arr), 1)).flatten()
-        score = r2_score(true_arr.flatten(), pred_arr.flatten(), sample_weight=weights_flat)
-
+        # 1. Official Global Weighted R2
+        r2 = calculate_global_weighted_r2(y_t_arr, y_p_arr, OFFICIAL_WEIGHTS)
+        
+        # 2. MAE per column
+        mae = np.abs(y_t_arr - y_p_arr).mean(0)
+        
         logger.info(
-            f"Epoch {epoch+1} | "
-            f"Train [Total: {train_loss_total/n_train:.4f}, Clover: {train_loss_clover/n_train:.2f}, "
-            f"Dead: {train_loss_dead/n_train:.2f}, Green: {train_loss_green/n_train:.2f}, "
-            f"TotalMass: {train_loss_total_mass/n_train:.2f}, GDM: {train_loss_gdm/n_train:.2f}] | "
-            f"Val [Total: {val_loss_total/n_val:.4f}, Clover: {val_loss_clover/n_val:.2f}, "
-            f"Dead: {val_loss_dead/n_val:.2f}, Green: {val_loss_green/n_val:.2f}, "
-            f"TotalMass: {val_loss_total_mass/n_val:.2f}, GDM: {val_loss_gdm/n_val:.2f}, "
-            f"Weighted R²: {score:.5f}]"
+            f"Ep {ep+1} | TrainLog: {logs['loss']/len(tr_load):.4f} | "
+            f"ValLog: {val_log_loss/len(val_load):.4f} | "
+            f"Global R²: {r2:.4f} | "
+            f"MAE(g): [C:{mae[0]:.0f} D:{mae[1]:.0f} G:{mae[2]:.0f} T:{mae[3]:.0f}]"
         )
-
-        # Save Best Model Package
-        if score > best_score:
-            best_score = score
+        
+        if r2 > best_r2:
+            best_r2 = r2
+            os.makedirs('models_stage2', exist_ok=True)
+            torch.save(model.state_dict(), 'models_stage2/best_model.pth')
             
-            checkpoint = {
-                'model_state_dict': model.state_dict(),
-                'tabular_cols': final_tabular_cols,
-                'imputation_stats': {
-                    'median_map': median_map,
-                    'global_medians': global_medians
-                },
-                'backbone_name': BACKBONE_S2,
-                'score': best_score
-            }
-            torch.save(checkpoint, 'stage2_package.pth')
-            logger.info(f"NEW BEST R²: {best_score:.5f} (Saved to stage2_package.pth)")
-            
-        scheduler.step()
+        sched.step()
 
 # ====================== MAIN EXECUTION ======================
 if __name__ == '__main__':
@@ -680,4 +571,7 @@ if __name__ == '__main__':
         df_oof = pd.read_csv('train_with_oof_predictions.csv')
         train_stage2(df_oof)
     else:
-        logger.error("OOF file not found. Please run Stage 1 first.")
+        logger.error("OOF file not found. Training run Stage 1 first.")
+        train_stage1_kfold(load_data())
+        df_oof = pd.read_csv('train_with_oof_predictions.csv')
+        train_stage2(df_oof)

@@ -540,10 +540,15 @@ class Stage2ModelLog(nn.Module):
 def train_stage2(df):
     logger.info("=== STAGE 2: Physics-Informed Biomass Regression ===")
     
-    # Standard split
-    tr_df, val_df = train_test_split(df, test_size=TEST_SPLIT_RATIO, random_state=42,stratify=df['STAGE2_STRATIFICATION_COLUMN'])
-    logger.info(f"Stratifying Stage 2 on column: {STAGE2_STRATIFICATION_COLUMN}")
-    print_stratification_stats(df,tr_df,val_df, STAGE2_STRATIFICATION_COLUMN,logger)    
+    if STAGE2_STRATIFICATION_COLUMN not in df.columns:
+        logger.warning(f"Stratification column '{STAGE2_STRATIFICATION_COLUMN}' not found in dataframe!")
+        logger.info("Proceeding without stratification...")
+        tr_df, val_df = train_test_split(df, test_size=TEST_SPLIT_RATIO, random_state=42)
+    else:
+        logger.info(f"Stratifying Stage 2 on column: {STAGE2_STRATIFICATION_COLUMN}")
+        tr_df, val_df = train_test_split(df, test_size=TEST_SPLIT_RATIO, random_state=42,stratify=df[STAGE2_STRATIFICATION_COLUMN])
+        print_stratification_stats(df,tr_df,val_df, STAGE2_STRATIFICATION_COLUMN,logger)    
+        
     # --- DYNAMIC FEATURE CALCULATION ---
     extra_feats = []
     if USE_COUNT_FEATURES:

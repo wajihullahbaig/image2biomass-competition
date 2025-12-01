@@ -196,7 +196,14 @@ class Stage1Model(nn.Module):
 # ====================== TRAINING FUNCTION ======================
 def train_stage1_kfold(df_wide):
     logger.info(f"=== STAGE 1: K-Fold Training (Folds={N_FOLDS}, Stratify=Season) ===")
-    
+    logger.info(f"Total Samples: {len(df_wide)}")
+    logger.info(f"Using Sample Weights: {USE_SAMPLE_WEIGHTS_S1}")
+    logger.info(f"Stage 1 Epochs: {STAGE1_EPOCHS}")
+    logger.info(f"Backbone: {BACKBONE_S1}")
+    logger.info(f"Learning Rate: {LEARNING_RATE}")
+    logger.info(f"Stratification Column: {STAGE1_STRATIFICATION_COLUMN}")
+    logger.info(f"Device: {DEVICE}")
+
     # 1. Global Label Encoder (Must fit on ALL data to ensure consistency across folds)
     species_le = LabelEncoder()
     species_le.fit(df_wide['Species'].fillna('Unknown'))
@@ -539,6 +546,14 @@ class Stage2ModelLog(nn.Module):
 
 def train_stage2(df):
     logger.info("=== STAGE 2: Physics-Informed Biomass Regression ===")
+    logger.info(f"Total Training Samples: {len(df)}")
+    logger.info(f"Test Split Ratio: {TEST_SPLIT_RATIO}, Stratify Column: {STAGE2_STRATIFICATION_COLUMN}")
+    logger.info(f"Using Count/Frequency Features: {USE_COUNT_FEATURES}")
+    logger.info(f"Stage 2 Epochs: {STAGE2_EPOCHS}")
+    logger.info(f"Official Weights: {OFFICIAL_WEIGHTS}")
+    logger.info(f"Column Weights Tensor: {COL_WEIGHTS_TENSOR}")
+    logger.info(f"Backbone: {BACKBONE_S2}")    
+    logger.info(f"Device: {DEVICE}")
     
     if STAGE2_STRATIFICATION_COLUMN not in df.columns:
         logger.warning(f"Stratification column '{STAGE2_STRATIFICATION_COLUMN}' not found in dataframe!")
@@ -548,7 +563,7 @@ def train_stage2(df):
         logger.info(f"Stratifying Stage 2 on column: {STAGE2_STRATIFICATION_COLUMN}")
         tr_df, val_df = train_test_split(df, test_size=TEST_SPLIT_RATIO, random_state=42,stratify=df[STAGE2_STRATIFICATION_COLUMN])
         print_stratification_stats(df,tr_df,val_df, STAGE2_STRATIFICATION_COLUMN,logger)    
-        
+
     # --- DYNAMIC FEATURE CALCULATION ---
     extra_feats = []
     if USE_COUNT_FEATURES:
@@ -569,7 +584,7 @@ def train_stage2(df):
     
     # Model input dimension adapts automatically
     model = Stage2ModelLog(len(tr_ds.tab_cols),stage_index=1).to(DEVICE)
-    optim = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+    optim = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=STAGE2_EPOCHS)
     scaler = torch.amp.GradScaler("cuda")
     

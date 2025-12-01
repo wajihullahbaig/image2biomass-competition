@@ -328,7 +328,6 @@ def enforce_physical_constraints(predictions_real_scale):
 
 
 
-
 def calculate_global_weighted_r2(y_true, y_pred, weights):
     """
     Official Metric Implementation.
@@ -337,6 +336,16 @@ def calculate_global_weighted_r2(y_true, y_pred, weights):
     """
     y_true = np.array(y_true).flatten()
     y_pred = np.array(y_pred).flatten()
+    
+    # Validation
+    if len(y_true) != len(y_pred):
+        raise ValueError(f"Shape mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}")
+    
+    if len(y_true) % 5 != 0:
+        raise ValueError(f"Input length {len(y_true)} must be divisible by 5")
+    
+    if len(weights) != 5:
+        raise ValueError("weights must have exactly 5 elements")
     
     # Repeat weights pattern for every sample
     n_samples = len(y_true) // 5
@@ -349,5 +358,7 @@ def calculate_global_weighted_r2(y_true, y_pred, weights):
     ss_res = np.sum(w_flat * (y_true - y_pred)**2)
     ss_tot = np.sum(w_flat * (y_true - global_mean)**2)
     
-    if ss_tot == 0: return 0.0
+    if ss_tot == 0:
+        return np.nan  # or 1.0, depending on interpretation
+    
     return 1 - (ss_res / ss_tot)

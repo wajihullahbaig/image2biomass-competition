@@ -19,7 +19,7 @@ from tqdm import tqdm
 from configs import (
     DEVICE, IMAGE_SIZE, BATCH_SIZE, 
     BACKBONE_S1, BACKBONE_S2, LEARNING_RATE, 
-    N_FOLDS,
+    N_FOLDS, STAGE1_STRATIFICATION_COLUMN, STAGE2_STRATIFICATION_COLUMN, TEST_SPLIT_RATIO,
     USE_SAMPLE_WEIGHTS_S1, 
     STAGE1_EPOCHS, 
     STAGE2_EPOCHS, 
@@ -30,7 +30,7 @@ from configs import (
 )
 from common import (
     calculate_global_weighted_r2, calculate_sample_weights_mean, calculate_sample_weights,
-    get_image_data_transforms, setup_logging, set_seed,
+    get_image_data_transforms, print_stratification_stats, setup_logging, set_seed,
     get_season, calculate_count_frequency_features
 )
 
@@ -60,7 +60,7 @@ def load_data():
         aggfunc='max' 
     ).reset_index()
     
-    # Fill missing targets with 0.0 (If clover is missing, it's 0g)
+    # Fill missing targets with 0.0 
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     for col in target_cols:
         if col not in targets.columns: targets[col] = 0.0
@@ -113,7 +113,6 @@ class Stage1Dataset(Dataset):
             self.df['species_label'] = self.species_le.fit_transform(self.df['Species'].fillna('Unknown'))
         else:
             self.species_le = species_le
-            # Handle unseen species safely by mapping to -1
             self.df['species_label'] = self.df['Species'].fillna('Unknown').map(
                 lambda x: self.species_le.transform([x])[0] if x in self.species_le.classes_ else -1
             )
@@ -121,7 +120,7 @@ class Stage1Dataset(Dataset):
         # 2. Sample Weights (Your weighting mechanism intact)
         if self.use_weights:
             # Note: We calculate weights based on Species balance
-            self.df, _ = calculate_sample_weights(self.df, group_col='Species', smooth=5.0, logger=None)
+            self.df, _ = calculate_sample_weights(self.df, group_col='Species',smooth=5.0, logger=None)
         else:
             self.df['sample_weight'] = 1.0
 
@@ -208,8 +207,8 @@ def train_stage1_kfold(df_wide):
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     
     # User Request: Stratify on 'season'
-    stratify_col = df_wide['season']
-
+    stratify_col = df_wide[STAGE1_STRATIFICATION_COLUMN]
+    
     # Initialize OOF columns
     oof_df = df_wide.copy()
     oof_df['pred_species_idx'] = -1
@@ -236,7 +235,8 @@ def train_stage1_kfold(df_wide):
         
         train_df = df_wide.iloc[train_idx]
         val_df = df_wide.iloc[val_idx]
-
+        logger.info(f"Stratifying Stage 1 K-Fold on column: {STAGE1_STRATIFICATION_COLUMN}")
+        print_stratification_stats(df_wide,train_df,val_df, STAGE1_STRATIFICATION_COLUMN,logger)    
         # Datasets
         # Train: Use weights, Augmentation
         train_dataset = Stage1Dataset(train_df, transform=get_image_data_transforms()[0], 
@@ -353,7 +353,7 @@ def train_stage1_kfold(df_wide):
             
             # Log Epoch Stats
             logger.info(
-                f"F{fold+1} E{epoch+1} | "
+                f"Stage1 F{fold+1} E{epoch+1} | "
                 f"Train: [Tot:{train_log['total']:.4f} Sp:{train_log['sp']:.3f} Nd:{train_log['ndvi']:.3f} H:{train_log['h']:.3f}] | "
                 f"Val: [Tot:{val_log['total']:.4f} Sp:{val_log['sp']:.3f} Nd:{val_log['ndvi']:.3f} H:{val_log['h']:.3f}]"
             )
@@ -411,12 +411,11 @@ def train_stage1_kfold(df_wide):
 
 # ====================== STAGE 2: PHYSICS-INFORMED BIOMASS ======================
 class Stage2Dataset(Dataset):
-    def __init__(self, df, transform=None):
+    def __init__(self, df, transform=None, extra_features=None):
         self.df = df.copy().reset_index(drop=True)
         self.transform = transform
         
         # Use OOF Predictions for training features
-        # Ensuring float32
         self.df['NDVI_final'] = pd.to_numeric(self.df['pred_ndvi'], errors='coerce').fillna(0.0).astype(np.float32)
         self.df['Height_final_log'] = pd.to_numeric(self.df['pred_height_log'], errors='coerce').fillna(0.0).astype(np.float32)
         
@@ -427,9 +426,15 @@ class Stage2Dataset(Dataset):
         self.df['mon_sin'] = pd.to_numeric(self.df['pred_mon_sin'], errors='coerce').fillna(0.0).astype(np.float32)
         self.df['mon_cos'] = pd.to_numeric(self.df['pred_mon_cos'], errors='coerce').fillna(0.0).astype(np.float32)
         
+        # Base Features
         self.tab_cols = ['NDVI_final', 'Height_final_log', 'ndvi_h_mul', 'ndvi_h_ratio', 'mon_sin', 'mon_cos']
         
-        # If the tabular data contains NaNs, the model instantly outputs NaNs
+        # --- FEATURE SELECTION: Seamless Integration ---
+        if extra_features:
+            # We assume these are already calculated in the dataframe passed to init
+            self.tab_cols.extend(extra_features)
+            
+        # Handle NaNs in tabular inputs
         if self.df[self.tab_cols].isnull().any().any():
             logger.warnning ("WARNING: NaNs found in tabular inputs! Filling with 0.")
             self.df[self.tab_cols] = self.df[self.tab_cols].fillna(0.0)
@@ -439,7 +444,7 @@ class Stage2Dataset(Dataset):
         self.y_log = np.log1p(self.y_real)
         
         # Weights for Balancing (Optional, but good for stability)
-        self.df, _ = calculate_sample_weights(self.df, 'pred_species') # Use predicted species group
+        self.df, _ = calculate_sample_weights(self.df, 'pred_species',smooth=10.0) # Use predicted species group
         self.df['sample_weight'] = self.df['sample_weight'].clip(0.1, 10.0)
 
     def __len__(self): return len(self.df)
@@ -461,11 +466,35 @@ class Stage2Dataset(Dataset):
         return img, tab, y_log, y_real, w
 
 class Stage2ModelLog(nn.Module):
-    def __init__(self, tab_dim):
+    def __init__(self, tab_dim, stage_index=None):
         super().__init__()
-        self.backbone = timm.create_model(BACKBONE_S2, pretrained=True, num_classes=0)
+        
+        if stage_index is not None:
+            # Use features_only mode to extract from specific stage
+            assert stage_index in [0, 1, 2, 3], \
+                f"Invalid stage_index={stage_index}. Models have stages [0,1,2,3]."
+            self.stage_index = stage_index
+            self.use_features_only = True
+            
+            self.backbone = timm.create_model(
+                BACKBONE_S2, 
+                pretrained=True, 
+                features_only=True,
+                out_indices=(stage_index,)
+            )
+            
+            # Get feature dimension from the specific stage
+            img_feature_size = self.backbone.feature_info[stage_index]['num_chs']
+            self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        else:
+            # Use standard mode (original behavior)
+            self.use_features_only = False
+            self.backbone = timm.create_model(BACKBONE_S2, pretrained=True, num_classes=0)
+            img_feature_size = self.backbone.num_features
+            self.pool = None
+        
         self.mlp = nn.Sequential(
-            nn.Linear(self.backbone.num_features + tab_dim, 512),
+            nn.Linear(img_feature_size + tab_dim, 512),
             nn.BatchNorm1d(512), nn.SiLU(), nn.Dropout(0.3),
             nn.Linear(512, 256),
             nn.BatchNorm1d(256), nn.SiLU()
@@ -473,13 +502,20 @@ class Stage2ModelLog(nn.Module):
         self.head = nn.Linear(256, 3) # Log(1+C), Log(1+D), Log(1+G)
 
     def forward(self, img, tab):
-        f = self.backbone(img)
-        if len(f.shape) > 2: f = f.mean([2, 3])
+        if self.use_features_only:
+            # Extract from specific stage
+            f = self.backbone(img)[0]
+            f = f.permute(0, 3, 1, 2)  # Adjust dimensions if needed
+            f = self.pool(f).squeeze(-1).squeeze(-1)
+        else:
+            # Standard extraction (original behavior)
+            f = self.backbone(img)
+            if len(f.shape) > 2: 
+                f = f.mean([2, 3])
         
         x = torch.cat([f, tab], dim=1)
         # Softplus ensures positive mass output
         log_comp = F.softplus(self.head(self.mlp(x)))
-        log_comp = torch.clamp(log_comp, max=10.0) 
         l_c, l_d, l_g = log_comp[:, 0:1], log_comp[:, 1:2], log_comp[:, 2:3]
         
         # Physics: Log -> Real
@@ -502,83 +538,154 @@ class Stage2ModelLog(nn.Module):
         return pred_log, pred_real
 
 def train_stage2(df):
+    logger.info("=== STAGE 2: Physics-Informed Biomass Regression ===")
     
     # Standard split
-    tr_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
+    tr_df, val_df = train_test_split(df, test_size=TEST_SPLIT_RATIO, random_state=42,stratify=df['STAGE2_STRATIFICATION_COLUMN'])
+    logger.info(f"Stratifying Stage 2 on column: {STAGE2_STRATIFICATION_COLUMN}")
+    print_stratification_stats(df,tr_df,val_df, STAGE2_STRATIFICATION_COLUMN,logger)    
+    # --- DYNAMIC FEATURE CALCULATION ---
+    extra_feats = []
+    if USE_COUNT_FEATURES:
+        logger.info("Enabled: Calculating Count/Frequency features for Stage 2...")
+        # We calculate statistics on Train and apply to Val to prevent leakage
+        tr_df, val_df, extra_feats = calculate_count_frequency_features(
+            tr_df, val_df, 
+            group_col='pred_species',      # Count occurrences of this Predicted Species
+            local_group_col='season_final', # ... specifically within this Predicted Season
+            logger=logger
+        )
     
-    tr_ds = Stage2Dataset(tr_df, get_image_data_transforms()[0])
-    val_ds = Stage2Dataset(val_df, get_image_data_transforms()[1])
+    tr_ds = Stage2Dataset(tr_df, get_image_data_transforms()[0], extra_features=extra_feats)
+    val_ds = Stage2Dataset(val_df, get_image_data_transforms()[1], extra_features=extra_feats)
     
     tr_load = DataLoader(tr_ds, BATCH_SIZE, shuffle=True, num_workers=4)
     val_load = DataLoader(val_ds, BATCH_SIZE, shuffle=False, num_workers=4)
     
-    model = Stage2ModelLog(len(tr_ds.tab_cols)).to(DEVICE)
+    # Model input dimension adapts automatically
+    model = Stage2ModelLog(len(tr_ds.tab_cols),stage_index=1).to(DEVICE)
     optim = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=STAGE2_EPOCHS)
     scaler = torch.amp.GradScaler("cuda")
     
-    # Huber Loss on Log Targets
-    criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    # Recommended: MSELoss for R2 maximization
+    criterion = nn.MSELoss(reduction='none') 
     
     best_r2 = -float('inf')
+    component_names = ['Clover', 'Dead', 'Green', 'Total', 'GDM']
     
     for ep in range(STAGE2_EPOCHS):
         model.train()
-        logs = {'loss': 0}
+        
+        # Initialize trackers for each component
+        # We track the "Weighted Loss" to see how much each component contributes to the optimization
+        train_metrics = {name: 0.0 for name in component_names}
+        train_metrics['Global_Loss'] = 0.0
         
         pbar = tqdm(tr_load, leave=False, desc=f"Ep {ep+1}")
+        
         for img, tab, y_log, _, w in pbar:
             img, tab, y_log, w = img.to(DEVICE), tab.to(DEVICE), y_log.to(DEVICE), w.to(DEVICE)
             
             optim.zero_grad()
             with torch.amp.autocast('cuda'):
                 p_log, _ = model(img, tab)
-                # Weighted Loss
-                loss_vec = (criterion(p_log, y_log) * COL_WEIGHTS_TENSOR).sum(1)
-                loss = (loss_vec * w).mean()
                 
-            scaler.scale(loss).backward()
+                # Calculate Raw MSE per component (B, 5)
+                raw_loss = criterion(p_log, y_log)
+                
+                # Apply Component Weights (B, 5)
+                weighted_loss_components = raw_loss * COL_WEIGHTS_TENSOR
+                
+                # Sum components to get sample loss (B)
+                sample_loss = weighted_loss_components.sum(dim=1)
+                
+                # Apply Sample Weight (Class balancing) and Mean
+                final_loss = (sample_loss * w).mean()
+                
+            scaler.scale(final_loss).backward()
             scaler.step(optim)
             scaler.update()
             
-            logs['loss'] += loss.item()
+            # --- Detailed Logging Accumulation ---
+            train_metrics['Global_Loss'] += final_loss.item()
             
-        # Validation
+            # Detach and calculate mean weighted loss per component for logging
+            with torch.no_grad():
+                # We average over the batch, respecting sample weights 'w'
+                # shape: (B, 5) * (B, 1) -> (B, 5) -> mean(0) -> (5,)
+                batch_comp_loss = (weighted_loss_components * w.unsqueeze(1)).mean(dim=0)
+                
+                for i, name in enumerate(component_names):
+                    train_metrics[name] += batch_comp_loss[i].item()
+            
+            # Simple progress bar
+            pbar.set_postfix({'Loss': f"{final_loss.item():.4f}"})
+            
+        # Normalize Train Metrics
+        num_batches = len(tr_load)
+        train_log_str = " | ".join([f"{k}: {v/num_batches:.4f}" for k, v in train_metrics.items()])
+        
+        # --- VALIDATION ---
         model.eval()
         all_pred, all_true = [], []
-        val_log_loss = 0
+        
+        # We also track validation loss breakdown
+        val_metrics = {name: 0.0 for name in component_names}
+        val_metrics['Global_Loss'] = 0.0
         
         with torch.no_grad():
             for img, tab, y_log, y_real, _ in val_load:
                 img, tab, y_log = img.to(DEVICE), tab.to(DEVICE), y_log.to(DEVICE)
                 with torch.amp.autocast('cuda'):
                     p_log, p_real = model(img, tab)
-                    val_log_loss += (criterion(p_log, y_log) * COL_WEIGHTS_TENSOR).sum().item()
+                    
+                    # Loss Calculation (Same as train)
+                    raw_loss = criterion(p_log, y_log)
+                    weighted_loss = raw_loss * COL_WEIGHTS_TENSOR
+                    loss_val = weighted_loss.sum(1).mean() # No sample weights in val
+                    
+                    # Accumulate
+                    val_metrics['Global_Loss'] += loss_val.item()
+                    mean_comp_loss = weighted_loss.mean(dim=0) # Average over batch
+                    for i, name in enumerate(component_names):
+                        val_metrics[name] += mean_comp_loss[i].item()
                 
                 all_pred.append(p_real.float().cpu().numpy())
                 all_true.append(y_real.float().cpu().numpy())
         
-        # Metrics
+        # Normalize Validation Loss
+        num_val = len(val_load)
+        val_loss_str = " | ".join([f"{k}: {v/num_val:.4f}" for k, v in val_metrics.items()])
+        
+        # --- METRICS CALCULATION ---
         y_p_arr = np.concatenate(all_pred)
         y_t_arr = np.concatenate(all_true)
         
-        # 1. Official Global Weighted R2
+        # 1. Global Weighted R2
         r2 = calculate_global_weighted_r2(y_t_arr, y_p_arr, OFFICIAL_WEIGHTS)
         
-        # 2. MAE per column
-        mae = np.abs(y_t_arr - y_p_arr).mean(0)
+        # 2. MAE per column (In Grams)
+        mae_per_col = np.abs(y_t_arr - y_p_arr).mean(0)
+        mae_str = " | ".join([f"{name}: {mae:.1f}g" for name, mae in zip(component_names, mae_per_col)])
         
+        # --- FINAL LOGGING ---
         logger.info(
-            f"Ep {ep+1} | TrainLog: {logs['loss']/len(tr_load):.4f} | "
-            f"ValLog: {val_log_loss/len(val_load):.4f} | "
-            f"Global R²: {r2:.4f} | "
-            f"MAE(g): [C:{mae[0]:.0f} D:{mae[1]:.0f} G:{mae[2]:.0f} T:{mae[3]:.0f}]"
+                f"Stage2 E{ep+1} | "
+                f"Train: [{train_log_str}] "
         )
+        logger.info(
+                f"Stage2 E{ep+1} | "
+                f"Val:   [{val_loss_str}]"
+        )
+        logger.info(f"MAE:   [{mae_str}]")
+        logger.info(f"Global Weighted R²: {r2:.5f}")
         
         if r2 > best_r2:
             best_r2 = r2
             os.makedirs('models_stage2', exist_ok=True)
             torch.save(model.state_dict(), 'models_stage2/best_model.pth')
+            logger.info(f">> NEW BEST MODEL SAVED! ({r2:.5f})")
             
         sched.step()
 

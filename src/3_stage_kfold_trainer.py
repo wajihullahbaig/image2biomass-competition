@@ -579,7 +579,7 @@ def train_stage2(df):
     tr_ds = Stage2Dataset(tr_df, get_image_data_transforms()[0], extra_features=extra_feats)
     val_ds = Stage2Dataset(val_df, get_image_data_transforms()[1], extra_features=extra_feats)
     
-    tr_load = DataLoader(tr_ds, BATCH_SIZE, shuffle=True, num_workers=4)
+    tr_load = DataLoader(tr_ds, BATCH_SIZE, shuffle=True, num_workers=4,drop_last=True)
     val_load = DataLoader(val_ds, BATCH_SIZE, shuffle=False, num_workers=4)
     
     # Model input dimension adapts automatically

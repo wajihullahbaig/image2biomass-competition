@@ -26,6 +26,7 @@ def get_image_data_transforms()->tuple:
                 transforms.RandomEqualize(),
                 transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
                 transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+                transforms.RandomResizedCrop(size=(IMAGE_SIZE, IMAGE_SIZE), scale=(0.8, 1.0)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
             ])

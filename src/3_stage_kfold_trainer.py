@@ -14,6 +14,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import r2_score
 import os
 from tqdm import tqdm
+from sklearn.model_selection import KFold
 
 # ====================== COMMON IMPORTS ======================
 from configs import (
@@ -217,6 +218,7 @@ def train_stage1_kfold(df_wide):
     stratify_col = None
     if STAGE1_STRATIFICATION_COLUMN not in df_wide.columns:
         logger.warning(f"Stratification column '{STAGE1_STRATIFICATION_COLUMN}' not found in dataframe!")
+        logger.info("Proceeding without stratification...")
     else:
         stratify_col = df_wide[STAGE1_STRATIFICATION_COLUMN]
         logger.info(f"Stratifying Stage 1 K-Fold on column: {STAGE1_STRATIFICATION_COLUMN}")
@@ -242,13 +244,21 @@ def train_stage1_kfold(df_wide):
     torch.save(metadata, os.path.join(model_save_dir, 'stage1_metadata.pth'))
 
     # Loop Folds
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df_wide, stratify_col)):
+    if stratify_col is None:
+        logger.info("No stratification column provided — using plain KFold splitting.")
+        kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+        splitter = kf.split(df_wide)
+    else:
+        splitter = skf.split(df_wide, stratify_col)
+        print_stratification_stats(df_wide,train_df,val_df, STAGE1_STRATIFICATION_COLUMN,logger)    
+        
+
+    for fold, (train_idx, val_idx) in enumerate(splitter):
         logger.info(f"\n--- Starting Fold {fold+1}/{N_FOLDS} ---")
         
         train_df = df_wide.iloc[train_idx]
         val_df = df_wide.iloc[val_idx]
-        logger.info(f"Stratifying Stage 1 K-Fold on column: {STAGE1_STRATIFICATION_COLUMN}")
-        print_stratification_stats(df_wide,train_df,val_df, STAGE1_STRATIFICATION_COLUMN,logger)    
+        
         # Datasets
         # Train: Use weights, Augmentation
         train_dataset = Stage1Dataset(train_df, transform=get_image_data_transforms()[0], 

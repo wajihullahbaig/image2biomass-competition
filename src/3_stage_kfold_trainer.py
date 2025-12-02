@@ -195,7 +195,7 @@ class Stage1Model(nn.Module):
 
 # ====================== TRAINING FUNCTION ======================
 def train_stage1_kfold(df_wide):
-    logger.info(f"=== STAGE 1: K-Fold Training (Folds={N_FOLDS}, Stratify=Season) ===")
+    logger.info(f"=== STAGE 1: K-Fold Training  ===")
     logger.info(f"Total Samples: {len(df_wide)}")
     logger.info(f"Using Sample Weights: {USE_SAMPLE_WEIGHTS_S1}")
     logger.info(f"Stage 1 Epochs: {STAGE1_EPOCHS}")
@@ -214,7 +214,12 @@ def train_stage1_kfold(df_wide):
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     
     # User Request: Stratify on 'season'
-    stratify_col = df_wide[STAGE1_STRATIFICATION_COLUMN]
+    stratify_col = None
+    if STAGE1_STRATIFICATION_COLUMN not in df_wide.columns:
+        logger.error(f"Stratification column '{STAGE1_STRATIFICATION_COLUMN}' not found in dataframe!")
+    else:
+        stratify_col = df_wide[STAGE1_STRATIFICATION_COLUMN]
+        logger.info(f"Stratifying Stage 1 K-Fold on column: {STAGE1_STRATIFICATION_COLUMN}")
     
     # Initialize OOF columns
     oof_df = df_wide.copy()
@@ -252,7 +257,7 @@ def train_stage1_kfold(df_wide):
         val_dataset = Stage1Dataset(val_df, transform=get_image_data_transforms()[1], 
                                     species_le=species_le, fit_le=False, use_weights=False)
 
-        # Loaders - SHUFFLE=TRUE for Train (Crucial Change)
+        # Loaders - SHUFFLE=TRUE for Train - we dont have date/time in test set, so we dont care of date/time ordering
         train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, 
                                   shuffle=True, # No more Curriculum Sampler
                                   num_workers=4, pin_memory=True)

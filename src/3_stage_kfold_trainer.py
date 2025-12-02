@@ -210,9 +210,6 @@ def train_stage1_kfold(df_wide):
     species_le.fit(df_wide['Species'].fillna('Unknown'))
     num_species = len(species_le.classes_)
     
-    # 2. Stratified K-Fold Setup
-    # Random_state ensures reproducibility. Shuffle=True mixes the data before splitting.
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     
     # User Request: Stratify on 'season'
     stratify_col = None
@@ -243,12 +240,13 @@ def train_stage1_kfold(df_wide):
     }
     torch.save(metadata, os.path.join(model_save_dir, 'stage1_metadata.pth'))
 
-    # Loop Folds
+    # 2. K-Fold Setup    
     if stratify_col is None:
         logger.info("No stratification column provided — using plain KFold splitting.")
         kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
         splitter = kf.split(df_wide)
     else:
+        skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)    
         splitter = skf.split(df_wide, stratify_col)
         print_stratification_stats(df_wide,train_df,val_df, STAGE1_STRATIFICATION_COLUMN,logger)    
         
@@ -466,8 +464,7 @@ class Stage2Dataset(Dataset):
         self.y_log = np.log1p(self.y_real)
         
         # Weights for Balancing (Optional, but good for stability)
-        self.df, _ = calculate_sample_weights(self.df, 'pred_species',smooth=10.0,logger=logger) # Use predicted species group
-        self.df['sample_weight'] = self.df['sample_weight'].clip(0.1, 10.0)
+        self.df, _ = calculate_sample_weights(self.df, 'pred_species',smooth=5.0,logger=logger) # Use predicted species group        
 
     def __len__(self): return len(self.df)
     

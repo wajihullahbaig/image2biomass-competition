@@ -246,9 +246,70 @@ def viz_nonlinear(df):
     plt.savefig(os.path.join(BASE_VIZ_PATH, '4_NonLinear_Interactions_Full.png'))
     plt.close()
 
-# ==============================================================================
-# MAIN
-# ==============================================================================
+
+def viz_interaction_correlations(df, target_cols):
+    print("6. Generating Interaction vs Target Correlation Matrix...")
+    
+    # 1. Ensure Features Exist (Re-calculating to be safe)
+    epsilon = 1e-3
+    # Base
+    df['Interaction_Mul'] = df['Height_Ave_cm'] * df['Pre_GSHH_NDVI']
+    df['Interaction_Add'] = df['Height_Ave_cm'] + df['Pre_GSHH_NDVI']
+    df['Interaction_Ratio_NDVI_H'] = df['Pre_GSHH_NDVI'] / (df['Height_Ave_cm'] + epsilon)
+    df['Interaction_Ratio_H_NDVI'] = df['Height_Ave_cm'] / (df['Pre_GSHH_NDVI'] + epsilon)
+    
+    # 2. Setup Lists
+    # We use the LOG transformed targets because Pearson correlation assumes linearity,
+    # and your previous plots proved the relationship is linear in Log space.
+    log_targets = [f'Log_{t}' for t in target_cols]
+    
+    # Renaming for cleaner plot labels
+    feature_map = {
+        'Height_Ave_cm': 'Height (Base)',
+        'Pre_GSHH_NDVI': 'NDVI (Base)',
+        'Interaction_Mul': 'Multiplication (H * NDVI)',
+        'Interaction_Add': 'Addition (H + NDVI)',
+        'Interaction_Ratio_NDVI_H': 'Ratio (NDVI / H)',
+        'Interaction_Ratio_H_NDVI': 'Ratio (H / NDVI)'
+    }
+    
+    # 3. Calculate Correlation Matrix
+    # We only want: Rows = Features, Cols = Targets
+    features = list(feature_map.keys())
+    
+    # Calculate full correlation matrix then slice it
+    full_corr = df[features + log_targets].corr()
+    target_corr = full_corr.loc[features, log_targets]
+    
+    # Rename index for readability
+    target_corr = target_corr.rename(index=feature_map)
+    # Rename columns to remove "Log_" and "_g" for cleaner reading
+    target_corr.columns = [c.replace('Log_', '').replace('_g', '') for c in target_corr.columns]
+
+    # 4. Plot
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(
+        target_corr,
+        annot=True,
+        fmt=".2f",
+        cmap='RdBu_r', # Red = Negative, Blue = Positive
+        center=0,
+        linewidths=1,
+        linecolor='white',
+        cbar_kws={"label": "Pearson Correlation (r)"},
+        square=True
+    )
+    
+    plt.title("Which Feature Predicts Which Target?\n(Correlation of Interactions vs Log-Biomass)", fontsize=16)
+    plt.yticks(rotation=0)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    
+    save_path = os.path.join(BASE_VIZ_PATH, '5_Interaction_Target_Correlation.png')
+    plt.savefig(save_path)
+    plt.close()
+    print(f"   -> Saved to {save_path}")
+
 if __name__ == '__main__':
     # Load
     df, targets = process_data('train.csv')
@@ -258,6 +319,9 @@ if __name__ == '__main__':
     viz_distributions(df, targets)
     viz_correlations(df, targets)
     viz_nonlinear(df)
+    
+    # NEW STEP
+    viz_interaction_correlations(df, targets)
     
     print("="*60)
     print(f"Done. Visualizations saved to: {BASE_VIZ_PATH}")

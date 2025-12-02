@@ -1,24 +1,23 @@
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 from sklearn.model_selection import train_test_split
-from tqdm import tqdm
+from scipy.stats import pearsonr
+import warnings
 
 # --- Configuration ---
-BASE_VIZ_PATH = 'visualizations'
-STAGE1_VIZ_PATH = os.path.join(BASE_VIZ_PATH, 'stage1')
-STAGE2_VIZ_PATH = os.path.join(BASE_VIZ_PATH, 'stage2')
+warnings.filterwarnings('ignore')
+BASE_VIZ_PATH = 'visualizations_detailed'
+os.makedirs(BASE_VIZ_PATH, exist_ok=True)
 
-# Create directories
-for path in [BASE_VIZ_PATH, STAGE1_VIZ_PATH, STAGE2_VIZ_PATH]:
-    os.makedirs(path, exist_ok=True)
-
-# Set style
-sns.set_theme(style="whitegrid")
-plt.rcParams['figure.dpi'] = 100
-plt.rcParams['savefig.dpi'] = 200
+# Visual Settings for Publication Quality
+sns.set_theme(style="ticks", context="notebook")
+plt.rcParams['figure.dpi'] = 150
+plt.rcParams['savefig.dpi'] = 300
+plt.rcParams['axes.grid'] = True
+plt.rcParams['grid.alpha'] = 0.3
 
 # --- Helper Functions ---
 def get_season(month):
@@ -27,265 +26,239 @@ def get_season(month):
     elif month in [6, 7, 8]: return 'Winter'
     else: return 'Spring'
 
-def prepare_stage1_features(df: pd.DataFrame) -> pd.DataFrame:
-    print("Preparing Stage 1 features...")
-    wide_df = df.pivot_table(
-        index=['sample_id', 'image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm'],
-        columns='target_name',
-        values='target'
-    ).reset_index()
-
-    wide_df['Sampling_Date'] = pd.to_datetime(wide_df['Sampling_Date'])
-    wide_df['month'] = wide_df['Sampling_Date'].dt.month
-    wide_df['season'] = wide_df['month'].apply(get_season)
+def process_data(filepath='train.csv'):
+    print("1. Loading and Pivoting Data...")
+    df = pd.read_csv(filepath)
     
-    period = 12
-    wide_df['month_sin'] = np.sin(2 * np.pi * wide_df['month'] / period)
-    wide_df['month_cos'] = np.cos(2 * np.pi * wide_df['month'] / period)
+    # 1. Clean IDs
+    df['clean_id'] = df['sample_id'].astype(str).apply(lambda x: x.split('__')[0])
     
-    # Impute missing
-    for col in ['Pre_GSHH_NDVI', 'Height_Ave_cm']:
-        if wide_df[col].isnull().any():
-            wide_df[col] = wide_df[col].fillna(wide_df[col].median())
+    # 2. Pivot to Wide Format (One row per physical plot)
+    # We aggregate by max to merge rows, assuming constant metadata
+    pivot_cols = ['clean_id', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm']
+    valid_cols = [c for c in pivot_cols if c in df.columns]
     
-    return wide_df.drop(columns=['Sampling_Date'])
-
-def prepare_stage2_features(df: pd.DataFrame) -> pd.DataFrame:
-    print("Preparing Stage 2 features...")
-    wide_df = prepare_stage1_features(df)
+    # Pivot target values
+    targets = df.pivot_table(index='clean_id', columns='target_name', values='target', aggfunc='max').reset_index()
     
-    wide_df['Height_Ave_cm'] = np.log1p(wide_df['Height_Ave_cm'])
+    # Get Metadata
+    meta = df[valid_cols].drop_duplicates(subset=['clean_id'])
     
-    wide_df['NDVI_Height_MUL'] = wide_df['Pre_GSHH_NDVI'] * wide_df['Height_Ave_cm']
-    wide_df['NDVI_Height_ADD'] = wide_df['Pre_GSHH_NDVI'] + wide_df['Height_Ave_cm']
-    wide_df['NDVI_Height_Ratio'] = wide_df['Pre_GSHH_NDVI'] / (wide_df['Height_Ave_cm'] + 1e-5)
+    # Merge
+    wide = pd.merge(meta, targets, on='clean_id', how='left')
     
-    species_counts = wide_df['Species'].value_counts()
-    wide_df['species_count_global'] = wide_df['Species'].map(np.log1p(species_counts))
-    wide_df['species_freq_global'] = wide_df['Species'].map(species_counts / len(wide_df))
-    
-    seasonal_counts = wide_df.groupby(['season', 'Species']).size()
-    wide_df['species_count_seasonal'] = wide_df.apply(
-        lambda row: np.log1p(seasonal_counts.get((row['season'], row['Species']), 0)), axis=1
-    )
-    
-    return wide_df
-
-# --- Main EDA Script ---
-if __name__ == '__main__':
-    print("="*80)
-    print("COMPREHENSIVE EDA - STAGE-SPECIFIC FEATURE ANALYSIS")
-    print("="*80)
-    
-    # Load data
-    try:
-        df_long = pd.read_csv('train.csv')
-        print(f"Loaded train.csv with {len(df_long)} rows.")
-    except FileNotFoundError:
-        print("Error: train.csv not found!")
-        exit()
-
+    # 3. Fill Missing Targets with 0 (Standard assumption for biomass components)
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    for t in target_cols:
+        if t not in wide.columns: wide[t] = 0.0
+    wide[target_cols] = wide[target_cols].fillna(0.0)
     
-    # ========================================================================
-    # COMMON VISUALIZATIONS
-    # ========================================================================
-    print("\nGENERATING COMMON VISUALIZATIONS")
+    # 4. Feature Engineering
+    wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'])
+    wide['Month'] = wide['Sampling_Date'].dt.month
+    wide['Season'] = wide['Month'].apply(get_season)
     
-    df_common = prepare_stage1_features(df_long)
-    pbar = tqdm(total=4, desc="Common plots")
+    # Log Transforms for Skewed Targets (for visualization)
+    for t in target_cols:
+        wide[f'Log_{t}'] = np.log1p(wide[t])
 
-    # 1. Target Distributions
-    fig, axes = plt.subplots(2, 5, figsize=(20, 8))
-    fig.suptitle('Target Variable Distributions', fontsize=20)
-    for i, target in enumerate(target_cols):
-        sns.histplot(df_common[target], ax=axes[0, i], kde=True, bins=30, color='skyblue')
-        axes[0, i].set_title(f'{target} (Real Scale)')
-        sns.histplot(np.log1p(df_common[target]), ax=axes[1, i], kde=True, bins=30, color='green')
-        axes[1, i].set_title(f'{target} (Log1p Scale)')
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig(os.path.join(BASE_VIZ_PATH, '1_target_distributions.png'), bbox_inches='tight')
-    plt.close()
-    pbar.update(1)
+    # 5. Create Train/Validation Split for Distribution Analysis
+    # We stratify by State to ensure representativeness
+    train_idx, val_idx = train_test_split(wide.index, test_size=0.2, random_state=42, stratify=wide['State'])
+    wide['Set'] = 'Train'
+    wide.loc[val_idx, 'Set'] = 'Validation'
+    
+    print(f"   Data Shape: {wide.shape}")
+    return wide, target_cols
 
-    # 2. Categorical vs Target
-    train_df_common, _ = train_test_split(df_common, test_size=0.2, random_state=42, stratify=df_common['season'])
-    cat_features = ['State', 'Species', 'season']
-    fig, axes = plt.subplots(1, 3, figsize=(21, 7))
-    fig.suptitle('Categorical Features vs. Dry_Total_g (log1p scale)', fontsize=20)
-    for i, feature in enumerate(cat_features):
-        order = train_df_common[feature].value_counts().index
-        sns.violinplot(x=feature, y=np.log1p(train_df_common['Dry_Total_g']), 
-                       data=train_df_common, ax=axes[i], order=order, palette='viridis', cut=0)
-        axes[i].set_title(f'Dry_Total_g by {feature}')
-        if feature == 'Species':
-            axes[i].tick_params(axis='x', rotation=45)
+# ==============================================================================
+# 1. PHYSICS CONSISTENCY & COMPOSITION
+# ==============================================================================
+def viz_physics(df):
+    print("2. Generating Physics Consistency Checks...")
+    
+    # A. The Summation Check
+    df['Sum_Components'] = df['Dry_Clover_g'] + df['Dry_Dead_g'] + df['Dry_Green_g']
+    df['Physics_Error'] = df['Dry_Total_g'] - df['Sum_Components']
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # Plot 1: Correlation of Sum vs Total
+    sns.scatterplot(data=df, x='Sum_Components', y='Dry_Total_g', hue='Physics_Error', 
+                    palette='coolwarm', alpha=0.6, ax=axes[0])
+    max_val = max(df['Sum_Components'].max(), df['Dry_Total_g'].max())
+    axes[0].plot([0, max_val], [0, max_val], 'k--', lw=2, label='Perfect Physics (y=x)')
+    axes[0].set_title("Constraint: Total = Clover + Dead + Green")
+    axes[0].legend()
+    
+    # Plot 2: Composition by Season (Stacked)
+    # Normalize to see percentage composition
+    season_comp = df.groupby('Season')[['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']].mean()
+    season_comp_pct = season_comp.div(season_comp.sum(axis=1), axis=0) * 100
+    
+    season_comp_pct = season_comp_pct.reindex(['Summer', 'Autumn', 'Winter', 'Spring']) # Order
+    
+    season_comp_pct.plot(kind='bar', stacked=True, color=['#d62728', '#7f7f7f', '#2ca02c'], ax=axes[1])
+    axes[1].set_title("Biomass Composition Ratio by Season")
+    axes[1].set_ylabel("Percentage of Total Mass (%)")
+    axes[1].legend(title='Component', loc='upper right', bbox_to_anchor=(1.15, 1))
+    
     plt.tight_layout()
-    plt.savefig(os.path.join(BASE_VIZ_PATH, '2_categorical_vs_target.png'), bbox_inches='tight')
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '1_Physics_and_Composition.png'))
     plt.close()
-    pbar.update(1)
 
-    # 3. Samples per State
-    plt.figure(figsize=(10, 6))
-    sns.countplot(y='State', data=df_common, order=df_common['State'].value_counts().index, palette='crest')
-    plt.title('Number of Samples per State', fontsize=16)
-    plt.xlabel('Count'); plt.ylabel('State')
-    plt.tight_layout()
-    plt.savefig(os.path.join(BASE_VIZ_PATH, '3_samples_per_state.png'), bbox_inches='tight')
-    plt.close()
-    pbar.update(1)
+# ==============================================================================
+# 2. GROUPED DISTRIBUTIONS (TRAIN VS VALIDATION)
+# ==============================================================================
+def viz_distributions(df, target_cols):
+    print("3. Generating Grouped Target Distributions...")
+    
+    # We focus on the most important target: Dry_Total_g
+    # But checking if Train/Val have same distribution across categories
+    
+    groups = ['State', 'Season', 'Species']
+    
+    for group in groups:
+        plt.figure(figsize=(14, 6))
+        
+        # We use Log scale for Y-axis because biomass is exponentially distributed
+        # Boxen plots are better than boxplots for large datasets
+        sns.boxenplot(
+            data=df, 
+            x=group, 
+            y='Log_Dry_Total_g', 
+            hue='Set',
+            palette={'Train': '#3498db', 'Validation': '#e74c3c'}
+        )
+        
+        plt.title(f"Train/Val Distribution Mismatch Check: Grouped by {group}", fontsize=14)
+        plt.ylabel("Log(1 + Total Biomass)")
+        plt.xticks(rotation=45)
+        plt.legend(loc='upper right')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(BASE_VIZ_PATH, f'2_Dist_by_{group}.png'))
+        plt.close()
 
-    # 4. FIXED & BEAUTIFUL Mean Dry_Total_g by Month
-    monthly_biomass = df_common.groupby('month')['Dry_Total_g'].mean().reset_index()
-    month_names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-    monthly_biomass['month_name'] = monthly_biomass['month'].apply(lambda x: month_names[x-1])
-    monthly_biomass = monthly_biomass.sort_values('month')
-
-    # Seasonal color palette (cool to warm to cool)
-    colors = ['#4575b4','#91bfdb','#e0f3f8','#ffffbf','#fee090','#fc8d59',
-              '#f46d43','#d73027','#a50026','#d73027','#f46d43','#fc8d59']
-
-    plt.figure(figsize=(13, 7))
-    ax = sns.barplot(
-        data=monthly_biomass,
-        x='month_name',
-        y='Dry_Total_g',
-        palette=colors[:len(monthly_biomass)],
-        alpha=0.8,
-        edgecolor='black',
-        linewidth=1
+# ==============================================================================
+# 3. CORRELATION MATRICES (LOWER TRIANGLE)
+# ==============================================================================
+def viz_correlations(df, target_cols):
+    print("4. Generating Correlation Matrices...")
+    
+    # Select numeric features + targets
+    cols = ['Height_Ave_cm', 'Pre_GSHH_NDVI'] + target_cols
+    corr = df[cols].corr()
+    
+    # Create Lower Triangle Mask
+    mask = np.triu(np.ones_like(corr, dtype=bool))
+    
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(
+        corr, 
+        mask=mask, 
+        annot=True, 
+        fmt=".2f", 
+        cmap='RdBu_r', 
+        center=0, 
+        square=True, 
+        linewidths=.5,
+        cbar_kws={"shrink": .7}
     )
-    sns.lineplot(
-        data=monthly_biomass,
-        x='month_name',
-        y='Dry_Total_g',
-        marker='o',
-        markersize=11,
-        color='darkblue',
-        linewidth=3.5,
-        ax=ax
-    )
-
-    # Add value labels
-    for i, val in enumerate(monthly_biomass['Dry_Total_g']):
-        ax.text(i, val + 1.5, f'{val:.1f}', ha='center', va='bottom', 
-                fontsize=11, fontweight='bold', color='black')
-
-    plt.title('Mean Dry_Total_g by Month', fontsize=19, pad=20)
-    plt.xlabel('Month', fontsize=14)
-    plt.ylabel('Mean Dry_Total_g', fontsize=14)
-    plt.xticks(rotation=0)
-    plt.grid(axis='y', alpha=0.3)
+    
+    plt.title("Feature & Target Correlations (Pearson)", fontsize=14)
     plt.tight_layout()
-    plt.savefig(os.path.join(BASE_VIZ_PATH, '4_mean_biomass_by_month.png'), bbox_inches='tight')
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '3_Correlation_Matrix.png'))
     plt.close()
-    pbar.update(1)
-    pbar.close()
 
-    # ========================================================================
-    # STAGE 1 VISUALIZATIONS
-    # ========================================================================
-    print("\nGENERATING STAGE 1 VISUALIZATIONS")
-    df_stage1 = prepare_stage1_features(df_long)
-    train_s1, val_s1 = train_test_split(df_stage1, test_size=0.2, random_state=42, stratify=df_stage1['season'])
-    pbar = tqdm(total=3, desc="Stage 1 plots")
-
-    # Correlation Matrix
-    plt.figure(figsize=(14, 10))
-    num_cols = ['Pre_GSHH_NDVI', 'Height_Ave_cm', 'month_sin', 'month_cos'] + target_cols
-    corr = train_s1[num_cols].corr()
-    sns.heatmap(corr, annot=True, fmt=".2f", cmap='coolwarm', center=0, cbar=True, annot_kws={"size": 9})
-    plt.title('Stage 1: Correlation Matrix (Raw Features)', fontsize=16)
-    plt.xticks(rotation=45, ha='right'); plt.yticks(rotation=0)
+# ==============================================================================
+# 4. NON-LINEAR INTERACTIONS & EXPLAINABLE PHYSICS
+# ==============================================================================
+def viz_nonlinear(df):
+    print("5. Generating Non-Linear Interaction Plots (Add/Ratio included)...")
+    
+    # --- Feature Engineering for Visualization ---
+    
+    # 1. Volumetric (Multiplication): Proxy for Mass ~ Volume * Density
+    df['Interaction_Mul'] = df['Height_Ave_cm'] * df['Pre_GSHH_NDVI']
+    
+    # 2. Addition: (Note: Units differ, cm vs index, so this is dominated by Height)
+    df['Interaction_Add'] = df['Height_Ave_cm'] + df['Pre_GSHH_NDVI']
+    
+    # 3. Ratio 1: Greenness per cm
+    # Epsilon prevents division by zero for very short grass
+    epsilon = 1e-3
+    df['Interaction_Ratio_NDVI_H'] = df['Pre_GSHH_NDVI'] / (df['Height_Ave_cm'] + epsilon)
+    
+    # 4. Ratio 2: Height per unit Greenness (Structural Index)
+    df['Interaction_Ratio_H_NDVI'] = df['Height_Ave_cm'] / (df['Pre_GSHH_NDVI'] + epsilon)
+    
+    # Subset for clearer plotting (Performance & Visual clutter reduction)
+    # We take a random sample of 2000 points if the dataset is large
+    plot_df = df.sample(n=min(2000, len(df)), random_state=42)
+    
+    # Layout: 2 Rows, 3 Columns
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    axes = axes.flatten() # Flatten to easy indexing 0-5
+    
+    # --- Row 1: The Basics & The Physics Proxy ---
+    
+    # Plot 0: Base Height
+    sns.regplot(data=plot_df, x='Height_Ave_cm', y='Log_Dry_Total_g', 
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'red'}, ax=axes[0])
+    axes[0].set_title("Base: Height vs Biomass")
+    
+    # Plot 1: Base NDVI
+    sns.regplot(data=plot_df, x='Pre_GSHH_NDVI', y='Log_Dry_Total_g', 
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'red'}, ax=axes[1])
+    axes[1].set_title("Base: NDVI vs Biomass")
+    
+    # Plot 2: Multiplication (Usually the Strongest)
+    r_mul, _ = pearsonr(plot_df['Interaction_Mul'], plot_df['Log_Dry_Total_g'])
+    sns.regplot(data=plot_df, x='Interaction_Mul', y='Log_Dry_Total_g', 
+                order=1, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'green'}, ax=axes[2])
+    axes[2].set_title(f"Multiplication (H * NDVI)\nR = {r_mul:.2f} (Volumetric Proxy)")
+    
+    # --- Row 2: The Arithmetic Interactions ---
+    
+    # Plot 3: Addition
+    r_add, _ = pearsonr(plot_df['Interaction_Add'], plot_df['Log_Dry_Total_g'])
+    sns.regplot(data=plot_df, x='Interaction_Add', y='Log_Dry_Total_g', 
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'orange'}, ax=axes[3])
+    axes[3].set_title(f"Addition (H + NDVI)\nR = {r_add:.2f}")
+    
+    # Plot 4: Ratio (NDVI / Height)
+    r_rat1, _ = pearsonr(plot_df['Interaction_Ratio_NDVI_H'], plot_df['Log_Dry_Total_g'])
+    sns.regplot(data=plot_df, x='Interaction_Ratio_NDVI_H', y='Log_Dry_Total_g', 
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'purple'}, ax=axes[4])
+    axes[4].set_title(f"Ratio (NDVI / Height)\nR = {r_rat1:.2f} (Green Density)")
+    # Zoom in to 95th percentile to ignore extreme division artifacts
+    axes[4].set_xlim(0, plot_df['Interaction_Ratio_NDVI_H'].quantile(0.95))
+    
+    # Plot 5: Ratio (Height / NDVI)
+    r_rat2, _ = pearsonr(plot_df['Interaction_Ratio_H_NDVI'], plot_df['Log_Dry_Total_g'])
+    sns.regplot(data=plot_df, x='Interaction_Ratio_H_NDVI', y='Log_Dry_Total_g', 
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'purple'}, ax=axes[5])
+    axes[5].set_title(f"Ratio (Height / NDVI)\nR = {r_rat2:.2f} (Structure Index)")
+    axes[5].set_xlim(0, plot_df['Interaction_Ratio_H_NDVI'].quantile(0.95))
+    
     plt.tight_layout()
-    plt.savefig(os.path.join(STAGE1_VIZ_PATH, '1_correlation_matrix.png'), bbox_inches='tight')
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '4_NonLinear_Interactions_Full.png'))
     plt.close()
-    pbar.update(1)
 
-    # Feature vs Target Regression
-    g = sns.pairplot(
-        train_s1,
-        x_vars=['Pre_GSHH_NDVI', 'Height_Ave_cm', 'month_sin', 'month_cos'],
-        y_vars=['Dry_Total_g', 'GDM_g', 'Dry_Green_g'],
-        kind='reg',
-        plot_kws={'scatter_kws': {'alpha': 0.4, 's': 20}, 'line_kws': {'color': 'red', 'lw': 2}},
-        height=3.2
-    )
-    g.fig.suptitle('Stage 1: Raw Features vs Key Targets', y=1.02, fontsize=16)
-    plt.savefig(os.path.join(STAGE1_VIZ_PATH, '2_features_vs_targets.png'), bbox_inches='tight')
-    plt.close()
-    pbar.update(1)
-
-    # Train vs Val Distributions
-    features = ['Pre_GSHH_NDVI', 'Height_Ave_cm', 'month_sin', 'Dry_Total_g']
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('Stage 1: Train vs Validation Distribution', fontsize=18)
-    for i, f in enumerate(features):
-        ax = axes.flatten()[i]
-        sns.kdeplot(train_s1[f], ax=ax, label='Train', fill=True, alpha=0.6)
-        sns.kdeplot(val_s1[f], ax=ax, label='Validation', fill=True, alpha=0.6)
-        ax.set_title(f)
-        ax.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(STAGE1_VIZ_PATH, '3_train_val_distributions.png'), bbox_inches='tight')
-    plt.close()
-    pbar.update(1)
-    pbar.close()
-
-    # ========================================================================
-    # STAGE 2 VISUALIZATIONS
-    # ========================================================================
-    print("\nGENERATING STAGE 2 VISUALIZATIONS")
-    df_stage2 = prepare_stage2_features(df_long)
-    train_s2, val_s2 = train_test_split(df_stage2, test_size=0.2, random_state=42, stratify=df_stage2['season'])
-    pbar = tqdm(total=3, desc="Stage 2 plots")
-
-    # Correlation Matrix (Engineered)
-    plt.figure(figsize=(16, 12))
-    eng_cols = ['NDVI_Height_MUL','NDVI_Height_ADD','NDVI_Height_Ratio',
-                'species_count_global','species_freq_global','species_count_seasonal',
-                'Pre_GSHH_NDVI','Height_Ave_cm'] + target_cols
-    corr2 = train_s2[eng_cols].corr()
-    sns.heatmap(corr2, annot=True, fmt=".2f", cmap='coolwarm', center=0, annot_kws={"size": 8})
-    plt.title('Stage 2: Correlation Matrix (Engineered Features)', fontsize=16)
-    plt.xticks(rotation=45, ha='right'); plt.yticks(rotation=0)
-    plt.tight_layout()
-    plt.savefig(os.path.join(STAGE2_VIZ_PATH, '1_correlation_matrix.png'), bbox_inches='tight')
-    plt.close()
-    pbar.update(1)
-
-    # Interaction Features
-    g = sns.pairplot(
-        train_s2,
-        x_vars=['NDVI_Height_MUL', 'NDVI_Height_ADD', 'NDVI_Height_Ratio'],
-        y_vars=['Dry_Total_g', 'GDM_g', 'Dry_Green_g'],
-        kind='reg',
-        plot_kws={'scatter_kws': {'alpha': 0.4, 's': 20}, 'line_kws': {'color': 'red'}},
-        height=3.2
-    )
-    g.fig.suptitle('Stage 2: Interaction Features vs Targets', y=1.02)
-    plt.savefig(os.path.join(STAGE2_VIZ_PATH, '2_interaction_features_vs_targets.png'), bbox_inches='tight')
-    plt.close()
-    pbar.update(1)
-
-    # Count Features
-    g = sns.pairplot(
-        train_s2,
-        x_vars=['species_count_global', 'species_freq_global', 'species_count_seasonal'],
-        y_vars=['Dry_Total_g', 'GDM_g'],
-        kind='reg',
-        plot_kws={'scatter_kws': {'alpha': 0.4, 's': 20}, 'line_kws': {'color': 'red'}},
-        height=3.2
-    )
-    g.fig.suptitle('Stage 2: Count/Frequency Features vs Targets', y=1.02)
-    plt.savefig(os.path.join(STAGE2_VIZ_PATH, '3_count_features_vs_targets.png'), bbox_inches='tight')
-    plt.close()
-    pbar.update(1)
-    pbar.close()
-
-    print("\n" + "="*80)
-    print("EDA COMPLETE - ALL PLOTS SAVED SUCCESSFULLY!")
-    print("="*80)
-    print(f"→ Common:     {BASE_VIZ_PATH}")
-    print(f"→ Stage 1:    {STAGE1_VIZ_PATH}")
-    print(f"→ Stage 2:    {STAGE2_VIZ_PATH}")
+# ==============================================================================
+# MAIN
+# ==============================================================================
+if __name__ == '__main__':
+    # Load
+    df, targets = process_data('train.csv')
+    
+    # Execute Modules
+    viz_physics(df)
+    viz_distributions(df, targets)
+    viz_correlations(df, targets)
+    viz_nonlinear(df)
+    
+    print("="*60)
+    print(f"Done. Visualizations saved to: {BASE_VIZ_PATH}")
+    print("="*60)

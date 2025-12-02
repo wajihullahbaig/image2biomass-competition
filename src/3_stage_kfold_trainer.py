@@ -144,8 +144,8 @@ class Stage1Dataset(Dataset):
             img = self.transform(img)
 
         species_label = int(row['species_label'])
-        ndvi = row['Pre_GSHH_NDVI'] if pd.notna(row['Pre_GSHH_NDVI']) else 0.5
-        height_log = row['Height_Ave_cm_log'] if pd.notna(row['Height_Ave_cm_log']) else 0.0
+        ndvi = row['Pre_GSHH_NDVI'] 
+        height_log = row['Height_Ave_cm_log'] 
         month = int(row['month'] - 1) # 0-11 for class index
         
         weight = torch.tensor(row['sample_weight'], dtype=torch.float32)

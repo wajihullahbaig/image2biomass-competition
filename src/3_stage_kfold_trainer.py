@@ -117,7 +117,7 @@ class Stage1Dataset(Dataset):
                 lambda x: self.species_le.transform([x])[0] if x in self.species_le.classes_ else -1
             )
 
-        # 2. Sample Weights (Your weighting mechanism intact)
+        # 2. Sample Weights 
         if self.use_weights:
             # Note: We calculate weights based on Species balance
             self.df, _ = calculate_sample_weights(self.df, group_col='Species',smooth=5.0, logger=None)
@@ -216,7 +216,7 @@ def train_stage1_kfold(df_wide):
     # User Request: Stratify on 'season'
     stratify_col = None
     if STAGE1_STRATIFICATION_COLUMN not in df_wide.columns:
-        logger.error(f"Stratification column '{STAGE1_STRATIFICATION_COLUMN}' not found in dataframe!")
+        logger.warning(f"Stratification column '{STAGE1_STRATIFICATION_COLUMN}' not found in dataframe!")
     else:
         stratify_col = df_wide[STAGE1_STRATIFICATION_COLUMN]
         logger.info(f"Stratifying Stage 1 K-Fold on column: {STAGE1_STRATIFICATION_COLUMN}")
@@ -456,7 +456,7 @@ class Stage2Dataset(Dataset):
         self.y_log = np.log1p(self.y_real)
         
         # Weights for Balancing (Optional, but good for stability)
-        self.df, _ = calculate_sample_weights(self.df, 'pred_species',smooth=10.0) # Use predicted species group
+        self.df, _ = calculate_sample_weights(self.df, 'pred_species',smooth=10.0,logger=logger) # Use predicted species group
         self.df['sample_weight'] = self.df['sample_weight'].clip(0.1, 10.0)
 
     def __len__(self): return len(self.df)

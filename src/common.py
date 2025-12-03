@@ -12,6 +12,64 @@ import random
 
 from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE
 
+# ====================== DATA PREP ======================
+def load_data():
+    logger.info("Loading and Pivoting Data...")
+    df = pd.read_csv('train.csv')
+    
+    # 1. Clean sample_id (Remove __target_name suffix if it exists)
+    # This converts 'ID123__Dry_Clover_g' -> 'ID123'
+    df['clean_id'] = df['sample_id'].astype(str).apply(lambda x: x.split('__')[0])
+    
+    # 2. HARD PIVOT: Ensure exactly one row per clean_id
+    # We use 'max' to aggregate because the other rows have 0 or NaN for that target
+    targets = df.pivot_table(
+        index='clean_id', 
+        columns='target_name', 
+        values='target',
+        aggfunc='max' 
+    ).reset_index()
+    
+    # Fill missing targets with 0.0 
+    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    for col in target_cols:
+        if col not in targets.columns: targets[col] = 0.0
+    targets[target_cols] = targets[target_cols].fillna(0.0)
+
+    # 3. Extract Metadata (Take the first entry for each clean_id)
+    # We drop 'target_name' and 'target' and 'sample_id' from meta to avoid dupes
+    meta_cols = ['clean_id', 'image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm']
+    # Ensure we only check columns that actually exist in the csv
+    valid_meta_cols = [c for c in meta_cols if c in df.columns]
+    
+    meta = df[valid_meta_cols].drop_duplicates(subset=['clean_id']).reset_index(drop=True)
+    
+    # 4. Merge
+    wide = pd.merge(meta, targets, on='clean_id', how='left')
+    
+    # 5. Feature Engineering
+    wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'])
+    wide['month'] = wide['Sampling_Date'].dt.month
+    wide['season'] = wide['month'].apply(get_season)
+    
+    wide['Height_Ave_cm'] = pd.to_numeric(wide['Height_Ave_cm'], errors='coerce')
+    wide['Pre_GSHH_NDVI'] = pd.to_numeric(wide['Pre_GSHH_NDVI'], errors='coerce')
+    wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'].fillna(0))
+    
+    # Rename clean_id back to sample_id for consistency
+    wide = wide.rename(columns={'clean_id': 'sample_id'})
+    
+    logger.info(f"Data Loaded Successfully. Rows: {len(wide)}")
+    
+    # SANITY CHECK
+    # Dry_Total should roughly equal components. 
+    # If there's a massive mismatch, print warning.
+    calc_total = wide['Dry_Clover_g'] + wide['Dry_Dead_g'] + wide['Dry_Green_g']
+    diff = (wide['Dry_Total_g'] - calc_total).abs().mean()
+    logger.info(f"Average Physics Consistency Error (Total vs Sum): {diff:.4f}g")
+    wide.to_csv('wide.csv', index=False)
+    return wide
+    
 def get_image_data_transforms()->tuple:
     """
     Returns the training and validation data augmentation transforms.

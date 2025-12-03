@@ -13,7 +13,7 @@ import random
 from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE
 
 # ====================== DATA PREP ======================
-def load_data():
+def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info("Loading and Pivoting Data...")
     df = pd.read_csv('train.csv')
     

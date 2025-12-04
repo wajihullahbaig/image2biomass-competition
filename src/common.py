@@ -149,30 +149,38 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         if logger:
             logger.info(f"Random seed set to {seed} for reproducibility")
 
-def calculate_sample_weights_01_normalized(df, group_col, weight_col='sample_weight', logger=None):
-    proportions = df[group_col].value_counts(normalize=True)    
+def calculate_sample_weights_01_normalized(df, group_col, weight_col='sample_weight', logger=None,
+                                  min_w=0.1):
+    proportions = df[group_col].value_counts(normalize=True)
     inverse_proportions = 1 / proportions
-    mean_inverse = inverse_proportions.mean()
-    normalized_weights = inverse_proportions / mean_inverse
-    weight_map = normalized_weights.to_dict()
-    df[weight_col] = df[group_col].map(weight_map)
-    
+
+    # Class-level normalized weights
+    class_weights = inverse_proportions / inverse_proportions.mean()
+
+    # Assign to each row
+    df[weight_col] = df[group_col].map(class_weights)
+
+    # ---- Strictly positive normalization (min_w → 1 range) ----
+    w = df[weight_col]
+    df[weight_col] = min_w + (1 - min_w) * (w - w.min()) / (w.max() - w.min())
+
     if logger:
-        # Calculate average weight per group for logging verification
         avg_weights = df.groupby(group_col)[weight_col].mean().to_dict()
-        logger.info(f"Sample weights calculated based on '{group_col}'")
+        logger.info(f"Sample weights recalculated based on '{group_col}' (range {min_w} to 1)")
+
         for group, avg_weight in avg_weights.items():
             logger.info(f"  {group}: {avg_weight:.4f}")
-        
-        # Global normalization stats
+
         logger.info(
-            f"Normalized Weights — min: {df[weight_col].min():.4f}, "
+            f"Final Weights — min: {df[weight_col].min():.4f}, "
             f"max: {df[weight_col].max():.4f}, "
             f"mean: {df[weight_col].mean():.4f}, "
             f"sum: {df[weight_col].sum():.4f}"
         )
-    
+
     return df, weight_col
+
+
 
 
 def calculate_sample_weights_smooth(df, group_col, weight_col='sample_weight', smooth=10.0, logger=None):

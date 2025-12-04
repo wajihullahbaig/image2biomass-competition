@@ -183,12 +183,14 @@ def train_kfolds():
         scaler = GradScaler()
         
         best_r2 = -float('inf') # Track best R2, not just best Loss
-        best_model_path = f"models/fold_{fold+1}_best.pth"
-        os.makedirs("models", exist_ok=True)
+        best_model_path = f"pinn_models/fold_{fold+1}_best.pth"
+        os.makedirs("pinn_models", exist_ok=True)
         
         for epoch in range(EPOCHS):
             model.train()
             train_loss_meter = 0
+            train_preds_real = []
+            train_targets_real = []
             
             pbar = tqdm(train_loader, leave=False, desc=f"Fold {fold+1} Ep {epoch+1}")
             for imgs, targets, aux in pbar:
@@ -214,20 +216,40 @@ def train_kfolds():
                 
                 train_loss_meter += loss.item()
                 pbar.set_postfix({'L': f"{loss.item():.4f}"})
+                
+                # Collect training predictions for R² calculation
+                with torch.no_grad():
+                    pred_real = torch.expm1(preds).cpu().numpy()
+                    target_real = torch.expm1(targets).cpu().numpy()
+                    train_preds_real.append(pred_real)
+                    train_targets_real.append(target_real)
             
             scheduler.step()
+            
+            # Calculate Training R²
+            train_preds_concat = np.concatenate(train_preds_real)
+            train_targets_concat = np.concatenate(train_targets_real)
+            train_r2, train_component_r2s = calculate_weighted_average_r2(train_targets_concat, train_preds_concat, LOSS_WEIGHTS)
             
             # --- VALIDATION ---
             model.eval()
             val_preds_real = []
             val_targets_real = []
+            val_loss_meter = 0
             
             with torch.no_grad():
-                for imgs, targets, _ in val_loader:
-                    imgs = imgs.to(DEVICE)
+                for imgs, targets, aux in val_loader:
+                    imgs, targets, aux = imgs.to(DEVICE), targets.to(DEVICE), aux.to(DEVICE)
                     
                     with torch.amp.autocast('cuda'):
-                        log_preds, _ = model(imgs)
+                        log_preds, aux_preds = model(imgs)
+                        
+                        # Calculate validation loss (same as training loss)
+                        mse = (log_preds - targets) ** 2
+                        l_main = (mse * loss_weights_tensor).sum(dim=1).mean()
+                        l_aux = F.mse_loss(aux_preds, aux)
+                        val_loss = l_main + 0.1 * l_aux
+                        val_loss_meter += val_loss.item()
                     
                     # Convert Log(1+x) -> Real Mass for correct R2 calculation
                     # Physics constraints were applied inside the model in Real space,
@@ -242,16 +264,24 @@ def train_kfolds():
             vp = np.concatenate(val_preds_real)
             vt = np.concatenate(val_targets_real)
             
-            # Calculate Weighted Average R2
-            epoch_r2, component_r2s = calculate_weighted_average_r2(vt, vp, LOSS_WEIGHTS)
+            # Calculate Validation Weighted Average R²
+            val_r2, val_component_r2s = calculate_weighted_average_r2(vt, vp, LOSS_WEIGHTS)
             
-            # Log detailed stats
-            r2_str = f"R2: {epoch_r2:.4f} [C:{component_r2s[0]:.2f} D:{component_r2s[1]:.2f} G:{component_r2s[2]:.2f} Tot:{component_r2s[3]:.2f} GDM:{component_r2s[4]:.2f}]"
-            logger.info(f"Ep {epoch+1} | Train L: {train_loss_meter/len(train_loader):.4f} | {r2_str}")
+            # Log detailed stats - Side by side comparison
+            train_loss_avg = train_loss_meter / len(train_loader)
+            val_loss_avg = val_loss_meter / len(val_loader)
             
-            # Save Best Model based on Weighted R2
-            if epoch_r2 > best_r2:
-                best_r2 = epoch_r2
+            train_r2_str = f"Train R²: {train_r2:.4f} [C:{train_component_r2s[0]:.2f} D:{train_component_r2s[1]:.2f} G:{train_component_r2s[2]:.2f} Tot:{train_component_r2s[3]:.2f} GDM:{train_component_r2s[4]:.2f}]"
+            val_r2_str = f"Val R²: {val_r2:.4f} [C:{val_component_r2s[0]:.2f} D:{val_component_r2s[1]:.2f} G:{val_component_r2s[2]:.2f} Tot:{val_component_r2s[3]:.2f} GDM:{val_component_r2s[4]:.2f}]"
+            
+            logger.info(f"Ep {epoch+1} | Train Loss: {train_loss_avg:.4f} | Val Loss: {val_loss_avg:.4f}")
+            logger.info(f"       | {train_r2_str}")
+            logger.info(f"       | {val_r2_str}")
+            
+            # Save Best Model based on Validation Weighted R²
+            if val_r2 > best_r2:
+                best_r2 = val_r2
+                logger.info(f"New Best R2: {best_r2:.5f}")
                 torch.save(model.state_dict(), best_model_path)
         
         # End of Fold

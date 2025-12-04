@@ -85,7 +85,7 @@ def setup_logging(log_dir='logs'):
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(f"{log_dir}/train.log"),
+            logging.FileHandler(f"{log_dir}/pinn_train.log"),
             logging.StreamHandler()
         ]
     )

@@ -3,9 +3,9 @@ import torch
 # ====================== CONFIG ======================
 IMAGE_SIZE = 256 # Slightly larger for better detail
 BATCH_SIZE = 32
-LEARNING_RATE = 2e-4
+LEARNING_RATE = 3e-4
 EPOCHS = 30
-N_FOLDS = 5
+N_FOLDS = 7
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Model

@@ -164,6 +164,13 @@ def calculate_sample_weights_mean(df, group_col, weight_col='sample_weight', log
         for group, avg_weight in avg_weights.items():
             logger.info(f"  {group}: {avg_weight:.4f}")
         
+        # Global normalization stats
+        logger.info(
+            f"Normalized Weights — min: {df[weight_col].min():.4f}, "
+            f"max: {df[weight_col].max():.4f}, "
+            f"mean: {df[weight_col].mean():.4f}, "
+            f"sum: {df[weight_col].sum():.4f}"
+        )
     
     return df, weight_col
 

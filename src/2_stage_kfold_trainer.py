@@ -63,7 +63,7 @@ class Stage1Dataset(Dataset):
         # 2. Sample Weights 
         if self.use_weights:
             # Note: We calculate weights based on Species balance
-            self.df, _ = calculate_sample_weights_smooth(self.df, group_col='Species',smooth=5.0, logger=None)
+            self.df, _ = calculate_sample_weights_01_normalized(self.df, group_col='pred_species',logger=logger)
         else:
             self.df['sample_weight'] = 1.0
 

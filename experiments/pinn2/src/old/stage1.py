@@ -23,7 +23,7 @@ from tqdm import tqdm
 import warnings
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
-from common import BATCH_SIZE, DEVICE, NUM_EPOCHS, IMAGE_SIZE, LEARNING_RATE, SeasonalCurriculumSampler, calculate_sample_weights, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging
+from common import BATCH_SIZE, DEVICE, NUM_EPOCHS, IMAGE_SIZE, LEARNING_RATE, SeasonalCurriculumSampler, calculate_sample_weights_smooth, get_image_data_transforms, get_season, print_stratification_stats, set_seed, setup_logging
 
 # Suppress generic warnings
 warnings.filterwarnings("ignore")
@@ -276,7 +276,7 @@ if __name__ == '__main__':
         # Calculate sample weights
         logger.info("Calculating sample weights for training...")
         prop_col = 'Species'
-        train_df, weight_col = calculate_sample_weights(train_df, group_col=prop_col, logger=logger)
+        train_df, weight_col = calculate_sample_weights_smooth(train_df, group_col=prop_col, logger=logger)
         val_df[weight_col] = 1.0
         logger.info("Sample weights applied. Validation weights set to 1.0")
 

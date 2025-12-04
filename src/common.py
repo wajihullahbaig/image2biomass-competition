@@ -149,7 +149,7 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         if logger:
             logger.info(f"Random seed set to {seed} for reproducibility")
 
-def calculate_sample_weights_mean(df, group_col, weight_col='sample_weight', logger=None):
+def calculate_sample_weights_01_normalized(df, group_col, weight_col='sample_weight', logger=None):
     proportions = df[group_col].value_counts(normalize=True)    
     inverse_proportions = 1 / proportions
     mean_inverse = inverse_proportions.mean()
@@ -175,7 +175,7 @@ def calculate_sample_weights_mean(df, group_col, weight_col='sample_weight', log
     return df, weight_col
 
 
-def calculate_sample_weights(df, group_col, weight_col='sample_weight', smooth=10.0, logger=None):
+def calculate_sample_weights_smooth(df, group_col, weight_col='sample_weight', smooth=10.0, logger=None):
     """
     Calculates sample weights using smoothed inverse frequency.
     Normalizes by median so the majority class has weight ~1.0.

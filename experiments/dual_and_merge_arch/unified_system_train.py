@@ -432,8 +432,8 @@ def train_unified_model():
     logger.info(f"Tabular features ({len(tabular_feature_cols)}): {tabular_feature_cols}")
     
     # Calculate sample weights
-    from common import calculate_sample_weights
-    train_df, weight_col = calculate_sample_weights(
+    from common import calculate_sample_weights_smooth
+    train_df, weight_col = calculate_sample_weights_smooth(
         train_df, group_col='season', weight_col='sample_weight', logger=logger
     )
     val_df[weight_col] = 1.0

@@ -18,7 +18,7 @@ from tqdm import tqdm
 # ====================== COMMON IMPORTS ======================
 from common import (
     DEVICE, IMAGE_SIZE, BATCH_SIZE, NUM_EPOCHS, LEARNING_RATE, 
-    calculate_sample_weights_mean, calculate_sample_weights,
+    calculate_sample_weights_01_normalized, calculate_sample_weights_smooth,
     get_image_data_transforms, print_stratification_stats, setup_logging, set_seed,
     SeasonalCurriculumSampler, get_season, calculate_count_frequency_features
 )
@@ -88,7 +88,7 @@ class Stage1Dataset(Dataset):
 
         # 2. Sample Weights (Hard Balancing for Classification)
         if self.use_weights:
-            self.df, _ = calculate_sample_weights(self.df, group_col='Species',smooth=5.0, logger=logger)
+            self.df, _ = calculate_sample_weights_smooth(self.df, group_col='Species',smooth=5.0, logger=logger)
         else:
             self.df['sample_weight'] = 1.0
 
@@ -359,7 +359,7 @@ class Stage2Dataset(Dataset):
             self.df[col] = pd.to_numeric(self.df[col], errors='coerce').fillna(0.0).astype(np.float32)
         
         # 4. Sample Weights (Smooth Balancing for Regression on SPECIES)
-        self.df, _ = calculate_sample_weights_mean(self.df, group_col='Species_final')
+        self.df, _ = calculate_sample_weights_01_normalized(self.df, group_col='Species_final')
         # Clip to prevent exploding gradients
         self.df['sample_weight'] = self.df['sample_weight'].clip(0.1, 10.0)
 

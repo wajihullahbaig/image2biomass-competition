@@ -406,7 +406,7 @@ class Stage2Dataset(Dataset):
         # Weights for Balancing (Optional, but good for stability)
          # 2. Sample Weights 
         if self.use_weights:
-            # Note: We calculate weights based on Species balance
+            # Note: We calculate weights based on pred_species balance
             self.df, _ = calculate_sample_weights(self.df, group_col='pred_species',smooth=5.0, logger=None)
         else:
             self.df['sample_weight'] = 1.0

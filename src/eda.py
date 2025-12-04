@@ -4,12 +4,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr
 import warnings
 
 # --- Configuration ---
 warnings.filterwarnings('ignore')
-BASE_VIZ_PATH = 'visualizations_detailed'
+BASE_VIZ_PATH = 'visualizations_detailed_v2'
 os.makedirs(BASE_VIZ_PATH, exist_ok=True)
 
 # Visual Settings for Publication Quality
@@ -34,7 +35,6 @@ def process_data(filepath='train.csv'):
     df['clean_id'] = df['sample_id'].astype(str).apply(lambda x: x.split('__')[0])
     
     # 2. Pivot to Wide Format (One row per physical plot)
-    # We aggregate by max to merge rows, assuming constant metadata
     pivot_cols = ['clean_id', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm']
     valid_cols = [c for c in pivot_cols if c in df.columns]
     
@@ -47,28 +47,72 @@ def process_data(filepath='train.csv'):
     # Merge
     wide = pd.merge(meta, targets, on='clean_id', how='left')
     
-    # 3. Fill Missing Targets with 0 (Standard assumption for biomass components)
+    # 3. Fill Missing Targets with 0
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     for t in target_cols:
         if t not in wide.columns: wide[t] = 0.0
     wide[target_cols] = wide[target_cols].fillna(0.0)
     
-    # 4. Feature Engineering
+    # 4. Feature Engineering - EXPANDED
     wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'])
     wide['Month'] = wide['Sampling_Date'].dt.month
     wide['Season'] = wide['Month'].apply(get_season)
     
-    # Log Transforms for Skewed Targets (for visualization)
-    for t in target_cols:
-        wide[f'Log_{t}'] = np.log1p(wide[t])
-
-    # 5. Create Train/Validation Split for Distribution Analysis
-    # We stratify by State to ensure representativeness
+    # === NEW: Advanced Feature Transforms ===
+    epsilon = 1e-3
+    
+    # NDVI transforms
+    wide['NDVI_Squared'] = wide['Pre_GSHH_NDVI'] ** 2
+    wide['NDVI_Sqrt'] = np.sqrt(wide['Pre_GSHH_NDVI'].clip(lower=0))
+    
+    # Height transforms
+    wide['Height_Log'] = np.log1p(wide['Height_Ave_cm'])
+    
+    # Original interactions (keep these)
+    wide['Interaction_Mul'] = wide['Height_Ave_cm'] * wide['Pre_GSHH_NDVI']
+    wide['Interaction_Add'] = wide['Height_Ave_cm'] + wide['Pre_GSHH_NDVI']
+    wide['Interaction_Ratio_NDVI_H'] = wide['Pre_GSHH_NDVI'] / (wide['Height_Ave_cm'] + epsilon)
+    wide['Interaction_Ratio_H_NDVI'] = wide['Height_Ave_cm'] / (wide['Pre_GSHH_NDVI'] + epsilon)
+    
+    # === NEW: Target Inter-Engineering (Create as FEATURES) ===
+    # These will be used as additional features/targets to analyze
+    wide['Total_minus_Green'] = wide['Dry_Total_g'] - wide['Dry_Green_g']
+    wide['Total_minus_Clover'] = wide['Dry_Total_g'] - wide['Dry_Clover_g']
+    wide['Green_plus_Clover'] = wide['Dry_Green_g'] + wide['Dry_Clover_g']
+    wide['Unexplained_Mass'] = wide['Dry_Total_g'] - wide['Green_plus_Clover']
+    
+    wide['Ratio_Total_Green'] = wide['Dry_Total_g'] / (wide['Dry_Green_g'] + epsilon)
+    wide['Ratio_Total_Clover'] = wide['Dry_Total_g'] / (wide['Dry_Clover_g'] + epsilon)
+    wide['Ratio_Green_Clover'] = wide['Dry_Green_g'] / (wide['Dry_Clover_g'] + epsilon)
+    wide['Ratio_Clover_Total'] = wide['Dry_Clover_g'] / (wide['Dry_Total_g'] + epsilon)
+    wide['Ratio_Green_Total'] = wide['Dry_Green_g'] / (wide['Dry_Total_g'] + epsilon)
+    
+    wide['Product_Green_Clover'] = wide['Dry_Green_g'] * wide['Dry_Clover_g']
+    wide['Product_Total_Green'] = wide['Dry_Total_g'] * wide['Dry_Green_g']
+    
+    wide['Sqrt_Total'] = np.sqrt(wide['Dry_Total_g'])
+    wide['Sqrt_Green'] = np.sqrt(wide['Dry_Green_g'])
+    wide['Square_Green'] = wide['Dry_Green_g'] ** 2
+    
+    wide['GDM_minus_Total'] = wide['GDM_g'] - wide['Dry_Total_g']
+    wide['Ratio_GDM_Total'] = wide['GDM_g'] / (wide['Dry_Total_g'] + epsilon)
+    
+    # Log Transforms for ALL targets (original + engineered)
+    all_target_cols = target_cols + [
+        'Total_minus_Green', 'Total_minus_Clover', 'Green_plus_Clover', 'Unexplained_Mass'
+    ]
+    
+    for t in all_target_cols:
+        if t in wide.columns:
+            wide[f'Log_{t}'] = np.log1p(wide[t].clip(lower=0))
+    
+    # 5. Create Train/Validation Split
     train_idx, val_idx = train_test_split(wide.index, test_size=0.2, random_state=42, stratify=wide['State'])
     wide['Set'] = 'Train'
     wide.loc[val_idx, 'Set'] = 'Validation'
     
     print(f"   Data Shape: {wide.shape}")
+    print(f"   Total Columns: {len(wide.columns)}")
     return wide, target_cols
 
 # ==============================================================================
@@ -77,13 +121,11 @@ def process_data(filepath='train.csv'):
 def viz_physics(df):
     print("2. Generating Physics Consistency Checks...")
     
-    # A. The Summation Check
     df['Sum_Components'] = df['Dry_Clover_g'] + df['Dry_Dead_g'] + df['Dry_Green_g']
     df['Physics_Error'] = df['Dry_Total_g'] - df['Sum_Components']
     
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     
-    # Plot 1: Correlation of Sum vs Total
     sns.scatterplot(data=df, x='Sum_Components', y='Dry_Total_g', hue='Physics_Error', 
                     palette='coolwarm', alpha=0.6, ax=axes[0])
     max_val = max(df['Sum_Components'].max(), df['Dry_Total_g'].max())
@@ -91,12 +133,9 @@ def viz_physics(df):
     axes[0].set_title("Constraint: Total = Clover + Dead + Green")
     axes[0].legend()
     
-    # Plot 2: Composition by Season (Stacked)
-    # Normalize to see percentage composition
     season_comp = df.groupby('Season')[['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']].mean()
     season_comp_pct = season_comp.div(season_comp.sum(axis=1), axis=0) * 100
-    
-    season_comp_pct = season_comp_pct.reindex(['Summer', 'Autumn', 'Winter', 'Spring']) # Order
+    season_comp_pct = season_comp_pct.reindex(['Summer', 'Autumn', 'Winter', 'Spring'])
     
     season_comp_pct.plot(kind='bar', stacked=True, color=['#d62728', '#7f7f7f', '#2ca02c'], ax=axes[1])
     axes[1].set_title("Biomass Composition Ratio by Season")
@@ -108,21 +147,16 @@ def viz_physics(df):
     plt.close()
 
 # ==============================================================================
-# 2. GROUPED DISTRIBUTIONS (TRAIN VS VALIDATION)
+# 2. GROUPED DISTRIBUTIONS
 # ==============================================================================
 def viz_distributions(df, target_cols):
     print("3. Generating Grouped Target Distributions...")
-    
-    # We focus on the most important target: Dry_Total_g
-    # But checking if Train/Val have same distribution across categories
     
     groups = ['State', 'Season', 'Species']
     
     for group in groups:
         plt.figure(figsize=(14, 6))
         
-        # We use Log scale for Y-axis because biomass is exponentially distributed
-        # Boxen plots are better than boxplots for large datasets
         sns.boxenplot(
             data=df, 
             x=group, 
@@ -141,19 +175,23 @@ def viz_distributions(df, target_cols):
         plt.close()
 
 # ==============================================================================
-# 3. CORRELATION MATRICES (LOWER TRIANGLE)
+# 3. ENHANCED CORRELATION MATRIX - With New Features
 # ==============================================================================
 def viz_correlations(df, target_cols):
-    print("4. Generating Correlation Matrices...")
+    print("4. Generating Enhanced Correlation Matrix...")
     
-    # Select numeric features + targets
-    cols = ['Height_Ave_cm', 'Pre_GSHH_NDVI'] + target_cols
+    # Include new transforms
+    feature_cols = [
+        'Height_Ave_cm', 'Height_Log',
+        'Pre_GSHH_NDVI', 'NDVI_Squared', 'NDVI_Sqrt'
+    ]
+    
+    cols = feature_cols + target_cols
     corr = df[cols].corr()
     
-    # Create Lower Triangle Mask
     mask = np.triu(np.ones_like(corr, dtype=bool))
     
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(12, 10))
     sns.heatmap(
         corr, 
         mask=mask, 
@@ -166,346 +204,377 @@ def viz_correlations(df, target_cols):
         cbar_kws={"shrink": .7}
     )
     
-    plt.title("Feature & Target Correlations (Pearson)", fontsize=14)
+    plt.title("Enhanced Feature & Target Correlations", fontsize=14)
     plt.tight_layout()
-    plt.savefig(os.path.join(BASE_VIZ_PATH, '3_Correlation_Matrix.png'))
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '3_Correlation_Matrix_Enhanced.png'))
     plt.close()
 
 # ==============================================================================
-# 4. NON-LINEAR INTERACTIONS & EXPLAINABLE PHYSICS
+# 4. EXPANDED NON-LINEAR INTERACTIONS
 # ==============================================================================
 def viz_nonlinear(df):
-    print("5. Generating Non-Linear Interaction Plots (Add/Ratio included)...")
+    print("5. Generating Expanded Non-Linear Interaction Plots...")
     
-    # --- Feature Engineering for Visualization ---
-    
-    # 1. Volumetric (Multiplication): Proxy for Mass ~ Volume * Density
-    df['Interaction_Mul'] = df['Height_Ave_cm'] * df['Pre_GSHH_NDVI']
-    
-    # 2. Addition: (Note: Units differ, cm vs index, so this is dominated by Height)
-    df['Interaction_Add'] = df['Height_Ave_cm'] + df['Pre_GSHH_NDVI']
-    
-    # 3. Ratio 1: Greenness per cm
-    # Epsilon prevents division by zero for very short grass
-    epsilon = 1e-3
-    df['Interaction_Ratio_NDVI_H'] = df['Pre_GSHH_NDVI'] / (df['Height_Ave_cm'] + epsilon)
-    
-    # 4. Ratio 2: Height per unit Greenness (Structural Index)
-    df['Interaction_Ratio_H_NDVI'] = df['Height_Ave_cm'] / (df['Pre_GSHH_NDVI'] + epsilon)
-    
-    # Subset for clearer plotting (Performance & Visual clutter reduction)
-    # We take a random sample of 2000 points if the dataset is large
     plot_df = df.sample(n=min(2000, len(df)), random_state=42)
     
-    # Layout: 2 Rows, 3 Columns
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    axes = axes.flatten() # Flatten to easy indexing 0-5
+    fig, axes = plt.subplots(3, 3, figsize=(20, 16))
+    axes = axes.flatten()
     
-    # --- Row 1: The Basics & The Physics Proxy ---
-    
-    # Plot 0: Base Height
+    # Row 1: Base features
     sns.regplot(data=plot_df, x='Height_Ave_cm', y='Log_Dry_Total_g', 
                 lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'red'}, ax=axes[0])
     axes[0].set_title("Base: Height vs Biomass")
     
-    # Plot 1: Base NDVI
     sns.regplot(data=plot_df, x='Pre_GSHH_NDVI', y='Log_Dry_Total_g', 
                 lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'red'}, ax=axes[1])
     axes[1].set_title("Base: NDVI vs Biomass")
     
-    # Plot 2: Multiplication (Usually the Strongest)
     r_mul, _ = pearsonr(plot_df['Interaction_Mul'], plot_df['Log_Dry_Total_g'])
     sns.regplot(data=plot_df, x='Interaction_Mul', y='Log_Dry_Total_g', 
-                order=1, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'green'}, ax=axes[2])
-    axes[2].set_title(f"Multiplication (H * NDVI)\nR = {r_mul:.2f} (Volumetric Proxy)")
+                scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'green'}, ax=axes[2])
+    axes[2].set_title(f"Multiplication (H * NDVI)\nR = {r_mul:.2f}")
     
-    # --- Row 2: The Arithmetic Interactions ---
+    # Row 2: New transforms
+    r_log_h, _ = pearsonr(plot_df['Height_Log'], plot_df['Log_Dry_Total_g'])
+    sns.regplot(data=plot_df, x='Height_Log', y='Log_Dry_Total_g', 
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'purple'}, ax=axes[3])
+    axes[3].set_title(f"Log(Height)\nR = {r_log_h:.2f}")
     
-    # Plot 3: Addition
+    r_ndvi_sq, _ = pearsonr(plot_df['NDVI_Squared'], plot_df['Log_Dry_Total_g'])
+    sns.regplot(data=plot_df, x='NDVI_Squared', y='Log_Dry_Total_g', 
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'orange'}, ax=axes[4])
+    axes[4].set_title(f"NDVI²\nR = {r_ndvi_sq:.2f}")
+    
+    r_ndvi_sqrt, _ = pearsonr(plot_df['NDVI_Sqrt'], plot_df['Log_Dry_Total_g'])
+    sns.regplot(data=plot_df, x='NDVI_Sqrt', y='Log_Dry_Total_g', 
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'brown'}, ax=axes[5])
+    axes[5].set_title(f"√NDVI\nR = {r_ndvi_sqrt:.2f}")
+    
+    # Row 3: Ratios
     r_add, _ = pearsonr(plot_df['Interaction_Add'], plot_df['Log_Dry_Total_g'])
     sns.regplot(data=plot_df, x='Interaction_Add', y='Log_Dry_Total_g', 
-                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'orange'}, ax=axes[3])
-    axes[3].set_title(f"Addition (H + NDVI)\nR = {r_add:.2f}")
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'cyan'}, ax=axes[6])
+    axes[6].set_title(f"Addition (H + NDVI)\nR = {r_add:.2f}")
     
-    # Plot 4: Ratio (NDVI / Height)
     r_rat1, _ = pearsonr(plot_df['Interaction_Ratio_NDVI_H'], plot_df['Log_Dry_Total_g'])
     sns.regplot(data=plot_df, x='Interaction_Ratio_NDVI_H', y='Log_Dry_Total_g', 
-                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'purple'}, ax=axes[4])
-    axes[4].set_title(f"Ratio (NDVI / Height)\nR = {r_rat1:.2f} (Green Density)")
-    # Zoom in to 95th percentile to ignore extreme division artifacts
-    axes[4].set_xlim(0, plot_df['Interaction_Ratio_NDVI_H'].quantile(0.95))
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'magenta'}, ax=axes[7])
+    axes[7].set_title(f"Ratio (NDVI / H)\nR = {r_rat1:.2f}")
+    axes[7].set_xlim(0, plot_df['Interaction_Ratio_NDVI_H'].quantile(0.95))
     
-    # Plot 5: Ratio (Height / NDVI)
     r_rat2, _ = pearsonr(plot_df['Interaction_Ratio_H_NDVI'], plot_df['Log_Dry_Total_g'])
     sns.regplot(data=plot_df, x='Interaction_Ratio_H_NDVI', y='Log_Dry_Total_g', 
-                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'purple'}, ax=axes[5])
-    axes[5].set_title(f"Ratio (Height / NDVI)\nR = {r_rat2:.2f} (Structure Index)")
-    axes[5].set_xlim(0, plot_df['Interaction_Ratio_H_NDVI'].quantile(0.95))
+                lowess=True, scatter_kws={'alpha': 0.3, 's': 10}, line_kws={'color': 'teal'}, ax=axes[8])
+    axes[8].set_title(f"Ratio (H / NDVI)\nR = {r_rat2:.2f}")
+    axes[8].set_xlim(0, plot_df['Interaction_Ratio_H_NDVI'].quantile(0.95))
     
     plt.tight_layout()
-    plt.savefig(os.path.join(BASE_VIZ_PATH, '4_NonLinear_Interactions_Full.png'))
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '4_NonLinear_Interactions_Expanded.png'))
     plt.close()
 
-
+# ==============================================================================
+# 5. COMPREHENSIVE INTERACTION CORRELATION - All Features vs All Targets
+# ==============================================================================
 def viz_interaction_correlations(df, target_cols):
-    print("6. Generating Interaction vs Target Correlation Matrix...")
+    print("6. Generating Comprehensive Feature-Target Correlation Matrix...")
     
-    # 1. Ensure Features Exist (Re-calculating to be safe)
-    epsilon = 1e-3
-    # Base
-    df['Interaction_Mul'] = df['Height_Ave_cm'] * df['Pre_GSHH_NDVI']
-    df['Interaction_Add'] = df['Height_Ave_cm'] + df['Pre_GSHH_NDVI']
-    df['Interaction_Ratio_NDVI_H'] = df['Pre_GSHH_NDVI'] / (df['Height_Ave_cm'] + epsilon)
-    df['Interaction_Ratio_H_NDVI'] = df['Height_Ave_cm'] / (df['Pre_GSHH_NDVI'] + epsilon)
+    # All features including new transforms
+    features = [
+        'Height_Ave_cm', 'Height_Log',
+        'Pre_GSHH_NDVI', 'NDVI_Squared', 'NDVI_Sqrt',
+        'Interaction_Mul', 'Interaction_Add',
+        'Interaction_Ratio_NDVI_H', 'Interaction_Ratio_H_NDVI'
+    ]
     
-    # 2. Setup Lists
-    # We use the LOG transformed targets because Pearson correlation assumes linearity,
-    # and your previous plots proved the relationship is linear in Log space.
-    log_targets = [f'Log_{t}' for t in target_cols]
+    # Include engineered targets alongside original
+    extended_targets = target_cols + [
+        'Total_minus_Green', 'Total_minus_Clover', 
+        'Green_plus_Clover', 'Unexplained_Mass'
+    ]
     
-    # Renaming for cleaner plot labels
-    feature_map = {
-        'Height_Ave_cm': 'Height (Base)',
-        'Pre_GSHH_NDVI': 'NDVI (Base)',
-        'Interaction_Mul': 'Multiplication (H * NDVI)',
-        'Interaction_Add': 'Addition (H + NDVI)',
-        'Interaction_Ratio_NDVI_H': 'Ratio (NDVI / H)',
-        'Interaction_Ratio_H_NDVI': 'Ratio (H / NDVI)'
-    }
+    log_targets = [f'Log_{t}' for t in extended_targets if f'Log_{t}' in df.columns]
     
-    # 3. Calculate Correlation Matrix
-    # We only want: Rows = Features, Cols = Targets
-    features = list(feature_map.keys())
-    
-    # Calculate full correlation matrix then slice it
     full_corr = df[features + log_targets].corr()
     target_corr = full_corr.loc[features, log_targets]
     
-    # Rename index for readability
-    target_corr = target_corr.rename(index=feature_map)
-    # Rename columns to remove "Log_" and "_g" for cleaner reading
+    # Clean column names
     target_corr.columns = [c.replace('Log_', '').replace('_g', '') for c in target_corr.columns]
-
-    # 4. Plot
-    plt.figure(figsize=(10, 8))
+    
+    # Clean row names
+    feature_map = {
+        'Height_Ave_cm': 'Height',
+        'Height_Log': 'Log(Height)',
+        'Pre_GSHH_NDVI': 'NDVI',
+        'NDVI_Squared': 'NDVI²',
+        'NDVI_Sqrt': '√NDVI',
+        'Interaction_Mul': 'H × NDVI',
+        'Interaction_Add': 'H + NDVI',
+        'Interaction_Ratio_NDVI_H': 'NDVI / H',
+        'Interaction_Ratio_H_NDVI': 'H / NDVI'
+    }
+    target_corr = target_corr.rename(index=feature_map)
+    
+    plt.figure(figsize=(14, 10))
     sns.heatmap(
         target_corr,
         annot=True,
         fmt=".2f",
-        cmap='RdBu_r', # Red = Negative, Blue = Positive
+        cmap='RdBu_r',
         center=0,
         linewidths=1,
         linecolor='white',
         cbar_kws={"label": "Pearson Correlation (r)"},
-        square=True
+        square=False
     )
     
-    plt.title("Which Feature Predicts Which Target?\n(Correlation of Interactions vs Log-Biomass)", fontsize=16)
+    plt.title("Comprehensive Feature-Target Correlation Matrix\n(All Features vs All Targets in Log Space)", fontsize=16)
     plt.yticks(rotation=0)
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     
-    save_path = os.path.join(BASE_VIZ_PATH, '5_Interaction_Target_Correlation.png')
-    plt.savefig(save_path)
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '5_Comprehensive_Correlation.png'))
     plt.close()
-    print(f"   -> Saved to {save_path}")
 
-def viz_inter_target_engineering(df, target_cols):
-    """
-    Explores engineered features FROM targets to predict difficult targets (like Dry_Dead).
-    Creates auxiliary features using inter-target relationships.
-    """
-    print("7. Engineering Inter-Target Features for Dry_Dead Prediction...")
+# ==============================================================================
+# 6. DEEP DIVE: Dry_Dead Analysis with All Features
+# ==============================================================================
+def viz_dry_dead_deep_dive(df):
+    print("7. Deep Dive Analysis: Predicting Dry_Dead with All Features...")
     
-    # Focus on predicting Dry_Dead using other targets as proxies
-    # Physical intuition: Dead material might correlate with ratios/differences of living material
+    # Target of interest
+    focus_target = 'Dry_Dead_g'
     
-    # === FEATURE ENGINEERING ===
-    epsilon = 1e-3
-    
-    # 1. Residual-based features (What's "unexplained"?)
-    df['Total_minus_Green'] = df['Dry_Total_g'] - df['Dry_Green_g']  # Should ≈ Dead + Clover
-    df['Total_minus_Clover'] = df['Dry_Total_g'] - df['Dry_Clover_g']  # Should ≈ Dead + Green
-    df['Green_plus_Clover'] = df['Dry_Green_g'] + df['Dry_Clover_g']  # Living biomass
-    df['Unexplained_Mass'] = df['Dry_Total_g'] - df['Green_plus_Clover']  # Should ≈ Dead
-    
-    # 2. Ratio-based features (Composition signals)
-    df['Ratio_Total_Green'] = df['Dry_Total_g'] / (df['Dry_Green_g'] + epsilon)
-    df['Ratio_Total_Clover'] = df['Dry_Total_g'] / (df['Dry_Clover_g'] + epsilon)
-    df['Ratio_Green_Clover'] = df['Dry_Green_g'] / (df['Dry_Clover_g'] + epsilon)
-    df['Ratio_Clover_Total'] = df['Dry_Clover_g'] / (df['Dry_Total_g'] + epsilon)
-    df['Ratio_Green_Total'] = df['Dry_Green_g'] / (df['Dry_Total_g'] + epsilon)
-    
-    # 3. Multiplicative interactions (Non-linear signals)
-    df['Product_Green_Clover'] = df['Dry_Green_g'] * df['Dry_Clover_g']
-    df['Product_Total_Green'] = df['Dry_Total_g'] * df['Dry_Green_g']
-    
-    # 4. Square/Power features (Capturing non-linear mass dynamics)
-    df['Sqrt_Total'] = np.sqrt(df['Dry_Total_g'])
-    df['Sqrt_Green'] = np.sqrt(df['Dry_Green_g'])
-    df['Square_Green'] = df['Dry_Green_g'] ** 2
-    
-    # 5. GDM relationship (GDM often predicts Total well, residuals might help)
-    df['GDM_minus_Total'] = df['GDM_g'] - df['Dry_Total_g']
-    df['Ratio_GDM_Total'] = df['GDM_g'] / (df['Dry_Total_g'] + epsilon)
-    
-    # === CORRELATION ANALYSIS ===
-    
-    # List all engineered features
-    engineered_features = [
-        'Total_minus_Green', 'Total_minus_Clover', 'Green_plus_Clover', 'Unexplained_Mass',
-        'Ratio_Total_Green', 'Ratio_Total_Clover', 'Ratio_Green_Clover', 
-        'Ratio_Clover_Total', 'Ratio_Green_Total',
+    # All predictive features (base + transforms + engineered targets)
+    all_features = [
+        'Height_Ave_cm', 'Height_Log',
+        'Pre_GSHH_NDVI', 'NDVI_Squared', 'NDVI_Sqrt',
+        'Interaction_Mul', 'Interaction_Add',
+        'Interaction_Ratio_NDVI_H', 'Interaction_Ratio_H_NDVI',
+        'Total_minus_Green', 'Total_minus_Clover', 
+        'Green_plus_Clover', 'Unexplained_Mass',
+        'Ratio_Total_Green', 'Ratio_Total_Clover', 
+        'Ratio_Green_Clover', 'Ratio_Clover_Total', 'Ratio_Green_Total',
         'Product_Green_Clover', 'Product_Total_Green',
         'Sqrt_Total', 'Sqrt_Green', 'Square_Green',
         'GDM_minus_Total', 'Ratio_GDM_Total'
     ]
     
-    # Target we care about
-    focus_target = 'Dry_Dead_g'
-    
-    # Calculate correlations with Dry_Dead
+    # Calculate correlations
     correlations = {}
-    for feat in engineered_features:
-        # Handle infinite/nan from division
-        valid_mask = np.isfinite(df[feat]) & np.isfinite(df[focus_target])
-        if valid_mask.sum() > 10:  # Need sufficient data
-            r, _ = pearsonr(df.loc[valid_mask, feat], df.loc[valid_mask, focus_target])
-            correlations[feat] = r
-        else:
-            correlations[feat] = 0.0
+    for feat in all_features:
+        if feat in df.columns:
+            valid_mask = np.isfinite(df[feat]) & np.isfinite(df[focus_target])
+            if valid_mask.sum() > 10:
+                r, _ = pearsonr(df.loc[valid_mask, feat], df.loc[valid_mask, focus_target])
+                correlations[feat] = r
     
-    # Sort by absolute correlation strength
     sorted_features = sorted(correlations.items(), key=lambda x: abs(x[1]), reverse=True)
     
     # === VISUALIZATION ===
+    fig, axes = plt.subplots(2, 3, figsize=(20, 12))
+    axes = axes.flatten()
     
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    
-    # --- Plot 1: Correlation Bar Chart ---
-    feature_names = [f[0] for f in sorted_features]
-    feature_corrs = [f[1] for f in sorted_features]
-    
+    # Plot 1: Correlation ranking
+    top_n = min(20, len(sorted_features))
+    feature_names = [f[0] for f in sorted_features[:top_n]]
+    feature_corrs = [f[1] for f in sorted_features[:top_n]]
     colors = ['#d62728' if c > 0 else '#1f77b4' for c in feature_corrs]
     
-    axes[0, 0].barh(feature_names, feature_corrs, color=colors, alpha=0.7)
-    axes[0, 0].axvline(0, color='black', linestyle='-', linewidth=0.8)
-    axes[0, 0].set_xlabel('Pearson Correlation with Dry_Dead_g')
-    axes[0, 0].set_title('Engineered Feature Strength for Predicting Dry_Dead', fontsize=13)
-    axes[0, 0].invert_yaxis()
+    axes[0].barh(feature_names, feature_corrs, color=colors, alpha=0.7)
+    axes[0].axvline(0, color='black', linestyle='-', linewidth=0.8)
+    axes[0].set_xlabel('Pearson Correlation')
+    axes[0].set_title(f'Top {top_n} Features for Predicting Dry_Dead', fontsize=12)
+    axes[0].invert_yaxis()
     
-    # --- Plot 2: Top Feature Scatter (Best predictor) ---
-    top_feature = sorted_features[0][0]
-    top_corr = sorted_features[0][1]
+    # Plot 2-4: Top 3 features scatter plots
+    for idx in range(3):
+        if idx < len(sorted_features):
+            feat_name = sorted_features[idx][0]
+            feat_corr = sorted_features[idx][1]
+            
+            plot_df = df.sample(n=min(1500, len(df)), random_state=42)
+            valid_mask = np.isfinite(plot_df[feat_name]) & np.isfinite(plot_df[focus_target])
+            plot_df_valid = plot_df[valid_mask]
+            
+            sns.scatterplot(data=plot_df_valid, x=feat_name, y=focus_target,
+                          alpha=0.4, s=15, color='darkred', ax=axes[idx+1])
+            sns.regplot(data=plot_df_valid, x=feat_name, y=focus_target,
+                       scatter=False, lowess=True, 
+                       line_kws={'color': 'black', 'linewidth': 2}, ax=axes[idx+1])
+            axes[idx+1].set_title(f'#{idx+1}: {feat_name}\nR = {feat_corr:.3f}', fontsize=11)
+            axes[idx+1].set_ylabel('Dry_Dead_g')
+            
+            if 'Ratio' in feat_name:
+                axes[idx+1].set_xlim(0, plot_df_valid[feat_name].quantile(0.95))
     
-    plot_df = df.sample(n=min(1500, len(df)), random_state=42)
-    valid_mask = np.isfinite(plot_df[top_feature]) & np.isfinite(plot_df[focus_target])
-    plot_df_valid = plot_df[valid_mask]
+    # Plot 5: Feature category breakdown
+    categories = {
+        'Base Features': ['Height_Ave_cm', 'Pre_GSHH_NDVI'],
+        'Transforms': ['Height_Log', 'NDVI_Squared', 'NDVI_Sqrt'],
+        'Interactions': ['Interaction_Mul', 'Interaction_Add', 
+                        'Interaction_Ratio_NDVI_H', 'Interaction_Ratio_H_NDVI'],
+        'Target Engineering': [f for f in all_features if f not in 
+                              ['Height_Ave_cm', 'Pre_GSHH_NDVI', 'Height_Log', 
+                               'NDVI_Squared', 'NDVI_Sqrt', 'Interaction_Mul', 
+                               'Interaction_Add', 'Interaction_Ratio_NDVI_H', 
+                               'Interaction_Ratio_H_NDVI']]
+    }
     
-    sns.scatterplot(data=plot_df_valid, x=top_feature, y=focus_target, 
-                    alpha=0.4, s=20, color='darkred', ax=axes[0, 1])
-    sns.regplot(data=plot_df_valid, x=top_feature, y=focus_target, 
-                scatter=False, lowess=True, line_kws={'color': 'black', 'linewidth': 2}, ax=axes[0, 1])
-    axes[0, 1].set_title(f'Best Predictor: {top_feature}\nR = {top_corr:.3f}', fontsize=13)
-    axes[0, 1].set_ylabel('Dry_Dead_g (Target)')
+    cat_scores = {}
+    for cat, feats in categories.items():
+        scores = [abs(correlations.get(f, 0)) for f in feats if f in correlations]
+        cat_scores[cat] = np.mean(scores) if scores else 0
     
-    # Zoom to 95th percentile if ratio feature
-    if 'Ratio' in top_feature:
-        axes[0, 1].set_xlim(0, plot_df_valid[top_feature].quantile(0.95))
+    axes[4].bar(cat_scores.keys(), cat_scores.values(), color=['#3498db', '#e74c3c', '#2ecc71', '#f39c12'])
+    axes[4].set_ylabel('Mean |Correlation|')
+    axes[4].set_title('Feature Category Performance', fontsize=12)
+    axes[4].tick_params(axis='x', rotation=45)
     
-    # --- Plot 3: Heatmap of Top Features vs All Targets ---
-    top_n = 8
-    top_feature_list = [f[0] for f in sorted_features[:top_n]]
+    # Plot 6: Best feature residual analysis
+    if sorted_features:
+        best_feat = sorted_features[0][0]
+        valid_mask = np.isfinite(df[best_feat]) & np.isfinite(df[focus_target])
+        X_fit = df.loc[valid_mask, best_feat].values.reshape(-1, 1)
+        y_fit = df.loc[valid_mask, focus_target].values
+        
+        model = LinearRegression()
+        model.fit(X_fit, y_fit)
+        y_pred = model.predict(X_fit)
+        residuals = y_fit - y_pred
+        
+        axes[5].scatter(y_pred, residuals, alpha=0.3, s=10, color='purple')
+        axes[5].axhline(0, color='black', linestyle='--', linewidth=1)
+        axes[5].set_xlabel(f'Predicted Dry_Dead')
+        axes[5].set_ylabel('Residual')
+        axes[5].set_title(f'Residual Analysis\n(Best Feature: {best_feat})', fontsize=11)
+        
+        std_resid = np.std(residuals)
+        axes[5].axhline(std_resid, color='red', linestyle=':', alpha=0.5, label=f'±1σ ({std_resid:.2f})')
+        axes[5].axhline(-std_resid, color='red', linestyle=':', alpha=0.5)
+        axes[5].legend()
     
-    # Add original targets for comparison
-    all_targets_for_heatmap = target_cols
+    plt.tight_layout()
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '6_Dry_Dead_Deep_Dive.png'))
+    plt.close()
+    
+    # Print recommendations
+    print("\n" + "="*70)
+    print("💡 TOP FEATURES FOR PREDICTING DRY_DEAD:")
+    print("="*70)
+    for i, (feat, corr) in enumerate(sorted_features[:10], 1):
+        print(f"  {i:2d}. {feat:35s} | R = {corr:+.3f}")
+    print("="*70)
+
+# ==============================================================================
+# 7. Multi-Target Heatmap: Which Features Predict Which Engineered Targets
+# ==============================================================================
+def viz_comprehensive_target_heatmap(df):
+    print("8. Creating Comprehensive Target Prediction Heatmap...")
+    
+    all_features = [
+        'Height_Ave_cm', 'Height_Log',
+        'Pre_GSHH_NDVI', 'NDVI_Squared', 'NDVI_Sqrt',
+        'Interaction_Mul', 'Interaction_Add',
+        'Interaction_Ratio_NDVI_H', 'Interaction_Ratio_H_NDVI'
+    ]
+    
+    # Original + engineered targets
+    all_targets = [
+        'Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g',
+        'Total_minus_Green', 'Total_minus_Clover', 
+        'Green_plus_Clover', 'Unexplained_Mass'
+    ]
     
     # Build correlation matrix
     heatmap_data = []
-    for feat in top_feature_list:
+    for feat in all_features:
         row = []
-        for target in all_targets_for_heatmap:
-            valid_mask = np.isfinite(df[feat]) & np.isfinite(df[target])
-            if valid_mask.sum() > 10:
-                r, _ = pearsonr(df.loc[valid_mask, feat], df.loc[valid_mask, target])
-                row.append(r)
+        for target in all_targets:
+            if feat in df.columns and target in df.columns:
+                valid_mask = np.isfinite(df[feat]) & np.isfinite(df[target])
+                if valid_mask.sum() > 10:
+                    r, _ = pearsonr(df.loc[valid_mask, feat], df.loc[valid_mask, target])
+                    row.append(r)
+                else:
+                    row.append(0.0)
             else:
                 row.append(0.0)
         heatmap_data.append(row)
     
     heatmap_df = pd.DataFrame(
-        heatmap_data, 
-        index=top_feature_list,
-        columns=[t.replace('_g', '') for t in all_targets_for_heatmap]
+        heatmap_data,
+        index=all_features,
+        columns=[t.replace('_g', '') for t in all_targets]
     )
     
+    # Clean feature names
+    feature_labels = {
+        'Height_Ave_cm': 'Height',
+        'Height_Log': 'Log(H)',
+        'Pre_GSHH_NDVI': 'NDVI',
+        'NDVI_Squared': 'NDVI²',
+        'NDVI_Sqrt': '√NDVI',
+        'Interaction_Mul': 'H×NDVI',
+        'Interaction_Add': 'H+NDVI',
+        'Interaction_Ratio_NDVI_H': 'NDVI/H',
+        'Interaction_Ratio_H_NDVI': 'H/NDVI'
+    }
+    
+    heatmap_df = heatmap_df.rename(index=feature_labels)
+    
+    plt.figure(figsize=(14, 10))
     sns.heatmap(
-        heatmap_df, 
-        annot=True, 
-        fmt='.2f', 
-        cmap='RdBu_r', 
-        center=0, 
+        heatmap_df,
+        annot=True,
+        fmt='.2f',
+        cmap='RdBu_r',
+        center=0,
         linewidths=1,
         linecolor='white',
         cbar_kws={"label": "Correlation (r)"},
-        ax=axes[1, 0]
+        vmin=-0.8,
+        vmax=0.8
     )
-    axes[1, 0].set_title(f'Top {top_n} Features vs All Targets', fontsize=13)
-    axes[1, 0].set_ylabel('')
     
-    # --- Plot 4: Residual Analysis (Physics Check) ---
-    # If we predict Dead using best feature, what's the error pattern?
-    
-    # Simple linear fit
-    from sklearn.linear_model import LinearRegression
-    valid_mask = np.isfinite(df[top_feature]) & np.isfinite(df[focus_target])
-    X_fit = df.loc[valid_mask, top_feature].values.reshape(-1, 1)
-    y_fit = df.loc[valid_mask, focus_target].values
-    
-    model = LinearRegression()
-    model.fit(X_fit, y_fit)
-    y_pred = model.predict(X_fit)
-    residuals = y_fit - y_pred
-    
-    axes[1, 1].scatter(y_pred, residuals, alpha=0.3, s=10, color='purple')
-    axes[1, 1].axhline(0, color='black', linestyle='--', linewidth=1)
-    axes[1, 1].set_xlabel(f'Predicted Dry_Dead (from {top_feature})')
-    axes[1, 1].set_ylabel('Residual (Actual - Predicted)')
-    axes[1, 1].set_title('Residual Pattern Analysis\n(Check for systematic bias)', fontsize=13)
-    
-    # Add std bands
-    std_resid = np.std(residuals)
-    axes[1, 1].axhline(std_resid, color='red', linestyle=':', alpha=0.5, label=f'±1 Std ({std_resid:.2f})')
-    axes[1, 1].axhline(-std_resid, color='red', linestyle=':', alpha=0.5)
-    axes[1, 1].legend()
-    
+    plt.title('Feature-Target Correlation Matrix\n(All Features vs Original + Engineered Targets)', fontsize=16)
+    plt.ylabel('')
+    plt.xlabel('')
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
     plt.tight_layout()
-    plt.savefig(os.path.join(BASE_VIZ_PATH, '6_Inter_Target_Engineering_for_Dead.png'))
-    plt.close()
     
-    # === PRINT RECOMMENDATIONS ===
-    print("\n" + "="*60)
-    print("💡 FEATURE ENGINEERING RECOMMENDATIONS FOR DRY_DEAD:")
-    print("="*60)
-    for i, (feat, corr) in enumerate(sorted_features[:5], 1):
-        print(f"  {i}. {feat:30s} | R = {corr:+.3f}")
-    print("="*60)
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '7_Comprehensive_Target_Heatmap.png'))
+    plt.close()
 
-
+# ==============================================================================
+# MAIN EXECUTION
+# ==============================================================================
 if __name__ == '__main__':
-    # Load
+    print("\n" + "="*70)
+    print("🚀 ENHANCED EDA WITH FEATURE TRANSFORMS & TARGET ENGINEERING")
+    print("="*70 + "\n")
+    
+    # Load and process
     df, targets = process_data('train.csv')
     
-    # Execute Modules
+    # Execute all visualization modules
     viz_physics(df)
     viz_distributions(df, targets)
     viz_correlations(df, targets)
     viz_nonlinear(df)
     viz_interaction_correlations(df, targets)
+    viz_dry_dead_deep_dive(df)
+    viz_comprehensive_target_heatmap(df)
     
-    # NEW: Inter-target engineering for Dry_Dead
-    viz_inter_target_engineering(df, targets)
-    
-    print("="*60)
-    print(f"Done. Visualizations saved to: {BASE_VIZ_PATH}")
-    print("="*60)
+    print("\n" + "="*70)
+    print(f"✅ Complete! All visualizations saved to: {BASE_VIZ_PATH}/")
+    print("="*70)
+    print("\nGenerated Files:")
+    print("  1. 1_Physics_and_Composition.png")
+    print("  2. 2_Dist_by_[State/Season/Species].png")
+    print("  3. 3_Correlation_Matrix_Enhanced.png")
+    print("  4. 4_NonLinear_Interactions_Expanded.png")
+    print("  5. 5_Comprehensive_Correlation.png")
+    print("  6. 6_Dry_Dead_Deep_Dive.png")
+    print("  7. 7_Comprehensive_Target_Heatmap.png")
+    print("="*70 + "\n")

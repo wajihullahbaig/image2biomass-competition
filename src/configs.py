@@ -21,7 +21,7 @@ STAGE2_STRATIFICATION_COLUMN = ''
 # Feature Flags
 USE_COUNT_FEATURES = False        # Use Global/Seasonal counts in Stage 2
 USE_SAMPLE_WEIGHTS_S1 = False  
-USE_SAMPLE_WEIGHTS_S2 = True   
+USE_SAMPLE_WEIGHTS_S2 = False   
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
 # Official Weights: Clover, Dead, Green, Total, GDM

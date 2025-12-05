@@ -97,9 +97,43 @@ def process_data(filepath='train.csv'):
     wide['GDM_minus_Total'] = wide['GDM_g'] - wide['Dry_Total_g']
     wide['Ratio_GDM_Total'] = wide['GDM_g'] / (wide['Dry_Total_g'] + epsilon)
     
+    # === NEW: Dry_Dead_g PROXY FEATURES ===
+    # Composition-based (Dead matter proxies)
+    wide['Total_minus_Living'] = wide['Dry_Total_g'] - (wide['Dry_Green_g'] + wide['Dry_Clover_g'])
+    wide['Dead_approx_Total_minus_Green_Clover'] = wide['Dry_Total_g'] - wide['Green_plus_Clover']
+    wide['NonGreen_Mass'] = wide['Dry_Total_g'] - wide['Dry_Green_g']
+    
+    # Ratio features (Dead relative to other components)
+    wide['Ratio_Dead_Total'] = wide['Dry_Dead_g'] / (wide['Dry_Total_g'] + epsilon)
+    wide['Ratio_Dead_Green'] = wide['Dry_Dead_g'] / (wide['Dry_Green_g'] + epsilon)
+    wide['Ratio_Dead_Clover'] = wide['Dry_Dead_g'] / (wide['Dry_Clover_g'] + epsilon)
+    wide['Ratio_Total_Dead'] = wide['Dry_Total_g'] / (wide['Dry_Dead_g'] + epsilon)
+    wide['Ratio_Green_Dead'] = wide['Dry_Green_g'] / (wide['Dry_Dead_g'] + epsilon)
+    
+    # Interaction products
+    wide['Product_Dead_Green'] = wide['Dry_Dead_g'] * wide['Dry_Green_g']
+    wide['Product_Dead_Clover'] = wide['Dry_Dead_g'] * wide['Dry_Clover_g']
+    wide['Product_Dead_Total'] = wide['Dry_Dead_g'] * wide['Dry_Total_g']
+    
+    # Transforms of Dead
+    wide['Sqrt_Dead'] = np.sqrt(wide['Dry_Dead_g'].clip(lower=0))
+    wide['Square_Dead'] = wide['Dry_Dead_g'] ** 2
+    wide['Log_Dead'] = np.log1p(wide['Dry_Dead_g'].clip(lower=0))
+    
+    # Dead with NDVI/Height interactions
+    wide['Dead_times_NDVI'] = wide['Dry_Dead_g'] * wide['Pre_GSHH_NDVI']
+    wide['Dead_times_Height'] = wide['Dry_Dead_g'] * wide['Height_Ave_cm']
+    wide['Dead_div_NDVI'] = wide['Dry_Dead_g'] / (wide['Pre_GSHH_NDVI'] + epsilon)
+    wide['Dead_div_Height'] = wide['Dry_Dead_g'] / (wide['Height_Ave_cm'] + epsilon)
+    
+    # Complex proxies
+    wide['Living_to_Dead_Ratio'] = wide['Green_plus_Clover'] / (wide['Dry_Dead_g'] + epsilon)
+    wide['Dead_fraction_of_NonGreen'] = wide['Dry_Dead_g'] / (wide['NonGreen_Mass'] + epsilon)
+    
     # Log Transforms for ALL targets (original + engineered)
     all_target_cols = target_cols + [
-        'Total_minus_Green', 'Total_minus_Clover', 'Green_plus_Clover', 'Unexplained_Mass'
+        'Total_minus_Green', 'Total_minus_Clover', 'Green_plus_Clover', 'Unexplained_Mass',
+        'Total_minus_Living', 'Dead_approx_Total_minus_Green_Clover', 'NonGreen_Mass'
     ]
     
     for t in all_target_cols:
@@ -289,7 +323,8 @@ def viz_interaction_correlations(df, target_cols):
     # Include engineered targets alongside original
     extended_targets = target_cols + [
         'Total_minus_Green', 'Total_minus_Clover', 
-        'Green_plus_Clover', 'Unexplained_Mass'
+        'Green_plus_Clover', 'Unexplained_Mass',
+        'Total_minus_Living', 'Dead_approx_Total_minus_Green_Clover', 'NonGreen_Mass'
     ]
     
     log_targets = [f'Log_{t}' for t in extended_targets if f'Log_{t}' in df.columns]
@@ -314,7 +349,7 @@ def viz_interaction_correlations(df, target_cols):
     }
     target_corr = target_corr.rename(index=feature_map)
     
-    plt.figure(figsize=(14, 10))
+    plt.figure(figsize=(16, 10))
     sns.heatmap(
         target_corr,
         annot=True,
@@ -344,7 +379,7 @@ def viz_dry_dead_deep_dive(df):
     # Target of interest
     focus_target = 'Dry_Dead_g'
     
-    # All predictive features (base + transforms + engineered targets)
+    # All predictive features (base + transforms + engineered targets + Dead proxies)
     all_features = [
         'Height_Ave_cm', 'Height_Log',
         'Pre_GSHH_NDVI', 'NDVI_Squared', 'NDVI_Sqrt',
@@ -356,7 +391,15 @@ def viz_dry_dead_deep_dive(df):
         'Ratio_Green_Clover', 'Ratio_Clover_Total', 'Ratio_Green_Total',
         'Product_Green_Clover', 'Product_Total_Green',
         'Sqrt_Total', 'Sqrt_Green', 'Square_Green',
-        'GDM_minus_Total', 'Ratio_GDM_Total'
+        'GDM_minus_Total', 'Ratio_GDM_Total',
+        # NEW: Dead-specific proxy features
+        'Total_minus_Living', 'Dead_approx_Total_minus_Green_Clover', 'NonGreen_Mass',
+        'Ratio_Dead_Total', 'Ratio_Dead_Green', 'Ratio_Dead_Clover',
+        'Ratio_Total_Dead', 'Ratio_Green_Dead',
+        'Product_Dead_Green', 'Product_Dead_Clover', 'Product_Dead_Total',
+        'Sqrt_Dead', 'Square_Dead', 'Log_Dead',
+        'Dead_times_NDVI', 'Dead_times_Height', 'Dead_div_NDVI', 'Dead_div_Height',
+        'Living_to_Dead_Ratio', 'Dead_fraction_of_NonGreen'
     ]
     
     # Calculate correlations
@@ -413,11 +456,25 @@ def viz_dry_dead_deep_dive(df):
         'Transforms': ['Height_Log', 'NDVI_Squared', 'NDVI_Sqrt'],
         'Interactions': ['Interaction_Mul', 'Interaction_Add', 
                         'Interaction_Ratio_NDVI_H', 'Interaction_Ratio_H_NDVI'],
-        'Target Engineering': [f for f in all_features if f not in 
+        'Dead Proxies': ['Total_minus_Living', 'Dead_approx_Total_minus_Green_Clover', 'NonGreen_Mass',
+                        'Ratio_Dead_Total', 'Ratio_Dead_Green', 'Ratio_Dead_Clover',
+                        'Ratio_Total_Dead', 'Ratio_Green_Dead',
+                        'Product_Dead_Green', 'Product_Dead_Clover', 'Product_Dead_Total',
+                        'Sqrt_Dead', 'Square_Dead', 'Log_Dead',
+                        'Dead_times_NDVI', 'Dead_times_Height', 'Dead_div_NDVI', 'Dead_div_Height',
+                        'Living_to_Dead_Ratio', 'Dead_fraction_of_NonGreen'],
+        'Other Engineering': [f for f in all_features if f not in 
                               ['Height_Ave_cm', 'Pre_GSHH_NDVI', 'Height_Log', 
                                'NDVI_Squared', 'NDVI_Sqrt', 'Interaction_Mul', 
                                'Interaction_Add', 'Interaction_Ratio_NDVI_H', 
-                               'Interaction_Ratio_H_NDVI']]
+                               'Interaction_Ratio_H_NDVI',
+                               'Total_minus_Living', 'Dead_approx_Total_minus_Green_Clover', 'NonGreen_Mass',
+                               'Ratio_Dead_Total', 'Ratio_Dead_Green', 'Ratio_Dead_Clover',
+                               'Ratio_Total_Dead', 'Ratio_Green_Dead',
+                               'Product_Dead_Green', 'Product_Dead_Clover', 'Product_Dead_Total',
+                               'Sqrt_Dead', 'Square_Dead', 'Log_Dead',
+                               'Dead_times_NDVI', 'Dead_times_Height', 'Dead_div_NDVI', 'Dead_div_Height',
+                               'Living_to_Dead_Ratio', 'Dead_fraction_of_NonGreen']]
     }
     
     cat_scores = {}
@@ -425,7 +482,8 @@ def viz_dry_dead_deep_dive(df):
         scores = [abs(correlations.get(f, 0)) for f in feats if f in correlations]
         cat_scores[cat] = np.mean(scores) if scores else 0
     
-    axes[4].bar(cat_scores.keys(), cat_scores.values(), color=['#3498db', '#e74c3c', '#2ecc71', '#f39c12'])
+    axes[4].bar(cat_scores.keys(), cat_scores.values(), 
+               color=['#3498db', '#e74c3c', '#2ecc71', '#9b59b6', '#f39c12'])
     axes[4].set_ylabel('Mean |Correlation|')
     axes[4].set_title('Feature Category Performance', fontsize=12)
     axes[4].tick_params(axis='x', rotation=45)
@@ -478,11 +536,12 @@ def viz_comprehensive_target_heatmap(df):
         'Interaction_Ratio_NDVI_H', 'Interaction_Ratio_H_NDVI'
     ]
     
-    # Original + engineered targets
+    # Original + engineered targets (including Dead proxies)
     all_targets = [
         'Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g',
         'Total_minus_Green', 'Total_minus_Clover', 
-        'Green_plus_Clover', 'Unexplained_Mass'
+        'Green_plus_Clover', 'Unexplained_Mass',
+        'Total_minus_Living', 'Dead_approx_Total_minus_Green_Clover', 'NonGreen_Mass'
     ]
     
     # Build correlation matrix
@@ -522,7 +581,7 @@ def viz_comprehensive_target_heatmap(df):
     
     heatmap_df = heatmap_df.rename(index=feature_labels)
     
-    plt.figure(figsize=(14, 10))
+    plt.figure(figsize=(16, 10))
     sns.heatmap(
         heatmap_df,
         annot=True,

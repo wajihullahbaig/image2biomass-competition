@@ -4,18 +4,18 @@ import torch
 # CONFIGURATIONS
 IMAGE_SIZE = 224
 BATCH_SIZE = 32
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 4e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Prerocessing
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 # Training
-STAGE1_EPOCHS = 20
-STAGE2_EPOCHS = 100
+STAGE1_EPOCHS = 25
+STAGE2_EPOCHS = 200
 BACKBONE_S1 = 'tf_efficientnet_b3_ns'        
 BACKBONE_S2 = 'swin_base_patch4_window7_224' 
 N_FOLDS = 5
-TEST_SPLIT_RATIO = 0.15     
+TEST_SPLIT_RATIO = 0.10    
 STAGE1_STRATIFICATION_COLUMN = 'season'  
 STAGE2_STRATIFICATION_COLUMN = ''   
 # Feature Flags

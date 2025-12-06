@@ -606,6 +606,260 @@ def viz_comprehensive_target_heatmap(df):
     plt.close()
 
 # ==============================================================================
+# 8. TARGET VARIABILITY ANALYSIS - Understanding Spread & Uncertainty
+# ==============================================================================
+def viz_target_variability(df, target_cols):
+    """
+    Analyzes the variance, standard deviation, and coefficient of variation
+    for each target variable across different groupings.
+    
+    This helps identify:
+    - Which targets are most/least variable
+    - How variability changes across seasons/species/states
+    - Heteroscedasticity patterns (variance changing with mean)
+    """
+    print("8. Generating Target Variability Analysis...")
+    
+    fig = plt.figure(figsize=(20, 14))
+    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+    
+    # --- PLOT 1: Overall Variability Comparison ---
+    ax1 = fig.add_subplot(gs[0, :])
+    
+    variability_stats = []
+    for target in target_cols:
+        stats = {
+            'Target': target.replace('_g', ''),
+            'Mean': df[target].mean(),
+            'Std': df[target].std(),
+            'CV (%)': (df[target].std() / df[target].mean() * 100) if df[target].mean() > 0 else 0,
+            'IQR': df[target].quantile(0.75) - df[target].quantile(0.25),
+            'Range': df[target].max() - df[target].min()
+        }
+        variability_stats.append(stats)
+    
+    var_df = pd.DataFrame(variability_stats)
+    
+    x = np.arange(len(var_df))
+    width = 0.35
+    
+    ax1_twin = ax1.twinx()
+    
+    bars1 = ax1.bar(x - width/2, var_df['Std'], width, 
+                    label='Std Dev (g)', color='steelblue', alpha=0.8)
+    bars2 = ax1_twin.bar(x + width/2, var_df['CV (%)'], width, 
+                         label='CV (%)', color='coral', alpha=0.8)
+    
+    ax1.set_xlabel('Target Variable', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Standard Deviation (g)', fontsize=11, color='steelblue')
+    ax1_twin.set_ylabel('Coefficient of Variation (%)', fontsize=11, color='coral')
+    ax1.set_title('Target Variability Comparison: Std Dev vs Coefficient of Variation', 
+                  fontsize=14, fontweight='bold', pad=15)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(var_df['Target'], rotation=45, ha='right')
+    ax1.tick_params(axis='y', labelcolor='steelblue')
+    ax1_twin.tick_params(axis='y', labelcolor='coral')
+    
+    # Add value labels on bars
+    for i, (bar1, bar2) in enumerate(zip(bars1, bars2)):
+        height1 = bar1.get_height()
+        height2 = bar2.get_height()
+        ax1.text(bar1.get_x() + bar1.get_width()/2., height1,
+                f'{height1:.1f}', ha='center', va='bottom', fontsize=9, color='steelblue')
+        ax1_twin.text(bar2.get_x() + bar2.get_width()/2., height2,
+                     f'{height2:.0f}%', ha='center', va='bottom', fontsize=9, color='coral')
+    
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax1_twin.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=10)
+    ax1.grid(axis='y', alpha=0.3)
+    
+    # --- PLOT 2: Variability by Season ---
+    ax2 = fig.add_subplot(gs[1, 0])
+    
+    season_order = ['Summer', 'Autumn', 'Winter', 'Spring']
+    season_std = df.groupby('Season')[target_cols].std().reindex(season_order)
+    season_std.columns = [c.replace('_g', '') for c in season_std.columns]
+    
+    season_std.plot(kind='bar', ax=ax2, width=0.8, colormap='Set2')
+    ax2.set_title('Std Dev by Season', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Season', fontsize=10)
+    ax2.set_ylabel('Standard Deviation (g)', fontsize=10)
+    ax2.legend(title='Target', bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    ax2.tick_params(axis='x', rotation=45)
+    ax2.grid(axis='y', alpha=0.3)
+    
+    # --- PLOT 3: Variability by Species (Top 5) ---
+    ax3 = fig.add_subplot(gs[1, 1])
+    
+    top_species = df['Species'].value_counts().head(5).index
+    species_std = df[df['Species'].isin(top_species)].groupby('Species')[target_cols].std()
+    species_std.columns = [c.replace('_g', '') for c in species_std.columns]
+    
+    species_std.plot(kind='bar', ax=ax3, width=0.8, colormap='viridis')
+    ax3.set_title('Std Dev by Species (Top 5)', fontsize=12, fontweight='bold')
+    ax3.set_xlabel('Species', fontsize=10)
+    ax3.set_ylabel('Standard Deviation (g)', fontsize=10)
+    ax3.legend(title='Target', bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    ax3.tick_params(axis='x', rotation=45)
+    ax3.grid(axis='y', alpha=0.3)
+    
+    # --- PLOT 4: Variability by State ---
+    ax4 = fig.add_subplot(gs[1, 2])
+    
+    state_std = df.groupby('State')[target_cols].std()
+    state_std.columns = [c.replace('_g', '') for c in state_std.columns]
+    
+    state_std.plot(kind='bar', ax=ax4, width=0.8, colormap='Paired')
+    ax4.set_title('Std Dev by State', fontsize=12, fontweight='bold')
+    ax4.set_xlabel('State', fontsize=10)
+    ax4.set_ylabel('Standard Deviation (g)', fontsize=10)
+    ax4.legend(title='Target', bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    ax4.tick_params(axis='x', rotation=45)
+    ax4.grid(axis='y', alpha=0.3)
+    
+    # --- PLOT 5: Heteroscedasticity Check (Mean vs Std) ---
+    ax5 = fig.add_subplot(gs[2, 0])
+    
+    for target in target_cols:
+        # Group by bins of the target value
+        df_sorted = df.sort_values(target)
+        n_bins = 10
+        bin_size = len(df_sorted) // n_bins
+        
+        means = []
+        stds = []
+        for i in range(n_bins):
+            start = i * bin_size
+            end = (i + 1) * bin_size if i < n_bins - 1 else len(df_sorted)
+            bin_data = df_sorted.iloc[start:end][target]
+            means.append(bin_data.mean())
+            stds.append(bin_data.std())
+        
+        ax5.plot(means, stds, 'o-', label=target.replace('_g', ''), alpha=0.7, markersize=6)
+    
+    ax5.set_xlabel('Mean Value (g)', fontsize=10)
+    ax5.set_ylabel('Standard Deviation (g)', fontsize=10)
+    ax5.set_title('Heteroscedasticity Check\n(Mean vs Std in Decile Bins)', 
+                  fontsize=12, fontweight='bold')
+    ax5.legend(fontsize=9)
+    ax5.grid(True, alpha=0.3)
+    
+    # --- PLOT 6: Distribution of Standardized Residuals ---
+    ax6 = fig.add_subplot(gs[2, 1])
+    
+    # Standardize each target (z-score)
+    standardized = {}
+    for target in target_cols:
+        z = (df[target] - df[target].mean()) / df[target].std()
+        standardized[target.replace('_g', '')] = z
+    
+    std_df = pd.DataFrame(standardized)
+    
+    std_df.plot(kind='box', ax=ax6, showfliers=False, patch_artist=True,
+                boxprops=dict(facecolor='lightblue', alpha=0.7),
+                medianprops=dict(color='red', linewidth=2))
+    ax6.set_ylabel('Standardized Value (z-score)', fontsize=10)
+    ax6.set_title('Standardized Target Distribution\n(Box Plot Comparison)', 
+                  fontsize=12, fontweight='bold')
+    ax6.axhline(0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+    ax6.tick_params(axis='x', rotation=45)
+    ax6.grid(axis='y', alpha=0.3)
+    
+    # --- PLOT 7: Variance Ratio Across Groups ---
+    ax7 = fig.add_subplot(gs[2, 2])
+    
+    # Calculate variance ratio (between-group / within-group) for each target
+    variance_ratios = []
+    
+    for target in target_cols:
+        # Season-based variance decomposition
+        overall_var = df[target].var()
+        
+        # Between-group variance
+        season_means = df.groupby('Season')[target].mean()
+        season_counts = df.groupby('Season').size()
+        grand_mean = df[target].mean()
+        between_var = ((season_means - grand_mean) ** 2 * season_counts).sum() / len(df)
+        
+        # Within-group variance
+        within_var = overall_var - between_var
+        
+        variance_ratios.append({
+            'Target': target.replace('_g', ''),
+            'Between-Group Var': between_var,
+            'Within-Group Var': within_var,
+            'Ratio': between_var / within_var if within_var > 0 else 0
+        })
+    
+    vr_df = pd.DataFrame(variance_ratios)
+    
+    x = np.arange(len(vr_df))
+    width = 0.35
+    
+    ax7.bar(x - width/2, vr_df['Between-Group Var'], width, 
+            label='Between-Season', color='darkgreen', alpha=0.7)
+    ax7.bar(x + width/2, vr_df['Within-Group Var'], width, 
+            label='Within-Season', color='orange', alpha=0.7)
+    
+    ax7.set_xlabel('Target Variable', fontsize=10)
+    ax7.set_ylabel('Variance Component', fontsize=10)
+    ax7.set_title('Variance Decomposition by Season\n(Between vs Within Group)', 
+                  fontsize=12, fontweight='bold')
+    ax7.set_xticks(x)
+    ax7.set_xticklabels(vr_df['Target'], rotation=45, ha='right')
+    ax7.legend(fontsize=9)
+    ax7.grid(axis='y', alpha=0.3)
+    
+    # Add ratio annotations
+    for i, ratio in enumerate(vr_df['Ratio']):
+        ax7.text(i, max(vr_df['Between-Group Var'].max(), vr_df['Within-Group Var'].max()) * 1.05,
+                f'F={ratio:.2f}', ha='center', fontsize=8, fontweight='bold')
+    
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '8_Target_Variability_Analysis.png'), 
+                dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # --- PRINT STATISTICAL SUMMARY ---
+    print("\n" + "="*70)
+    print("📊 TARGET VARIABILITY SUMMARY:")
+    print("="*70)
+    print(f"{'Target':<15} {'Mean':>8} {'Std':>8} {'CV(%)':>8} {'Min':>8} {'Max':>8}")
+    print("-"*70)
+    for _, row in var_df.iterrows():
+        target_name = row['Target']
+        mean_val = row['Mean']
+        std_val = row['Std']
+        cv_val = row['CV (%)']
+        
+        # Get min/max from original data
+        target_full = [t for t in target_cols if t.replace('_g', '') == target_name][0]
+        min_val = df[target_full].min()
+        max_val = df[target_full].max()
+        
+        print(f"{target_name:<15} {mean_val:>8.1f} {std_val:>8.1f} {cv_val:>8.1f} {min_val:>8.1f} {max_val:>8.1f}")
+    print("="*70)
+    
+    print("\n💡 KEY INSIGHTS:")
+    print("-"*70)
+    
+    # Identify most/least variable
+    most_variable = var_df.loc[var_df['CV (%)'].idxmax()]
+    least_variable = var_df.loc[var_df['CV (%)'].idxmin()]
+    
+    print(f"  • Most Variable: {most_variable['Target']} (CV = {most_variable['CV (%)']:.1f}%)")
+    print(f"  • Least Variable: {least_variable['Target']} (CV = {least_variable['CV (%)']:.1f}%)")
+    
+    # Identify targets with high between-group variance (good for stratification)
+    print("\n  • Variance Decomposition (Between-Season / Within-Season):")
+    for _, row in vr_df.iterrows():
+        if row['Ratio'] > 0.5:
+            print(f"    - {row['Target']}: F-ratio = {row['Ratio']:.2f} (High between-group variance → good for stratification)")
+        elif row['Ratio'] < 0.1:
+            print(f"    - {row['Target']}: F-ratio = {row['Ratio']:.2f} (Low between-group variance → less predictable by season)")
+    
+    print("="*70 + "\n")
+# ==============================================================================
 # MAIN EXECUTION
 # ==============================================================================
 if __name__ == '__main__':
@@ -624,6 +878,8 @@ if __name__ == '__main__':
     viz_interaction_correlations(df, targets)
     viz_dry_dead_deep_dive(df)
     viz_comprehensive_target_heatmap(df)
+    viz_target_variability(df, targets)
+
     
     print("\n" + "="*70)
     print(f"✅ Complete! All visualizations saved to: {BASE_VIZ_PATH}/")
@@ -636,4 +892,5 @@ if __name__ == '__main__':
     print("  5. 5_Comprehensive_Correlation.png")
     print("  6. 6_Dry_Dead_Deep_Dive.png")
     print("  7. 7_Comprehensive_Target_Heatmap.png")
+    print("  8. 8_Target_Variability_Analysis.png")
     print("="*70 + "\n")

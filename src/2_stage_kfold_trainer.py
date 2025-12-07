@@ -554,7 +554,8 @@ def train_stage2(df):
     # Model input dimension adapts automatically
     model = Stage2ModelLog(len(tr_ds.tab_cols),stage_index=1).to(DEVICE)
     optim = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=STAGE2_EPOCHS)
+    sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optim, T_0=20, T_mult=2, eta_min=1e-7)
+
     scaler = torch.amp.GradScaler("cuda")
     
     # Recommended: MSELoss for R2 maximization

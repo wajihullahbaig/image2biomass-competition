@@ -121,10 +121,22 @@ class Stage1Model(nn.Module):
         feat = self.backbone.num_features
         
         # Multi-Heads
-        self.species_head = nn.Linear(feat, num_species)
-        self.ndvi_head = nn.Linear(feat, 1)
-        self.height_head = nn.Linear(feat, 1)
-        self.month_head = nn.Linear(feat, num_months)
+        self.species_head = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(feat, num_species)
+        )
+        self.ndvi_head = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(feat, 1)
+        )
+        self.height_head = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(feat, 1)
+        )
+        self.month_head = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(feat, num_months)
+        )
 
     def forward(self, x):
         f = self.backbone(x)
@@ -215,7 +227,7 @@ def train_stage1_kfold(df_wide):
         optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
         scaler = torch.amp.GradScaler("cuda")
         
-        ce_loss_none = nn.CrossEntropyLoss(ignore_index=-1, reduction='none')
+        ce_loss_none = nn.CrossEntropyLoss(ignore_index=-1, reduction='none',label_smoothing=0.1)
         mse_loss_none = nn.MSELoss(reduction='none')
 
         best_val_loss = float('inf')

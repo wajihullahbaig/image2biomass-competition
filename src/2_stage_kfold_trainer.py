@@ -262,13 +262,13 @@ def train_stage1_kfold(df_wide):
 
                     if mask[:,0].any(): 
                         l_sp = ce_loss_none(sp_pred, sp) * mask[:,0].float()
-                        loss_vec += 0.4 * l_sp
+                        loss_vec += 0.2 * l_sp
                     if mask[:,1].any(): 
                         l_ndvi = mse_loss_none(ndvi_pred, ndvi) * mask[:,1].float()
                         loss_vec += 0.3 * l_ndvi
                     if mask[:,2].any(): 
                         l_h = mse_loss_none(h_pred, hlog) * mask[:,2].float()
-                        loss_vec += 0.2 * l_h
+                        loss_vec += 0.4 * l_h
                     
                     l_mon = ce_loss_none(month_pred, month)
                     loss_vec += 0.1 * l_mon
@@ -312,7 +312,7 @@ def train_stage1_kfold(df_wide):
                         l_h = F.mse_loss(h_pred[mask[:,2]], hlog[mask[:,2]]) if mask[:,2].any() else 0.0
                         l_mon = F.cross_entropy(month_pred, month)
                         
-                        total = (0.4 * l_sp) + (0.3 * l_ndvi) + (0.2 * l_h) + (0.1 * l_mon)
+                        total = (0.2 * l_sp) + (0.3 * l_ndvi) + (0.4 * l_h) + (0.1 * l_mon)
                         
                         val_losses['total'] += total.item() if isinstance(total, torch.Tensor) else total
                         val_losses['sp'] += l_sp.item() if isinstance(l_sp, torch.Tensor) else l_sp

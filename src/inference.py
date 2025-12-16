@@ -12,10 +12,10 @@ from sklearn.preprocessing import LabelEncoder
 from torchvision import transforms
 
 # ====================== CONFIGURATION ======================
-TEST_CSV_PATH = '/kaggle/input/csiro-biomass/test.csv'
-TEST_IMG_DIR = '/kaggle/input/csiro-biomass/test'
-STAGE1_MODEL_DIR = '/kaggle/input/stage1/pytorch/default/1'
-STAGE2_MODEL_PATH = '/kaggle/input/stage2/pytorch/default/1/best_model.pth'
+TEST_CSV_PATH = './test.csv'
+TEST_IMG_DIR = './test'
+STAGE1_MODEL_DIR = './models_stage1/'
+STAGE2_MODEL_PATH = './models_stage2/best_model.pth'
 
 IMAGE_SIZE = 224
 BATCH_SIZE = 32
@@ -207,10 +207,8 @@ def run_inference():
     test_df['Height_final_log'] = test_df['pred_height_log']
     test_df['ndvi_h_mul'] = test_df['NDVI_final'] * test_df['Height_final_log']
     test_df['ndvi_h_ratio'] = test_df['NDVI_final'] / (test_df['Height_final_log'] + 1e-6)
-    test_df['mon_sin'] = np.sin(2 * np.pi * test_df['pred_month'] / 12)
-    test_df['mon_cos'] = np.cos(2 * np.pi * test_df['pred_month'] / 12)
-    
-    tab_cols = ['NDVI_final', 'Height_final_log', 'ndvi_h_mul', 'ndvi_h_ratio', 'mon_sin', 'mon_cos']
+   
+    tab_cols = ['NDVI_final', 'Height_final_log', 'ndvi_h_mul', 'ndvi_h_ratio']
     
     # Optional count features
     if USE_COUNT_FEATURES:

@@ -9,43 +9,53 @@ from PIL import Image
 import timm
 from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder
+from torchvision import transforms
 
-# ====================== CONFIG ======================
-# UPDATE THESE PATHS FOR KAGGLE
-TEST_CSV_PATH = '/kaggle/input/image2biomass/test.csv'
-TEST_IMG_DIR = '/kaggle/input/image2biomass/test_images' 
-STAGE1_PATH = '/kaggle/input/your-model-dataset/stage1_package.pth'
-STAGE2_PATH = '/kaggle/input/your-model-dataset/stage2_package.pth'
+# ====================== CONFIGURATION ======================
+TEST_CSV_PATH = '/kaggle/input/csiro-biomass/test.csv'
+TEST_IMG_DIR = '/kaggle/input/csiro-biomass/test'
+STAGE1_MODEL_DIR = '/kaggle/input/stage1/pytorch/default/1'
+STAGE2_MODEL_PATH = '/kaggle/input/stage2/pytorch/default/1/best_model.pth'
 
 IMAGE_SIZE = 224
 BATCH_SIZE = 32
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+BACKBONE_S1 = 'tf_efficientnet_b3_ns'
+N_FOLDS = 5
+BACKBONE_S2 = 'swin_base_patch4_window7_224'
+USE_COUNT_FEATURES = False
+
+print(f"Device: {DEVICE}")
 
 # ====================== HELPER FUNCTIONS ======================
 def get_season(month):
     if month in [12, 1, 2]: return 'Summer'
-    elif month in [3, 4, 5]: return 'Autumn'
-    elif month in [6, 7, 8]: return 'Winter'
-    else: return 'Spring'
+    if month in [3, 4, 5]: return 'Autumn'
+    if month in [6, 7, 8]: return 'Winter'
+    return 'Spring'
 
 def get_test_transform():
-    from torchvision import transforms
     return transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ])
 
-# ====================== MODEL DEFINITIONS ======================
+# ====================== STAGE 1 MODEL DEFINITION ======================
 class Stage1Model(nn.Module):
-    def __init__(self, num_species, num_months=12, backbone_name='tf_efficientnet_b3_ns'):
+    """Multi-task model predicting Species, NDVI, Height, Month"""
+    def __init__(self, num_species, num_months=12):
         super().__init__()
-        self.backbone = timm.create_model(backbone_name, pretrained=False, num_classes=0)
+        self.backbone = timm.create_model(BACKBONE_S1, pretrained=False, num_classes=0)
         feat = self.backbone.num_features
-        self.species_head = nn.Linear(feat, num_species)
-        self.ndvi_head = nn.Linear(feat, 1)
-        self.height_head = nn.Linear(feat, 1)
-        self.month_head = nn.Linear(feat, num_months)
+        
+        # Multi-Heads
+        self.species_head = nn.Sequential(nn.Dropout(0.3), nn.Linear(feat, num_species))
+        self.ndvi_head = nn.Sequential(nn.Dropout(0.2), nn.Linear(feat, 1))
+        self.height_head = nn.Sequential(nn.Dropout(0.2), nn.Linear(feat, 1))
+        self.month_head = nn.Sequential(nn.Dropout(0.2), nn.Linear(feat, num_months))
 
     def forward(self, x):
         f = self.backbone(x)
@@ -56,203 +66,229 @@ class Stage1Model(nn.Module):
             self.month_head(f)
         )
 
-class Stage2Model(nn.Module):
-    def __init__(self, tab_size, backbone_name='swin_base_patch4_window7_224'):
+# ====================== STAGE 2 MODEL DEFINITION ======================
+class Stage2ModelLog(nn.Module):
+    def __init__(self, tab_dim, stage_index=1):
         super().__init__()
-        self.backbone = timm.create_model(backbone_name, pretrained=False, num_classes=0)
-        img_feat = self.backbone.num_features
-        
-        # Match training architecture exactly
+        self.backbone = timm.create_model(
+            BACKBONE_S2, pretrained=False, features_only=True, out_indices=(stage_index,)
+        )
+        img_feature_size = self.backbone.feature_info[stage_index]['num_chs']
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.mlp = nn.Sequential(
-            nn.Linear(img_feat + tab_size, 512),
-            nn.BatchNorm1d(512),
-            nn.SiLU(inplace=True),
-            nn.Dropout(0.4),
+            nn.Linear(img_feature_size + tab_dim, 512),
+            nn.BatchNorm1d(512), nn.SiLU(), nn.Dropout(0.3),
             nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.SiLU(inplace=True),
-            nn.Dropout(0.3),
+            nn.BatchNorm1d(256), nn.SiLU(),
         )
         self.head = nn.Linear(256, 3)
 
     def forward(self, img, tab):
-        f = self.backbone(img)
-        if len(f.shape) > 2: f = f.mean([2, 3])
+        f = self.backbone(img)[0]
+        if f.dim() == 4 and f.shape[1] != self.backbone.feature_info[0]['num_chs']:
+            f = f.permute(0, 3, 1, 2)
+        f = self.pool(f).squeeze(-1).squeeze(-1)
         x = torch.cat([f, tab], dim=1)
-        feat = self.mlp(x)
-        components = F.softplus(self.head(feat))
-        
-        clover = components[:, 0:1]
-        dead   = components[:, 1:2]
-        green  = components[:, 2:3]
-        total = clover + dead + green
-        gdm   = clover + green
-        return torch.cat([clover, dead, green, total, gdm], dim=1)
+        log_comp = F.softplus(self.head(self.mlp(x)))
+        l_c, l_d, l_g = log_comp[:, 0:1], log_comp[:, 1:2], log_comp[:, 2:3]
+        r_c, r_d, r_g = torch.expm1(l_c), torch.expm1(l_d), torch.expm1(l_g)
+        r_tot, r_gdm = r_c + r_d + r_g, r_c + r_g
+        return torch.cat([r_c, r_d, r_g, r_tot, r_gdm], dim=1)
 
-# ====================== TEST DATASET ======================
+# ====================== TEST DATASET DEFINITION ======================
 class TestDataset(Dataset):
     def __init__(self, df, img_dir, tabular_cols=None, transform=None):
         self.df = df.reset_index(drop=True)
         self.img_dir = img_dir
         self.tabular_cols = tabular_cols
         self.transform = transform
-
+        
     def __len__(self):
         return len(self.df)
-
+    
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        
-        # Robust Image Path Logic
-        # 1. Try 'image_path' column
-        if 'image_path' in row and pd.notna(row['image_path']):
-            img_name = str(row['image_path']).split('/')[-1]
-        else:
-            # 2. Fallback: Assume filename is {sample_id}.jpg or similar
-            # Adjust extension if necessary (.png, .jpeg)
-            img_name = f"{row['sample_id']}.jpg"
-            
-        img_path = os.path.join(self.img_dir, img_name)
+        img_path = os.path.join(self.img_dir, os.path.basename(row['image_path']))
         
         try:
             img = Image.open(img_path).convert('RGB')
-        except:
-            # Fallback for broken/missing images (prevents submission crash)
+        except FileNotFoundError:
             img = Image.new('RGB', (IMAGE_SIZE, IMAGE_SIZE))
-            
+        
         if self.transform:
             img = self.transform(img)
-
-        # Stage 2 Mode
-        if self.tabular_cols is not None:
+        
+        if self.tabular_cols:
             tab_vals = row[self.tabular_cols].values.astype(np.float32)
             return img, torch.from_numpy(tab_vals), row['sample_id']
         
-        # Stage 1 Mode
         return img, row['sample_id']
 
-# ====================== MAIN INFERENCE ======================
+# ====================== MAIN INFERENCE LOGIC ======================
 def run_inference():
-    print("Loading Test Data...")
+    print("="*70 + "\nSTARTING TWO-STAGE BIOMASS PREDICTION\n" + "="*70)
+    
+    # 1. LOAD DATA
+    print("\n[1/6] Loading test data...")
     test_df = pd.read_csv(TEST_CSV_PATH)
+    unique_images_df = test_df.drop_duplicates(subset=['image_path']).reset_index(drop=True)
+    print(f"   Found {len(test_df)} total rows, corresponding to {len(unique_images_df)} unique images.")
     transform = get_test_transform()
 
-    # ================= STAGE 1 =================
-    print("Loading Stage 1 Model...")
-    s1_pkg = torch.load(STAGE1_PATH, map_location=DEVICE, weights_only=False)
-    species_le = s1_pkg['species_encoder']
+    # 2. LOAD STAGE 1 MODELS (ALL FOLDS FOR ENSEMBLE)
+    print("\n[2/6] Loading Stage 1 models...")
+    metadata_path = os.path.join(STAGE1_MODEL_DIR, 'stage1_metadata.pth')
+    metadata = torch.load(metadata_path, map_location=DEVICE, weights_only=False)
+    species_le, num_species = metadata['species_encoder'], metadata['num_species']
+    print(f"   Loaded metadata. Found {num_species} species classes.")
     
-    model_s1 = Stage1Model(
-        num_species=len(species_le.classes_), 
-        backbone_name=s1_pkg.get('backbone_name', 'tf_efficientnet_b3_ns')
-    ).to(DEVICE)
-    model_s1.load_state_dict(s1_pkg['model_state_dict'])
-    model_s1.eval()
+    fold_models = []
+    for fold in range(1, N_FOLDS + 1):
+        fold_path = os.path.join(STAGE1_MODEL_DIR, f'stage1_fold{fold}.pth')
+        if os.path.exists(fold_path):
+            model = Stage1Model(num_species=num_species).to(DEVICE)
+            model.load_state_dict(torch.load(fold_path, map_location=DEVICE, weights_only=True))
+            model.eval()
+            fold_models.append(model)
+            print(f"   ✓ Loaded Fold {fold}")
+        else:
+            print(f"   ⚠ Fold {fold} not found at {fold_path}")
     
-    print("Running Stage 1 Inference (Predicting Metadata)...")
-    ds_s1 = TestDataset(test_df, TEST_IMG_DIR, transform=transform)
-    loader_s1 = DataLoader(ds_s1, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+    if len(fold_models) == 0:
+        raise FileNotFoundError("No Stage 1 fold models found!")
     
-    preds_s1 = {'species': [], 'ndvi': [], 'height_log': [], 'month': []}
+    print(f"   Total folds loaded: {len(fold_models)}")
+    
+    # 3. RUN STAGE 1 INFERENCE (ENSEMBLE ACROSS FOLDS)
+    print(f"\n[3/6] Running Stage 1 Inference (ensemble across {len(fold_models)} folds)...")
+    ds_s1 = TestDataset(unique_images_df, TEST_IMG_DIR, transform=transform)
+    loader_s1 = DataLoader(
+        ds_s1, 
+        batch_size=BATCH_SIZE, 
+        shuffle=False, 
+        num_workers=os.cpu_count(), 
+        pin_memory=True
+    )
+    
+    preds = {'species': [], 'ndvi': [], 'height': [], 'month': []}
     
     with torch.no_grad():
-        for img, _ in tqdm(loader_s1):
+        for img, _ in tqdm(loader_s1, desc="Stage 1"):
             img = img.to(DEVICE)
-            sp, nd, h, m = model_s1(img)
             
-            # Decode predictions
-            sp_idx = torch.argmax(sp, 1).cpu().numpy()
-            preds_s1['species'].extend(species_le.inverse_transform(sp_idx))
-            preds_s1['ndvi'].extend(nd.cpu().numpy())
-            preds_s1['height_log'].extend(h.cpu().numpy())
-            preds_s1['month'].extend((torch.argmax(m, 1).cpu().numpy() + 1))
+            # Ensemble predictions across all folds (average)
+            species_preds = torch.stack([m(img)[0] for m in fold_models]).mean(0).cpu()
+            ndvi_preds = torch.stack([m(img)[1] for m in fold_models]).mean(0).cpu()
+            height_preds = torch.stack([m(img)[2] for m in fold_models]).mean(0).cpu()
+            month_preds = torch.stack([m(img)[3] for m in fold_models]).mean(0).cpu()
             
-    # --- FILL METADATA ---
-    # Since we have no date, we rely 100% on the predicted month
-    test_df['pred_season'] = [get_season(m) for m in preds_s1['month']]
-    test_df['season_final'] = test_df['pred_season'] # Predicted season is the final season
-    
-    test_df['Species_final'] = preds_s1['species']
-    test_df['NDVI_final'] = preds_s1['ndvi']
-    test_df['Height_final_log'] = preds_s1['height_log']
+            preds['species'].append(species_preds)
+            preds['ndvi'].append(ndvi_preds)
+            preds['height'].append(height_preds)
+            preds['month'].append(month_preds)
 
-    # ================= STAGE 2 =================
-    print("Loading Stage 2 Model...")
-    s2_pkg = torch.load(STAGE2_PATH, map_location=DEVICE, weights_only=False)
-    required_cols = s2_pkg['tabular_cols']
+    # Aggregate predictions
+    unique_images_df['pred_species_idx'] = torch.argmax(torch.cat(preds['species']), 1).numpy()
+    unique_images_df['pred_species'] = species_le.inverse_transform(unique_images_df['pred_species_idx'])
+    unique_images_df['pred_ndvi'] = torch.cat(preds['ndvi']).numpy()
+    unique_images_df['pred_height_log'] = torch.cat(preds['height']).numpy()
+    unique_images_df['pred_month'] = torch.argmax(torch.cat(preds['month']), 1).numpy() + 1
+    unique_images_df['pred_season'] = unique_images_df['pred_month'].apply(get_season)
     
-    # 1. Feature Engineering (Test Set)
+    print(f"   ✓ Stage 1 predictions complete.")
+
+    # 4. PREPARE STAGE 2 FEATURES
+    print("\n[4/6] Preparing Stage 2 features...")
+    merge_cols = ['image_path', 'pred_species', 'pred_ndvi', 'pred_height_log', 'pred_month', 'pred_season']
+    test_df = test_df.merge(unique_images_df[merge_cols], on='image_path', how='left')
+    
+    # Feature engineering (matching your local code)
+    test_df['NDVI_final'] = test_df['pred_ndvi']
+    test_df['Height_final_log'] = test_df['pred_height_log']
     test_df['ndvi_h_mul'] = test_df['NDVI_final'] * test_df['Height_final_log']
     test_df['ndvi_h_ratio'] = test_df['NDVI_final'] / (test_df['Height_final_log'] + 1e-6)
+    test_df['mon_sin'] = np.sin(2 * np.pi * test_df['pred_month'] / 12)
+    test_df['mon_cos'] = np.cos(2 * np.pi * test_df['pred_month'] / 12)
     
-    # 2. Count Features (Approximation using PREDICTED values)
-    # This matches the training distribution logic dynamically
-    needs_counts = any('count' in c or 'freq' in c for c in required_cols)
-    if needs_counts:
-        print("Generating Count Features from Predictions...")
-        
-        # Global Counts (based on current test set predictions)
-        g_counts = test_df['Species_final'].value_counts()
-        test_df['species_count_global'] = test_df['Species_final'].map(lambda x: np.log1p(g_counts.get(x, 0)))
-        test_df['species_freq_global'] = test_df['Species_final'].map(lambda x: g_counts.get(x, 0) / len(test_df))
-        
-        # Seasonal Counts
-        l_counts = test_df.groupby(['season_final', 'Species_final']).size()
-        test_df['species_count_season'] = test_df.apply(
-            lambda r: np.log1p(l_counts.get((r['season_final'], r['Species_final']), 0)), axis=1
-        )
-        season_totals = test_df['season_final'].value_counts()
-        test_df['species_freq_season'] = test_df.apply(
-            lambda r: l_counts.get((r['season_final'], r['Species_final']), 0) / season_totals.get(r['season_final'], 1), 
-            axis=1
-        )
-
-    # 3. Clean Tabular Inputs
-    print(f"Preparing {len(required_cols)} tabular features...")
-    for col in required_cols:
-        if col not in test_df.columns:
-            print(f"Warning: Feature {col} missing in Test DF. Filling 0.")
-            test_df[col] = 0.0
-        # Force float32
+    tab_cols = ['NDVI_final', 'Height_final_log', 'ndvi_h_mul', 'ndvi_h_ratio', 'mon_sin', 'mon_cos']
+    
+    # Optional count features
+    if USE_COUNT_FEATURES:
+        test_df['pred_species_count'] = test_df['pred_species'].map(
+            np.log1p(test_df['pred_species'].value_counts())
+        ).fillna(0)
+        tab_cols.append('pred_species_count')
+    
+    # Ensure all tabular columns are numeric and handle NaN
+    for col in tab_cols:
         test_df[col] = pd.to_numeric(test_df[col], errors='coerce').fillna(0.0).astype(np.float32)
+    
+    print(f"   ✓ Using {len(tab_cols)} tabular features for Stage 2: {tab_cols}")
 
-    # 4. Inference
-    model_s2 = Stage2Model(
-        tab_size=len(required_cols),
-        backbone_name=s2_pkg.get('backbone_name', 'swin_base_patch4_window7_224')
-    ).to(DEVICE)
-    model_s2.load_state_dict(s2_pkg['model_state_dict'])
+    # 5. RUN STAGE 2 INFERENCE
+    print(f"\n[5/6] Running Stage 2 Inference...")
+    model_s2 = Stage2ModelLog(tab_dim=len(tab_cols), stage_index=1).to(DEVICE)
+    model_s2.load_state_dict(torch.load(STAGE2_MODEL_PATH, map_location=DEVICE, weights_only=True))
     model_s2.eval()
     
-    ds_s2 = TestDataset(test_df, TEST_IMG_DIR, tabular_cols=required_cols, transform=transform)
-    loader_s2 = DataLoader(ds_s2, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+    ds_s2 = TestDataset(test_df, TEST_IMG_DIR, tabular_cols=tab_cols, transform=transform)
+    loader_s2 = DataLoader(
+        ds_s2, 
+        batch_size=BATCH_SIZE, 
+        shuffle=False, 
+        num_workers=os.cpu_count(), 
+        pin_memory=True
+    )
     
-    all_preds = []
-    all_ids = []
+    all_preds, all_ids = [], []
     
-    print("Running Stage 2 Inference...")
     with torch.no_grad():
-        for img, tab, sample_ids in tqdm(loader_s2):
-            img = img.to(DEVICE)
-            tab = tab.to(DEVICE)
-            pred = model_s2(img, tab) # [B, 5]
-            all_preds.append(pred.cpu().numpy())
+        for img, tab, sample_ids in tqdm(loader_s2, desc="Stage 2"):
+            img, tab = img.to(DEVICE), tab.to(DEVICE)
+            preds_batch = model_s2(img, tab).cpu().numpy()
+            all_preds.append(preds_batch)
             all_ids.extend(sample_ids)
-            
-    # ================= SUBMISSION =================
-    print("Saving Submission...")
+    
+    print(f"   ✓ Stage 2 predictions complete. Total predictions: {len(all_ids)}")
+
+    # 6. CREATE SUBMISSION IN CORRECT FORMAT
+    print("\n[6/6] Creating submission file...")
+    
+    # Target column names
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-    preds_arr = np.concatenate(all_preds, axis=0)
     
-    sub_df = pd.DataFrame(preds_arr, columns=target_cols)
-    sub_df.insert(0, 'sample_id', all_ids)
+    # Create predictions dataframe
+    preds_df = pd.DataFrame(np.concatenate(all_preds, axis=0), columns=target_cols)
+    preds_df['sample_id'] = all_ids
     
-    # Clip to 0 (No negative mass)
-    sub_df[target_cols] = sub_df[target_cols].clip(lower=0)
+    # Extract target_name from sample_id (format: ID####__TargetName)
+    preds_df['target_name'] = preds_df['sample_id'].str.split('__').str[1]
     
-    sub_df.to_csv('submission.csv', index=False)
-    print("submission.csv saved successfully!")
-    print(sub_df.head())
+    # Convert to long format
+    submission_long = preds_df.melt(
+        id_vars=['sample_id', 'target_name'], 
+        value_vars=target_cols, 
+        var_name='predicted_target', 
+        value_name='target'
+    )
+    
+    # Filter to match sample_id target with predicted target
+    final_submission = submission_long[
+        submission_long['target_name'] == submission_long['predicted_target']
+    ].copy()
+    
+    # Clip negative values
+    final_submission['target'] = final_submission['target'].clip(lower=0)
+    
+    # CRITICAL: Save only sample_id and target columns (Kaggle format)
+    final_submission[['sample_id', 'target']].to_csv('submission.csv', index=False)
+    
+    print("="*70 + "\n✅ SUBMISSION CREATED SUCCESSFULLY!\n" + "="*70)
+    print("\nSubmission format (first 10 rows):")
+    print(final_submission[['sample_id', 'target']].head(10))
+    print(f"\nTotal rows in submission: {len(final_submission)}")
+    print(f"Expected format: sample_id, target")
+    print(f"Actual columns saved: {list(final_submission[['sample_id', 'target']].columns)}")
 
 if __name__ == '__main__':
     run_inference()

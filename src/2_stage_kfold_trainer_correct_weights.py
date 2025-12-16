@@ -37,7 +37,7 @@ from common import (
 
 set_seed(42)
 
-
+USE_SAMPLE_WEIGHTS_S1 = True
 
 # Logger: Get instance globally, but configure file in __main__ (Multiprocessing safe)
 logger = logging.getLogger('System Logger')
@@ -150,6 +150,14 @@ class Stage1Model(nn.Module):
 
 # ====================== TRAINING FUNCTION ======================
 def train_stage1_kfold(df_wide):
+    """
+    Stage 1: Multi-task auxiliary training with K-Fold cross-validation.
+    
+    SAMPLE WEIGHTS BEHAVIOR (CORRECTED):
+    - Weight CALCULATION: Based on Species class distribution
+    - Weight APPLICATION: Applied ONLY to Species classification loss
+    - Other tasks (NDVI, Height, Month): Unweighted (all samples contribute equally)
+    """
     logger.info(f"=== STAGE 1: K-Fold Training  ===")
     logger.info(f"Total Samples: {len(df_wide)}")
     logger.info(f"Using Sample Weights: {USE_SAMPLE_WEIGHTS_S1}")
@@ -163,10 +171,6 @@ def train_stage1_kfold(df_wide):
     species_le = LabelEncoder()
     species_le.fit(df_wide['Species'].fillna('Unknown'))
     num_species = len(species_le.classes_)
-    
-    
-    
-
     
     # Initialize OOF columns
     oof_df = df_wide.copy()
@@ -188,7 +192,7 @@ def train_stage1_kfold(df_wide):
     }
     torch.save(metadata, os.path.join(model_save_dir, 'stage1_metadata.pth'))
 
-
+    # Setup K-Fold split
     stratify_col = None
     if STAGE1_STRATIFICATION_COLUMN not in df_wide.columns:
         logger.warning(f"Stratification column '{STAGE1_STRATIFICATION_COLUMN}' not found in dataframe!")
@@ -199,8 +203,8 @@ def train_stage1_kfold(df_wide):
         stratify_col = df_wide[STAGE1_STRATIFICATION_COLUMN]
         skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)    
         splitter = skf.split(df_wide, stratify_col)
-            
 
+    # ====================== FOLD LOOP ======================
     for fold, (train_idx, val_idx) in enumerate(splitter):
         logger.info(f"\n--- Starting Fold {fold+1}/{N_FOLDS} ---")
         
@@ -208,17 +212,16 @@ def train_stage1_kfold(df_wide):
         val_df = df_wide.iloc[val_idx]
         
         # Datasets
-        # Train: Use weights, Augmentation
+        # Train: Use weights + Augmentation
         train_dataset = Stage1Dataset(train_df, transform=get_image_data_transforms()[0], 
                                       species_le=species_le, fit_le=False, use_weights=USE_SAMPLE_WEIGHTS_S1)
-        # Val: No weights, No Augmentation
+        # Val: No weights + No Augmentation
         val_dataset = Stage1Dataset(val_df, transform=get_image_data_transforms()[1], 
                                     species_le=species_le, fit_le=False, use_weights=False)
 
-        # Loaders - SHUFFLE=TRUE for Train - we dont have date/time in test set, so we dont care of date/time ordering
+        # Loaders
         train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, 
-                                  shuffle=True, # No more Curriculum Sampler
-                                  num_workers=4, pin_memory=True)
+                                  shuffle=True, num_workers=4, pin_memory=True)
         val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
                                 num_workers=4, pin_memory=True)
 
@@ -227,16 +230,18 @@ def train_stage1_kfold(df_wide):
         optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
         scaler = torch.amp.GradScaler("cuda")
         
-        ce_loss_none = nn.CrossEntropyLoss(ignore_index=-1, reduction='none',label_smoothing=0.1)
+        # Loss functions with reduction='none' for per-sample weighting
+        ce_loss_none = nn.CrossEntropyLoss(ignore_index=-1, reduction='none', label_smoothing=0.1)
         mse_loss_none = nn.MSELoss(reduction='none')
 
         best_val_loss = float('inf')
         fold_save_path = os.path.join(model_save_dir, f'stage1_fold{fold+1}.pth')
         if stratify_col is not None:
-            print_stratification_stats(df_wide,train_df,val_df, STAGE1_STRATIFICATION_COLUMN,logger)    
+            print_stratification_stats(df_wide, train_df, val_df, STAGE1_STRATIFICATION_COLUMN, logger)    
 
-        # --- EPOCH LOOP ---
+        # ====================== EPOCH LOOP ======================
         for epoch in range(STAGE1_EPOCHS):
+            # -------------------- TRAINING --------------------
             model.train()
             
             # Tracking metrics
@@ -252,51 +257,76 @@ def train_stage1_kfold(df_wide):
                 with torch.amp.autocast('cuda'):
                     sp_pred, ndvi_pred, h_pred, month_pred = model(img)
                     
-                    # Individual losses
-                    loss_vec = torch.zeros(img.size(0), device=DEVICE)
+                    # ============================================================
+                    # CORRECTED: PER-TASK LOSS CALCULATION
+                    # ============================================================
+                    # Key Change: We calculate each task loss separately and only
+                    # apply sample weights to the Species classification loss
+                    # ============================================================
                     
-                    l_sp = torch.zeros_like(loss_vec)
-                    l_ndvi = torch.zeros_like(loss_vec)
-                    l_h = torch.zeros_like(loss_vec)
-                    l_mon = torch.zeros_like(loss_vec)
-
+                    # Task 1: Species Classification (40% of loss) - WITH WEIGHTING
                     if mask[:,0].any(): 
-                        l_sp = ce_loss_none(sp_pred, sp) * mask[:,0].float()
-                        loss_vec += 0.4 * l_sp
-                    if mask[:,1].any(): 
-                        l_ndvi = mse_loss_none(ndvi_pred, ndvi) * mask[:,1].float()
-                        loss_vec += 0.3 * l_ndvi
-                    if mask[:,2].any(): 
-                        l_h = mse_loss_none(h_pred, hlog) * mask[:,2].float()
-                        loss_vec += 0.2 * l_h
+                        l_sp_per_sample = ce_loss_none(sp_pred, sp) * mask[:,0].float()
+                        # Apply sample weights ONLY to species loss
+                        l_sp_weighted = (l_sp_per_sample * weight).mean()
+                    else:
+                        l_sp_weighted = torch.tensor(0.0, device=DEVICE)
                     
-                    l_mon = ce_loss_none(month_pred, month)
-                    loss_vec += 0.1 * l_mon
+                    # Task 2: NDVI Regression (30% of loss) - NO WEIGHTING
+                    if mask[:,1].any(): 
+                        l_ndvi_per_sample = mse_loss_none(ndvi_pred, ndvi) * mask[:,1].float()
+                        # No sample weights - just mean over valid samples
+                        l_ndvi_unweighted = l_ndvi_per_sample.mean()
+                    else:
+                        l_ndvi_unweighted = torch.tensor(0.0, device=DEVICE)
+                    
+                    # Task 3: Height Regression (20% of loss) - NO WEIGHTING
+                    if mask[:,2].any(): 
+                        l_h_per_sample = mse_loss_none(h_pred, hlog) * mask[:,2].float()
+                        # No sample weights - just mean over valid samples
+                        l_h_unweighted = l_h_per_sample.mean()
+                    else:
+                        l_h_unweighted = torch.tensor(0.0, device=DEVICE)
+                    
+                    # Task 4: Month Classification (10% of loss) - NO WEIGHTING
+                    l_mon_per_sample = ce_loss_none(month_pred, month)
+                    # No sample weights - just mean over all samples
+                    l_mon_unweighted = l_mon_per_sample.mean()
 
-                    # Apply Sample Weights
-                    loss = (loss_vec * weight).mean()
+                    # ============================================================
+                    # COMBINE LOSSES WITH TASK WEIGHTS
+                    # ============================================================
+                    # Species: weighted, Others: unweighted
+                    # ============================================================
+                    loss = (0.4 * l_sp_weighted + 
+                            0.3 * l_ndvi_unweighted + 
+                            0.2 * l_h_unweighted + 
+                            0.1 * l_mon_unweighted)
 
+                # Backward pass
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
                 
-                # Logging updates
+                # ============================================================
+                # LOGGING
+                # ============================================================
                 running_losses['total'] += loss.item()
-                running_losses['sp'] += (l_sp * weight).mean().item()
-                running_losses['ndvi'] += (l_ndvi * weight).mean().item()
-                running_losses['h'] += (l_h * weight).mean().item()
-                running_losses['mon'] += (l_mon * weight).mean().item()
+                running_losses['sp'] += l_sp_weighted.item()
+                running_losses['ndvi'] += l_ndvi_unweighted.item()
+                running_losses['h'] += l_h_unweighted.item()
+                running_losses['mon'] += l_mon_unweighted.item()
 
                 pbar.set_postfix({
                     'L': f"{loss.item():.3f}",
-                    'Sp': f"{(l_sp * weight).mean().item():.3f}"
+                    'Sp': f"{l_sp_weighted.item():.3f}"
                 })
 
             # Scale running losses by number of batches
             num_batches = len(train_loader)
             train_log = {k: v/num_batches for k, v in running_losses.items()}
 
-            # --- VALIDATION ---
+            # -------------------- VALIDATION --------------------
             model.eval()
             val_losses = {'total': 0, 'sp': 0, 'ndvi': 0, 'h': 0, 'mon': 0}
             
@@ -306,12 +336,13 @@ def train_stage1_kfold(df_wide):
                     with torch.amp.autocast('cuda'):
                         sp_pred, ndvi_pred, h_pred, month_pred = model(img)
                         
-                        # Unweighted raw losses for validation
+                        # Unweighted raw losses for validation (same as training non-species tasks)
                         l_sp = F.cross_entropy(sp_pred, sp, ignore_index=-1) if mask[:,0].any() else 0.0
                         l_ndvi = F.mse_loss(ndvi_pred[mask[:,1]], ndvi[mask[:,1]]) if mask[:,1].any() else 0.0
                         l_h = F.mse_loss(h_pred[mask[:,2]], hlog[mask[:,2]]) if mask[:,2].any() else 0.0
                         l_mon = F.cross_entropy(month_pred, month)
                         
+                        # Combine with same task weights as training
                         total = (0.4 * l_sp) + (0.3 * l_ndvi) + (0.2 * l_h) + (0.1 * l_mon)
                         
                         val_losses['total'] += total.item() if isinstance(total, torch.Tensor) else total
@@ -337,7 +368,7 @@ def train_stage1_kfold(df_wide):
         
         logger.info(f"Fold {fold+1} Complete. Best Loss: {best_val_loss:.4f}. Saved to {fold_save_path}")
 
-        # --- GENERATE OOF PREDICTIONS FOR THIS FOLD ---
+        # -------------------- GENERATE OOF PREDICTIONS --------------------
         logger.info("Generating OOF predictions for current fold...")
         model.load_state_dict(torch.load(fold_save_path, weights_only=True))
         model.eval()
@@ -349,37 +380,49 @@ def train_stage1_kfold(df_wide):
                 img = batch[0].to(DEVICE)
                 sp_p, nd_p, h_p, m_p = model(img)
                 
-                preds['sp'].extend(torch.argmax(sp_p, 1).cpu().numpy())
-                preds['ndvi'].extend(nd_p.cpu().numpy())
-                preds['h'].extend(h_p.cpu().numpy())
-                preds['mon'].extend(torch.argmax(m_p, 1).cpu().numpy())
-                preds['sin'].extend(m_p[:, 0].cpu().numpy())
-                preds['cos'].extend(m_p[:, 1].cpu().numpy())
+                preds['sp'].append(sp_p.argmax(1).cpu().numpy())
+                preds['ndvi'].append(nd_p.cpu().numpy())
+                preds['h'].append(h_p.cpu().numpy())
+                
+                mon_idx = m_p.argmax(1).cpu().numpy()
+                preds['mon'].append(mon_idx)
+                
+                # Convert month index to sin/cos for Stage 2
+                mon_sin = np.sin(2 * np.pi * mon_idx / 12)
+                mon_cos = np.cos(2 * np.pi * mon_idx / 12)
+                preds['sin'].append(mon_sin)
+                preds['cos'].append(mon_cos)
         
-        # Assign to OOF dataframe
-        oof_df.loc[val_idx, 'pred_species_idx'] = preds['sp']
-        oof_df.loc[val_idx, 'pred_ndvi'] = preds['ndvi']
-        oof_df.loc[val_idx, 'pred_height_log'] = preds['h']
-        oof_df.loc[val_idx, 'pred_month'] = preds['mon']
-        oof_df.loc[val_idx, 'pred_mon_sin'] = preds['sin']
-        oof_df.loc[val_idx, 'pred_mon_cos'] = preds['cos']
-
-    # --- FINALIZE OOF DATAFRAME ---
-    # Convert indices back to human readable
-    oof_df['pred_species'] = species_le.inverse_transform(oof_df['pred_species_idx'].astype(int))
-    oof_df['pred_season'] = [get_season(m+1) for m in oof_df['pred_month'].astype(int)]
+        # Concatenate predictions
+        pred_sp = np.concatenate(preds['sp'])
+        pred_ndvi = np.concatenate(preds['ndvi'])
+        pred_h = np.concatenate(preds['h'])
+        pred_mon = np.concatenate(preds['mon'])
+        pred_sin = np.concatenate(preds['sin'])
+        pred_cos = np.concatenate(preds['cos'])
+        
+        # Map species indices back to names
+        pred_sp_names = species_le.inverse_transform(pred_sp)
+        
+        # Store OOF predictions
+        oof_df.loc[val_idx, 'pred_species_idx'] = pred_sp
+        oof_df.loc[val_idx, 'pred_species'] = pred_sp_names
+        oof_df.loc[val_idx, 'pred_ndvi'] = pred_ndvi
+        oof_df.loc[val_idx, 'pred_height_log'] = pred_h
+        oof_df.loc[val_idx, 'pred_month'] = pred_mon
+        oof_df.loc[val_idx, 'pred_mon_sin'] = pred_sin
+        oof_df.loc[val_idx, 'pred_mon_cos'] = pred_cos
     
-    # Fill Final Columns (Purely Prediction Based for Stage 2)
-    oof_df['Species_final'] = oof_df['pred_species']
-    oof_df['season_final'] = oof_df['pred_season']
-    oof_df['NDVI_final'] = oof_df['pred_ndvi']
-    oof_df['Height_final_log'] = oof_df['pred_height_log']
+    # -------------------- SAVE OOF RESULTS --------------------
+    # Add season prediction based on predicted month
+    oof_df['season_final'] = oof_df['pred_month'].apply(lambda m: get_season(m + 1))  # +1 because model predicts 0-11
     
-    # Save the OOF dataframe for inspection or Stage 2 reloading
-    oof_df.to_csv('train_with_oof_predictions_kf.csv', index=False)
-    logger.info("Saved OOF predictions to train_with_oof_predictions_kf.csv")
-
+    # Save to CSV
+    oof_df.to_csv('train_with_oof_predictions_kf_cw.csv', index=False)
+    logger.info("Stage 1 Complete! OOF predictions saved to 'train_with_oof_predictions_kf_cw.csv'")
+    
     return oof_df
+
 
 # ====================== STAGE 2: PHYSICS-INFORMED BIOMASS ======================
 class Stage2Dataset(Dataset):
@@ -678,14 +721,14 @@ def train_stage2(df):
 
 # ====================== MAIN EXECUTION ======================
 if __name__ == '__main__':
-    setup_logging(logger_name="System Logger",log_dir='logs', file_name_part='KFold')
+    setup_logging(logger_name="System Logger",log_dir='logs', file_name_part='KFold-Correct-Weights')
     set_seed(42)
     
-    if os.path.exists('train_with_oof_predictions_kf.csv'):
-        df_oof = pd.read_csv('train_with_oof_predictions_kf.csv')
+    if os.path.exists('train_with_oof_predictions_kf_cw.csv'):
+        df_oof = pd.read_csv('train_with_oof_predictions_kf_cw.csv')
         train_stage2(df_oof)
     else:
         logger.error("OOF file not found. Training run Stage 1 first.")
         train_stage1_kfold(load_data(logger))
-        df_oof = pd.read_csv('train_with_oof_predictions_kf.csv')
+        df_oof = pd.read_csv('train_with_oof_predictions_kf_cw.csv')
         train_stage2(df_oof)

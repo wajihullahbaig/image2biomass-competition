@@ -394,12 +394,9 @@ class Stage2Dataset(Dataset):
         # Engineering
         self.df['ndvi_h_mul'] = self.df['NDVI_final'] * self.df['Height_final_log']
         self.df['ndvi_h_ratio'] = self.df['NDVI_final'] / (self.df['Height_final_log'] + 1e-6)
-        
-        self.df['mon_sin'] = pd.to_numeric(self.df['pred_mon_sin'], errors='coerce').fillna(0.0).astype(np.float32)
-        self.df['mon_cos'] = pd.to_numeric(self.df['pred_mon_cos'], errors='coerce').fillna(0.0).astype(np.float32)
-        
+              
         # Base Features
-        self.tab_cols = ['NDVI_final', 'Height_final_log', 'ndvi_h_mul', 'ndvi_h_ratio', 'mon_sin', 'mon_cos']
+        self.tab_cols = ['NDVI_final', 'Height_final_log', 'ndvi_h_mul', 'ndvi_h_ratio']
         
         # --- FEATURE SELECTION: Seamless Integration ---
         if extra_features:

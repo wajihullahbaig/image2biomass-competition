@@ -17,7 +17,7 @@ BACKBONE_S2 = 'swin_base_patch4_window7_224'
 N_FOLDS = 5
 TEST_SPLIT_RATIO = 0.10    
 STAGE1_STRATIFICATION_COLUMN = 'season'  
-STAGE2_STRATIFICATION_COLUMN = ''   
+STAGE2_STRATIFICATION_COLUMN = 'season'   
 # Feature Flags
 USE_COUNT_FEATURES = False        # Use Global/Seasonal counts in Stage 2
 USE_SAMPLE_WEIGHTS_S1 = False  

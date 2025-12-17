@@ -11,8 +11,8 @@ IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 # Training
 STAGE1_EPOCHS = 40
-STAGE2_EPOCHS = 200
-BACKBONE_S1 = 'tf_efficientnet_b3_ns'        
+STAGE2_EPOCHS = 40
+BACKBONE_S1 = 'tf_efficientnet_b0_ns'        
 BACKBONE_S2 = 'swin_base_patch4_window7_224' 
 N_FOLDS = 5
 TEST_SPLIT_RATIO = 0.10    

@@ -88,6 +88,9 @@ class UnifiedSharedModel(nn.Module):
         self.s1_month = nn.Sequential(nn.Dropout(0.3), nn.Linear(feat_dim, 12))
 
         # 3. STAGE 2 HEAD (Biomass predictions with feature fusion)
+        # Species Embedding (for S2 conditioning)
+        self.species_emb = nn.Embedding(num_species, 16)
+        
         self.img_adapter = nn.Sequential(
             nn.Linear(feat_dim, FUSION_DIM),
             nn.BatchNorm1d(FUSION_DIM),
@@ -102,8 +105,11 @@ class UnifiedSharedModel(nn.Module):
             nn.Dropout(0.1)
         )
 
+        # Input to MLP is now FUSION_DIM + 16 (Species Emb)
+        s2_input_dim = FUSION_DIM + 16
+
         self.s2_mlp = nn.Sequential(
-            nn.Linear(FUSION_DIM, 512),
+            nn.Linear(s2_input_dim, 512),
             nn.BatchNorm1d(512),
             nn.SiLU(),
             nn.Dropout(0.5),
@@ -114,7 +120,7 @@ class UnifiedSharedModel(nn.Module):
             nn.Linear(256, 3)  # Predicts log-scale components: C, D, G
         )
 
-    def forward(self, img):
+    def forward(self, img, species_idx=None):
         # --- Shared Forward Pass ---
         feats = self.backbone(img)
 
@@ -141,7 +147,16 @@ class UnifiedSharedModel(nn.Module):
         tab_emb = self.tab_adapter(tab_features)
         
         # Weighted blend
-        s2_input = (IMG_FEAT_WEIGHT * img_emb) + (TAB_FEAT_WEIGHT * tab_emb)
+        s2_main = (IMG_FEAT_WEIGHT * img_emb) + (TAB_FEAT_WEIGHT * tab_emb)
+        
+        # Determine Species for Conditioning (INFERENCE: Defaults to Prediction)
+        if species_idx is not None:
+             sp_emb = self.species_emb(species_idx)
+        else:
+             sp_pred_idx = torch.argmax(sp_logits, dim=1)
+             sp_emb = self.species_emb(sp_pred_idx)
+             
+        s2_input = torch.cat([s2_main, sp_emb], dim=1)
         
         # --- Stage 2 Biomass Predictions ---
         log_components = F.softplus(self.s2_mlp(s2_input))

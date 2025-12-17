@@ -434,7 +434,55 @@ def calculate_global_weighted_r2(y_true, y_pred, weights):
     ss_res = np.sum(w_flat * (y_true - y_pred)**2)
     ss_tot = np.sum(w_flat * (y_true - global_mean)**2)
     
+    
     if ss_tot == 0:
         return np.nan  # or 1.0, depending on interpretation
     
     return 1 - (ss_res / ss_tot)
+
+import matplotlib.pyplot as plt
+
+def plot_fold_losses(fold, history, save_dir="plots"):
+    """
+    Plots training losses for Stage 1 and Stage 2 per fold.
+    history: dict with keys 's1' and 's2', each a list of epoch logs (dicts).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    epochs = range(1, len(history['s1']) + 1)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot Stage 1 Components
+    s1_keys = [k for k in history['s1'][0].keys() if k != 'Tot']
+    for k in s1_keys:
+        vals = [epoch_log[k] for epoch_log in history['s1']]
+        ax1.plot(epochs, vals, label=k)
+    
+    # Plot Stage 1 Total
+    s1_tot = [epoch_log['Tot'] for epoch_log in history['s1']]
+    ax1.plot(epochs, s1_tot, 'k--', label='Total', linewidth=2)
+    
+    ax1.set_title(f"Fold {fold} - Stage 1 Losses")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot Stage 2 Components
+    s2_keys = [k for k in history['s2'][0].keys() if k != 'Tot']
+    for k in s2_keys:
+        vals = [epoch_log[k] for epoch_log in history['s2']]
+        ax2.plot(epochs, vals, label=k)
+        
+    s2_tot = [epoch_log['Tot'] for epoch_log in history['s2']]
+    ax2.plot(epochs, s2_tot, 'k--', label='Total', linewidth=2)
+    
+    ax2.set_title(f"Fold {fold} - Stage 2 Losses")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Loss (Weighted MSE)")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"fold_{fold}_losses.png"))
+    plt.close()

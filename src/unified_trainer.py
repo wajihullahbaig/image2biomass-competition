@@ -23,7 +23,7 @@ from configs import (
 )
 from common import (
     calculate_global_weighted_r2, calculate_sample_weights_01_normalized,
-    get_image_data_transforms, load_data, setup_logging, set_seed
+    get_image_data_transforms, load_data, setup_logging, set_seed, plot_fold_losses
 )
 
 set_seed(42)
@@ -115,7 +115,10 @@ class UnifiedSharedModel(nn.Module):
         self.s1_height = nn.Sequential(nn.Dropout(0.3), nn.Linear(feat_dim, 1))
         self.s1_month = nn.Sequential(nn.Dropout(0.3), nn.Linear(feat_dim, 12))
 
-        # 3. STAGE 2 HEAD (Attached to Shared Backbone + Tabular)
+        # 3. STAGE 2 HEAD (Attached to Shared Backbone + Tabular + Species)
+        # Species Embedding (for S2 conditioning)
+        self.species_emb = nn.Embedding(num_species, 16)
+        
         # Feature Fusion Adapters
         self.img_adapter = nn.Sequential(
             nn.Linear(feat_dim, FUSION_DIM),
@@ -131,8 +134,11 @@ class UnifiedSharedModel(nn.Module):
             nn.Dropout(0.1)
         )
 
+        # Input to MLP is now FUSION_DIM + 16 (Species Emb)
+        s2_input_dim = FUSION_DIM + 16
+        
         self.s2_mlp = nn.Sequential(
-            nn.Linear(FUSION_DIM, 512),
+            nn.Linear(s2_input_dim, 512),
             nn.BatchNorm1d(512),
             nn.SiLU(),
             nn.Dropout(0.5), # Increased Dropout for Regularization
@@ -143,7 +149,7 @@ class UnifiedSharedModel(nn.Module):
             nn.Linear(256, 3) # Softplus head for C, D, G
         )
 
-    def forward(self, img):
+    def forward(self, img, species_idx=None):
         # --- Shared Forward Pass ---
         feats = self.backbone(img) # Shape: (Batch, feat_dim)
 
@@ -174,7 +180,19 @@ class UnifiedSharedModel(nn.Module):
         tab_emb = self.tab_adapter(tab_features)
         
         # Weighted Blend
-        s2_input = (IMG_FEAT_WEIGHT * img_emb) + (TAB_FEAT_WEIGHT * tab_emb)
+        s2_main = (IMG_FEAT_WEIGHT * img_emb) + (TAB_FEAT_WEIGHT * tab_emb)
+        
+        # Determine Species for Conditioning
+        if species_idx is not None:
+            # Training/Val: Use Ground Truth
+            sp_emb = self.species_emb(species_idx)
+        else:
+            # Inference (if GT unknown): Use Prediction
+            sp_pred_idx = torch.argmax(sp_logits, dim=1)
+            sp_emb = self.species_emb(sp_pred_idx)
+            
+        # Concatenate: [Combined_Features, Species_Emb]
+        s2_input = torch.cat([s2_main, sp_emb], dim=1)
         
         # --- Stage 2 Outputs ---
         log_components = F.softplus(self.s2_mlp(s2_input))
@@ -208,11 +226,14 @@ def train_unified(df):
     logger.info(f"Backbone: {BACKBONE_S1} (Shared)")
     logger.info(f"Regularization: Weight Decay 0.05, Dropout 0.5")
     
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
-    if STAGE1_STRATIFICATION_COLUMN in df.columns:
-        splitter = skf.split(df, df[STAGE1_STRATIFICATION_COLUMN])
-    else:
-        splitter = KFold(n_splits=N_FOLDS, shuffle=True).split(df)
+    # Create a grouping column representing unique site-visits
+    # Grouping by Date + State ensures we don't leak site-specific conditions
+    df['group_col'] = df['State'].astype(str) + "_" + df['Sampling_Date'].astype(str)
+    
+    logger.info(f"Using GroupKFold on 'State + Sampling_Date' ({df['group_col'].nunique()} groups) to prevent leakage.")
+    from sklearn.model_selection import GroupKFold
+    gkf = GroupKFold(n_splits=N_FOLDS)
+    splitter = gkf.split(df, groups=df['group_col'])
         
     species_le = LabelEncoder()
     species_le.fit(df['Species'].fillna('Unknown'))
@@ -269,7 +290,7 @@ def train_unified(df):
                 optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda'):
-                    sp_p, ndvi_p, h_p, mon_p, bio_log_p, bio_real_p = model(img)
+                    sp_p, ndvi_p, h_p, mon_p, bio_log_p, bio_real_p = model(img, sp_t)
                     
                     # --- S1 LOSS ---
                     l_sp = torch.zeros(img.size(0), device=DEVICE)
@@ -332,7 +353,7 @@ def train_unified(df):
                     (img, sp_t, ndvi_t, h_t, mon_t, bio_log_t, bio_real_t, _, mask) = [x.to(DEVICE) for x in batch]
                     
                     with torch.amp.autocast('cuda'):
-                        sp_p, ndvi_p, h_p, mon_p, bio_log_p, bio_real_p = model(img)
+                        sp_p, ndvi_p, h_p, mon_p, bio_log_p, bio_real_p = model(img, sp_t)
                         
                         # S1 Val
                         l_sp = F.cross_entropy(sp_p, sp_t, ignore_index=-1) if mask[:,0].any() else 0.0

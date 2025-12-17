@@ -221,7 +221,7 @@ def format_log(metrics_dict, prefix=""):
     return f"{prefix} [" + " ".join(s) + "]"
 
 # ====================== TRAIN LOOP ======================
-def train_unified(df):
+def train_unified(df, log_dir='logs'):
     logger.info("=== UNIFIED SHARED BACKBONE TRAINING ===")
     logger.info(f"Backbone: {BACKBONE_S1} (Shared)")
     logger.info(f"Regularization: Weight Decay 0.05, Dropout 0.5")
@@ -273,6 +273,12 @@ def train_unified(df):
         mse_loss_none = nn.MSELoss(reduction='none')
         
         best_r2 = -float('inf')
+        
+        # History for plotting
+        fold_history = {
+            'train_s1': [], 'val_s1': [],
+            'train_s2': [], 'val_s2': []
+        }
         
         for epoch in range(STAGE1_EPOCHS):
             model.train()
@@ -395,13 +401,22 @@ def train_unified(df):
             
             logger.info(f"Global R2: {r2:.5f}")
             
+            # --- HISTORY ACCUMULATION ---
+            fold_history['train_s1'].append(train_s1_log)
+            fold_history['val_s1'].append(val_s1_log)
+            fold_history['train_s2'].append(train_s2_log)
+            fold_history['val_s2'].append(val_s2_mae_log)
+            
             if r2 > best_r2:
                 best_r2 = r2
                 torch.save(model.state_dict(), f"models_unified/fold{fold+1}.pth")
                 logger.info(f">> Saved Best Model (R2: {best_r2:.5f})")
 
+            # --- PLOT LOSSES (LIVE UPDATES) ---
+            plot_fold_losses(fold + 1, fold_history, save_dir=os.path.join(log_dir, 'plots'))
+
 if __name__ == '__main__':
-    setup_logging(logger_name="System Logger", log_dir='logs', file_name_part='Unified_Shared')
+    session_dir = setup_logging(logger_name="System Logger", log_dir='logs', file_name_part='Unified_Shared')
     os.makedirs("models_unified", exist_ok=True)
     df = load_data(logger)
-    train_unified(df)
+    train_unified(df, log_dir=session_dir)

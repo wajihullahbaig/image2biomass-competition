@@ -98,16 +98,28 @@ def get_image_data_transforms()->tuple:
             ])
     return train_transform, val_transform       
 
-def setup_logging(logger_name = "System Logger",log_dir='logs',file_name_part =None) -> logging.Logger:
+def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=None) -> str:
     """
-    Set up logging to both console and file with timestamps.
-    Creates a new log file for each run.
+    Set up logging to both console and file.
+    Creates a new session directory 'logs/{timestamp}' and saves 'session.log' there.
+    Returns the path to the session directory.
     """
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Create log filename with timestamp
+    # Create timestamped session directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_file = os.path.join(log_dir, f'{file_name_part}_{timestamp}.log')
+    if file_name_part:
+        # e.g. logs/Unified_Shared_20251217_230000
+        session_dir_name = f"{file_name_part}_{timestamp}"
+    else:
+        session_dir_name = timestamp
+        
+    session_dir = os.path.join(log_dir, session_dir_name)
+    os.makedirs(session_dir, exist_ok=True)
+    
+    # Create plots directory inside session directory
+    os.makedirs(os.path.join(session_dir, 'plots'), exist_ok=True)
+    
+    # Log file path
+    log_file = os.path.join(session_dir, 'session.log')
     
     # Create logger
     logger = logging.getLogger(logger_name)
@@ -135,8 +147,8 @@ def setup_logging(logger_name = "System Logger",log_dir='logs',file_name_part =N
     console_handler.setFormatter(simple_formatter)
     logger.addHandler(console_handler)
     
-    logger.info(f"Logging initialized. Log file: {log_file}")
-    return logger
+    logger.info(f"Logging initialized. Session Directory: {session_dir}")
+    return session_dir
 
 
 def set_seed(seed: Optional[int] = 42, logger=None) -> None:
@@ -444,43 +456,62 @@ import matplotlib.pyplot as plt
 
 def plot_fold_losses(fold, history, save_dir="plots"):
     """
-    Plots training losses for Stage 1 and Stage 2 per fold.
-    history: dict with keys 's1' and 's2', each a list of epoch logs (dicts).
+    Plots training and validation losses for Stage 1 and Stage 2 per fold.
+    history: dict with keys 'train_s1', 'val_s1', 'train_s2', 'val_s2'.
     """
     os.makedirs(save_dir, exist_ok=True)
-    epochs = range(1, len(history['s1']) + 1)
+    epochs = range(1, len(history['train_s1']) + 1)
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
-    # Plot Stage 1 Components
-    s1_keys = [k for k in history['s1'][0].keys() if k != 'Tot']
-    for k in s1_keys:
-        vals = [epoch_log[k] for epoch_log in history['s1']]
-        ax1.plot(epochs, vals, label=k)
+    # --- PLOT STAGE 1 (Train vs Val) ---
+    # Metrics: Tot, Sp, Ndvi, H, Mon
+    s1_metrics = [k for k in history['train_s1'][0].keys()]
     
-    # Plot Stage 1 Total
-    s1_tot = [epoch_log['Tot'] for epoch_log in history['s1']]
-    ax1.plot(epochs, s1_tot, 'k--', label='Total', linewidth=2)
+    # Use a cycle of colors so Train/Val for same metric share color
+    colors = plt.cm.tab10(np.linspace(0, 1, len(s1_metrics)))
     
-    ax1.set_title(f"Fold {fold} - Stage 1 Losses")
+    for i, metric in enumerate(s1_metrics):
+        train_vals = [log[metric] for log in history['train_s1']]
+        val_vals = [log[metric] for log in history['val_s1']]
+        
+        # Train = Solid, Val = Dashed
+        ax1.plot(epochs, train_vals, label=f"{metric} (T)", color=colors[i], linestyle='-')
+        ax1.plot(epochs, val_vals, label=f"{metric} (V)", color=colors[i], linestyle='--')
+        
+    ax1.set_title(f"Fold {fold} - Stage 1 Loss (Train vs Val)")
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss")
-    ax1.legend()
+    ax1.legend(loc='upper right', fontsize='small', ncol=2)
     ax1.grid(True, alpha=0.3)
     
-    # Plot Stage 2 Components
-    s2_keys = [k for k in history['s2'][0].keys() if k != 'Tot']
-    for k in s2_keys:
-        vals = [epoch_log[k] for epoch_log in history['s2']]
-        ax2.plot(epochs, vals, label=k)
-        
-    s2_tot = [epoch_log['Tot'] for epoch_log in history['s2']]
-    ax2.plot(epochs, s2_tot, 'k--', label='Total', linewidth=2)
+    # --- PLOT STAGE 2 (Train Loss vs Val MAE) ---
+    # Note: Train is Weighted MSE Loss, Val is MAE. They are different scales.
+    # We will plot them anyway to see trends.
+    s2_metrics = [k for k in history['train_s2'][0].keys() if k != 'Tot']
     
-    ax2.set_title(f"Fold {fold} - Stage 2 Losses")
+    # Reset colors
+    colors = plt.cm.tab10(np.linspace(0, 1, len(s2_metrics)+1)) # +1 for Total
+    
+    for i, metric in enumerate(s2_metrics):
+        train_vals = [log[metric] for log in history['train_s2']]
+        val_vals = [log[metric] for log in history['val_s2']]
+        
+        ax2.plot(epochs, train_vals, label=f"{metric} (T)", color=colors[i], linestyle='-')
+        ax2.plot(epochs, val_vals, label=f"{metric} (V)", color=colors[i], linestyle='--')
+        
+    # Plot Total separately or with them
+    t_tot = [log['Tot'] for log in history['train_s2']]
+    # For S2 val, we don't strictly have a "Loss" total, we have MAE total, but let's assume 'Total' key exists
+    if 'Tot' in history['val_s2'][0]: 
+        v_tot = [log['Tot'] for log in history['val_s2']]
+        ax2.plot(epochs, t_tot, label="Total (T)", color='k', linestyle='-', linewidth=2)
+        ax2.plot(epochs, v_tot, label="Total (V)", color='k', linestyle='--', linewidth=2)
+    
+    ax2.set_title(f"Fold {fold} - Stage 2 (Train Loss vs Val MAE)")
     ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Loss (Weighted MSE)")
-    ax2.legend()
+    ax2.set_ylabel("Value (Loss / MAE)")
+    ax2.legend(loc='upper right', fontsize='small', ncol=2)
     ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()

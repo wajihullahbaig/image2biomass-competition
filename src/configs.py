@@ -27,3 +27,8 @@ TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_
 # Official Weights: Clover, Dead, Green, Total, GDM
 OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
 COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
+
+# Unified Model Fusion Settings
+IMG_FEAT_WEIGHT = 0.3
+TAB_FEAT_WEIGHT = 0.7
+FUSION_DIM = 512

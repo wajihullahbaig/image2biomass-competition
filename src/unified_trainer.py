@@ -18,7 +18,8 @@ from configs import (
     BACKBONE_S1, LEARNING_RATE, 
     N_FOLDS, STAGE1_STRATIFICATION_COLUMN,
     STAGE1_EPOCHS, TARGET_COLS, OFFICIAL_WEIGHTS,
-    COL_WEIGHTS_TENSOR, USE_SAMPLE_WEIGHTS_S1
+    COL_WEIGHTS_TENSOR, USE_SAMPLE_WEIGHTS_S1,
+    IMG_FEAT_WEIGHT, TAB_FEAT_WEIGHT, FUSION_DIM
 )
 from common import (
     calculate_global_weighted_r2, calculate_sample_weights_01_normalized,
@@ -115,9 +116,23 @@ class UnifiedSharedModel(nn.Module):
         self.s1_month = nn.Sequential(nn.Dropout(0.3), nn.Linear(feat_dim, 12))
 
         # 3. STAGE 2 HEAD (Attached to Shared Backbone + Tabular)
-        # Input: [Backbone Features] + [NDVI, Height, Interaction, Ratio]
+        # Feature Fusion Adapters
+        self.img_adapter = nn.Sequential(
+            nn.Linear(feat_dim, FUSION_DIM),
+            nn.BatchNorm1d(FUSION_DIM),
+            nn.SiLU(),
+            nn.Dropout(0.3)
+        )
+        
+        self.tab_adapter = nn.Sequential(
+            nn.Linear(4, FUSION_DIM),
+            nn.BatchNorm1d(FUSION_DIM),
+            nn.SiLU(),
+            nn.Dropout(0.1)
+        )
+
         self.s2_mlp = nn.Sequential(
-            nn.Linear(feat_dim + 4, 512),
+            nn.Linear(FUSION_DIM, 512),
             nn.BatchNorm1d(512),
             nn.SiLU(),
             nn.Dropout(0.5), # Increased Dropout for Regularization
@@ -154,8 +169,12 @@ class UnifiedSharedModel(nn.Module):
         tab_features = torch.stack([ndvi_vec, h_vec, ndvi_h_mul, ndvi_h_ratio], dim=1)
         
         # --- Stage 2 Input Construction ---
-        # We give S2 the deep image features AND the physics-informed tabular features
-        s2_input = torch.cat([feats, tab_features], dim=1)
+        # Blend Image and Tabular embeddings
+        img_emb = self.img_adapter(feats)
+        tab_emb = self.tab_adapter(tab_features)
+        
+        # Weighted Blend
+        s2_input = (IMG_FEAT_WEIGHT * img_emb) + (TAB_FEAT_WEIGHT * tab_emb)
         
         # --- Stage 2 Outputs ---
         log_components = F.softplus(self.s2_mlp(s2_input))

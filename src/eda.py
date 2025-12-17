@@ -10,7 +10,7 @@ import warnings
 
 # --- Configuration ---
 warnings.filterwarnings('ignore')
-BASE_VIZ_PATH = 'visualizations_detailed_v2'
+BASE_VIZ_PATH = 'visualizations_detailed_v3'
 os.makedirs(BASE_VIZ_PATH, exist_ok=True)
 
 # Visual Settings for Publication Quality
@@ -612,13 +612,8 @@ def viz_target_variability(df, target_cols):
     """
     Analyzes the variance, standard deviation, and coefficient of variation
     for each target variable across different groupings.
-    
-    This helps identify:
-    - Which targets are most/least variable
-    - How variability changes across seasons/species/states
-    - Heteroscedasticity patterns (variance changing with mean)
     """
-    print("8. Generating Target Variability Analysis...")
+    print("9. Generating Target Variability Analysis...")
     
     fig = plt.figure(figsize=(20, 14))
     gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
@@ -820,51 +815,268 @@ def viz_target_variability(df, target_cols):
                 dpi=300, bbox_inches='tight')
     plt.close()
     
-    # --- PRINT STATISTICAL SUMMARY ---
+    print("="*70)
+
+# ==============================================================================
+# 9. SPECIES CORRELATION ANALYSIS - Deep Dive
+# ==============================================================================
+def viz_species_correlations(df, target_cols):
+    """
+    Comprehensive analysis of how Species relates to:
+    1. Input features (Height, NDVI)
+    2. Target variables (all biomass components)
+    3. Engineered features
+    
+    Uses one-hot encoding to compute correlations and visualizes patterns.
+    """
+    print("10. Generating Species Correlation Analysis...")
+    
+    # One-hot encode species for correlation
+    species_dummies = pd.get_dummies(df['Species'], prefix='Species')
+    df_encoded = pd.concat([df, species_dummies], axis=1)
+    
+    # Get all species columns
+    species_cols = [col for col in species_dummies.columns]
+    
+    fig = plt.figure(figsize=(24, 18))
+    gs = fig.add_gridspec(4, 3, hspace=0.35, wspace=0.35)
+    
+    # ========== PLOT 1: Species vs Input Features ==========
+    ax1 = fig.add_subplot(gs[0, :])
+    
+    input_features = ['Height_Ave_cm', 'Pre_GSHH_NDVI', 'Height_Log', 
+                      'NDVI_Squared', 'NDVI_Sqrt']
+    
+    # Calculate correlations
+    species_input_corr = []
+    for species_col in species_cols:
+        row = []
+        for feat in input_features:
+            if feat in df_encoded.columns:
+                valid_mask = np.isfinite(df_encoded[species_col]) & np.isfinite(df_encoded[feat])
+                if valid_mask.sum() > 10:
+                    r, _ = pearsonr(df_encoded.loc[valid_mask, species_col], 
+                                   df_encoded.loc[valid_mask, feat])
+                    row.append(r)
+                else:
+                    row.append(0.0)
+            else:
+                row.append(0.0)
+        species_input_corr.append(row)
+    
+    species_input_df = pd.DataFrame(
+        species_input_corr,
+        index=[s.replace('Species_', '') for s in species_cols],
+        columns=[f.replace('_Ave_cm', '').replace('Pre_GSHH_', '') for f in input_features]
+    )
+    
+    sns.heatmap(species_input_df, annot=True, fmt='.2f', cmap='RdBu_r', 
+                center=0, linewidths=1, linecolor='white',
+                cbar_kws={"label": "Correlation (r)"}, ax=ax1,
+                vmin=-0.5, vmax=0.5)
+    ax1.set_title('Species vs Input Features Correlation\n(One-Hot Encoded)', 
+                  fontsize=14, fontweight='bold', pad=15)
+    ax1.set_xlabel('Input Features', fontsize=12)
+    ax1.set_ylabel('Species', fontsize=12)
+    
+    # ========== PLOT 2: Species vs Target Variables ==========
+    ax2 = fig.add_subplot(gs[1, :])
+    
+    all_targets = target_cols + ['Total_minus_Green', 'Total_minus_Clover', 
+                                  'Green_plus_Clover', 'Unexplained_Mass',
+                                  'Total_minus_Living', 'NonGreen_Mass']
+    
+    species_target_corr = []
+    for species_col in species_cols:
+        row = []
+        for target in all_targets:
+            if target in df_encoded.columns:
+                valid_mask = np.isfinite(df_encoded[species_col]) & np.isfinite(df_encoded[target])
+                if valid_mask.sum() > 10:
+                    r, _ = pearsonr(df_encoded.loc[valid_mask, species_col], 
+                                   df_encoded.loc[valid_mask, target])
+                    row.append(r)
+                else:
+                    row.append(0.0)
+            else:
+                row.append(0.0)
+        species_target_corr.append(row)
+    
+    species_target_df = pd.DataFrame(
+        species_target_corr,
+        index=[s.replace('Species_', '') for s in species_cols],
+        columns=[t.replace('_g', '') for t in all_targets]
+    )
+    
+    sns.heatmap(species_target_df, annot=True, fmt='.2f', cmap='RdBu_r', 
+                center=0, linewidths=1, linecolor='white',
+                cbar_kws={"label": "Correlation (r)"}, ax=ax2,
+                vmin=-0.5, vmax=0.5)
+    ax2.set_title('Species vs Target Variables Correlation\n(Original + Engineered Targets)', 
+                  fontsize=14, fontweight='bold', pad=15)
+    ax2.set_xlabel('Target Variables', fontsize=12)
+    ax2.set_ylabel('Species', fontsize=12)
+    
+    # ========== PLOT 3: Species Distribution in Dataset ==========
+    ax3 = fig.add_subplot(gs[2, 0])
+    
+    species_counts = df['Species'].value_counts().sort_values(ascending=True)
+    colors_species = plt.cm.Set3(np.linspace(0, 1, len(species_counts)))
+    
+    species_counts.plot(kind='barh', ax=ax3, color=colors_species, edgecolor='black')
+    ax3.set_title('Species Sample Distribution', fontsize=12, fontweight='bold')
+    ax3.set_xlabel('Number of Samples', fontsize=10)
+    ax3.set_ylabel('Species', fontsize=10)
+    ax3.grid(axis='x', alpha=0.3)
+    
+    # Add count labels
+    for i, (idx, val) in enumerate(species_counts.items()):
+        ax3.text(val + species_counts.max() * 0.01, i, f'{int(val)}', 
+                va='center', fontsize=9, fontweight='bold')
+    
+    # ========== PLOT 4: Top Species - Mean Target Values ==========
+    ax4 = fig.add_subplot(gs[2, 1])
+    
+    top_5_species = species_counts.tail(5).index
+    species_means = df[df['Species'].isin(top_5_species)].groupby('Species')[target_cols].mean()
+    species_means.columns = [c.replace('_g', '') for c in species_means.columns]
+    
+    species_means.plot(kind='bar', ax=ax4, width=0.8, colormap='tab10')
+    ax4.set_title('Mean Target Values by Species\n(Top 5 Species)', 
+                  fontsize=12, fontweight='bold')
+    ax4.set_xlabel('Species', fontsize=10)
+    ax4.set_ylabel('Mean Biomass (g)', fontsize=10)
+    ax4.legend(title='Target', bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    ax4.tick_params(axis='x', rotation=45)
+    ax4.grid(axis='y', alpha=0.3)
+    
+    # ========== PLOT 5: Species - Target Variability ==========
+    ax5 = fig.add_subplot(gs[2, 2])
+    
+    species_std = df[df['Species'].isin(top_5_species)].groupby('Species')[target_cols].std()
+    species_std.columns = [c.replace('_g', '') for c in species_std.columns]
+    
+    species_std.plot(kind='bar', ax=ax5, width=0.8, colormap='viridis')
+    ax5.set_title('Target Std Dev by Species\n(Top 5 Species)', 
+                  fontsize=12, fontweight='bold')
+    ax5.set_xlabel('Species', fontsize=10)
+    ax5.set_ylabel('Standard Deviation (g)', fontsize=10)
+    ax5.legend(title='Target', bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    ax5.tick_params(axis='x', rotation=45)
+    ax5.grid(axis='y', alpha=0.3)
+    
+    # ========== PLOT 6: Species vs Height (Violin Plot) ==========
+    ax6 = fig.add_subplot(gs[3, 0])
+    
+    top_species_df = df[df['Species'].isin(top_5_species)]
+    
+    sns.violinplot(data=top_species_df, x='Species', y='Height_Ave_cm', 
+                   palette='Set2', ax=ax6, inner='quartile')
+    ax6.set_title('Height Distribution by Species', fontsize=12, fontweight='bold')
+    ax6.set_xlabel('Species', fontsize=10)
+    ax6.set_ylabel('Height (cm)', fontsize=10)
+    ax6.tick_params(axis='x', rotation=45)
+    ax6.grid(axis='y', alpha=0.3)
+    
+    # ========== PLOT 7: Species vs NDVI (Violin Plot) ==========
+    ax7 = fig.add_subplot(gs[3, 1])
+    
+    sns.violinplot(data=top_species_df, x='Species', y='Pre_GSHH_NDVI', 
+                   palette='Set3', ax=ax7, inner='quartile')
+    ax7.set_title('NDVI Distribution by Species', fontsize=12, fontweight='bold')
+    ax7.set_xlabel('Species', fontsize=10)
+    ax7.set_ylabel('NDVI', fontsize=10)
+    ax7.tick_params(axis='x', rotation=45)
+    ax7.grid(axis='y', alpha=0.3)
+    
+    # ========== PLOT 8: Species Composition Patterns ==========
+    ax8 = fig.add_subplot(gs[3, 2])
+    
+    comp_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+    species_comp = df[df['Species'].isin(top_5_species)].groupby('Species')[comp_cols].mean()
+    species_comp_pct = species_comp.div(species_comp.sum(axis=1), axis=0) * 100
+    
+    species_comp_pct.plot(kind='bar', stacked=True, 
+                          color=['#d62728', '#7f7f7f', '#2ca02c'], 
+                          ax=ax8, width=0.8)
+    ax8.set_title('Biomass Composition by Species\n(% of Total)', 
+                  fontsize=12, fontweight='bold')
+    ax8.set_xlabel('Species', fontsize=10)
+    ax8.set_ylabel('Percentage (%)', fontsize=10)
+    ax8.legend(['Clover', 'Dead', 'Green'], title='Component', 
+               bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    ax8.tick_params(axis='x', rotation=45)
+    ax8.grid(axis='y', alpha=0.3)
+    
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '9_Species_Correlation_Analysis.png'), 
+                dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # ========== PRINT STATISTICAL SUMMARY ==========
     print("\n" + "="*70)
-    print("📊 TARGET VARIABILITY SUMMARY:")
-    print("="*70)
-    print(f"{'Target':<15} {'Mean':>8} {'Std':>8} {'CV(%)':>8} {'Min':>8} {'Max':>8}")
-    print("-"*70)
-    for _, row in var_df.iterrows():
-        target_name = row['Target']
-        mean_val = row['Mean']
-        std_val = row['Std']
-        cv_val = row['CV (%)']
-        
-        # Get min/max from original data
-        target_full = [t for t in target_cols if t.replace('_g', '') == target_name][0]
-        min_val = df[target_full].min()
-        max_val = df[target_full].max()
-        
-        print(f"{target_name:<15} {mean_val:>8.1f} {std_val:>8.1f} {cv_val:>8.1f} {min_val:>8.1f} {max_val:>8.1f}")
+    print("🌿 SPECIES CORRELATION SUMMARY:")
     print("="*70)
     
-    print("\n💡 KEY INSIGHTS:")
+    # Find strongest correlations with input features
+    print("\n📊 SPECIES vs INPUT FEATURES (Top 3 Correlations):")
     print("-"*70)
+    for feat in input_features:
+        feat_corrs = species_input_df[feat.replace('_Ave_cm', '').replace('Pre_GSHH_', '')]
+        top_3 = feat_corrs.abs().nlargest(3)
+        print(f"\n  {feat}:")
+        for species, corr_val in top_3.items():
+            actual_corr = feat_corrs[species]
+            print(f"    • {species:30s}: r = {actual_corr:+.3f}")
     
-    # Identify most/least variable
-    most_variable = var_df.loc[var_df['CV (%)'].idxmax()]
-    least_variable = var_df.loc[var_df['CV (%)'].idxmin()]
+    # Find strongest correlations with targets
+    print("\n" + "-"*70)
+    print("🎯 SPECIES vs TARGET VARIABLES (Top 3 Correlations per Target):")
+    print("-"*70)
+    for target in target_cols[:3]:  # Show first 3 main targets
+        target_name = target.replace('_g', '')
+        if target_name in species_target_df.columns:
+            target_corrs = species_target_df[target_name]
+            top_3 = target_corrs.abs().nlargest(3)
+            print(f"\n  {target}:")
+            for species, corr_val in top_3.items():
+                actual_corr = target_corrs[species]
+                print(f"    • {species:30s}: r = {actual_corr:+.3f}")
     
-    print(f"  • Most Variable: {most_variable['Target']} (CV = {most_variable['CV (%)']:.1f}%)")
-    print(f"  • Least Variable: {least_variable['Target']} (CV = {least_variable['CV (%)']:.1f}%)")
+    # Species diversity metrics
+    print("\n" + "-"*70)
+    print("📈 SPECIES DIVERSITY METRICS:")
+    print("-"*70)
+    n_species = df['Species'].nunique()
+    print(f"  • Total Species Count: {n_species}")
+    print(f"  • Most Common: {species_counts.index[-1]} ({species_counts.iloc[-1]} samples)")
+    print(f"  • Least Common: {species_counts.index[0]} ({species_counts.iloc[0]} samples)")
     
-    # Identify targets with high between-group variance (good for stratification)
-    print("\n  • Variance Decomposition (Between-Season / Within-Season):")
-    for _, row in vr_df.iterrows():
-        if row['Ratio'] > 0.5:
-            print(f"    - {row['Target']}: F-ratio = {row['Ratio']:.2f} (High between-group variance → good for stratification)")
-        elif row['Ratio'] < 0.1:
-            print(f"    - {row['Target']}: F-ratio = {row['Ratio']:.2f} (Low between-group variance → less predictable by season)")
+    # Shannon diversity index
+    proportions = species_counts / len(df)
+    shannon = -np.sum(proportions * np.log(proportions))
+    print(f"  • Shannon Diversity Index: {shannon:.3f}")
+    
+    # Simpson's diversity index
+    simpson = 1 - np.sum(proportions ** 2)
+    print(f"  • Simpson's Diversity Index: {simpson:.3f}")
     
     print("="*70 + "\n")
+    
+    # Return summary dataframes for potential further analysis
+    return {
+        'species_input_corr': species_input_df,
+        'species_target_corr': species_target_df,
+        'species_counts': species_counts,
+        'species_means': species_means,
+        'species_std': species_std
+    }
+
 # ==============================================================================
 # MAIN EXECUTION
 # ==============================================================================
 if __name__ == '__main__':
     print("\n" + "="*70)
-    print("🚀 ENHANCED EDA WITH FEATURE TRANSFORMS & TARGET ENGINEERING")
+    print("🚀 ENHANCED EDA WITH SPECIES CORRELATION ANALYSIS")
     print("="*70 + "\n")
     
     # Load and process
@@ -879,7 +1091,9 @@ if __name__ == '__main__':
     viz_dry_dead_deep_dive(df)
     viz_comprehensive_target_heatmap(df)
     viz_target_variability(df, targets)
-
+    
+    # NEW: Species correlation analysis
+    species_results = viz_species_correlations(df, targets)
     
     print("\n" + "="*70)
     print(f"✅ Complete! All visualizations saved to: {BASE_VIZ_PATH}/")
@@ -893,4 +1107,5 @@ if __name__ == '__main__':
     print("  6. 6_Dry_Dead_Deep_Dive.png")
     print("  7. 7_Comprehensive_Target_Heatmap.png")
     print("  8. 8_Target_Variability_Analysis.png")
+    print("  9. 9_Species_Correlation_Analysis.png  ← NEW!")
     print("="*70 + "\n")

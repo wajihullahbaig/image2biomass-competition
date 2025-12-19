@@ -80,6 +80,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
 def validate(model, loader, criterion_biomass, criterion_aux, device):
     model.eval()
     running_loss = 0.0
+    running_aux_loss = 0.0
     all_preds = []
     all_targets = []
     
@@ -90,14 +91,24 @@ def validate(model, loader, criterion_biomass, criterion_aux, device):
         
         biomass_pred, aux_pred = model(images)
         
+        # Clamp log-predictions to a safe physical range [0, log1p(200)] 
+        biomass_pred_clamped = torch.clamp(biomass_pred, 0, 5.3)
+        
+        # Convert back to real grams for metric calculation
+        biomass_pred_real = torch.expm1(biomass_pred_clamped)
+        targets_real = torch.expm1(targets)
+        
         # We only care about biomass for the main validation metric
         loss_biomass = criterion_biomass(biomass_pred, targets)
+        loss_aux = criterion_aux(aux_pred, aux_feats)
+        
         weighted_loss_biomass = (loss_biomass * COL_WEIGHTS_TENSOR).mean()
         
         running_loss += weighted_loss_biomass.item()
+        running_aux_loss += loss_aux.item()
         
-        all_preds.append(biomass_pred.cpu().numpy())
-        all_targets.append(targets.cpu().numpy())
+        all_preds.append(biomass_pred_real.cpu().numpy())
+        all_targets.append(targets_real.cpu().numpy())
         
     all_preds = np.concatenate(all_preds, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
@@ -110,6 +121,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, device):
     
     return {
         'loss': running_loss / len(loader),
+        'loss_aux': running_aux_loss / len(loader),
         'r2': r2_score
     }
 
@@ -178,10 +190,13 @@ def run_training():
             history['loss_aux'].append(train_metrics['loss_aux'])
             history['val_loss'].append(val_metrics['loss'])
             history['val_r2'].append(val_metrics['r2'])
+            # Track validation auxiliary loss as well if needed in future plots
+            if 'val_loss_aux' not in history: history['val_loss_aux'] = []
+            history['val_loss_aux'].append(val_metrics['loss_aux'])
             
             logger.info(f"Epoch {epoch+1}/{STAGE1_EPOCHS} - "
                         f"Train Loss: {train_metrics['loss']:.4f} (B: {train_metrics['loss_biomass']:.4f}, A: {train_metrics['loss_aux']:.4f}) | "
-                        f"Val Loss: {val_metrics['loss']:.4f} | R2: {val_metrics['r2']:.4f}")
+                        f"Val Loss: {val_metrics['loss']:.4f} (A: {val_metrics['loss_aux']:.4f}) | R2: {val_metrics['r2']:.4f}")
             
             if val_metrics['r2'] > best_r2:
                 best_r2 = val_metrics['r2']

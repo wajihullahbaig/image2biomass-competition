@@ -239,7 +239,9 @@ def plot_training_history(history, fold, session_dir):
     if 'loss_biomass' in history:
         plt.plot(history['loss_biomass'], label='Biomass Loss', linestyle='--')
     if 'loss_aux' in history:
-        plt.plot(history['loss_aux'], label='Aux Loss', linestyle=':')
+        plt.plot(history['loss_aux'], label='Aux Train Loss', linestyle=':')
+    if 'val_loss_aux' in history:
+        plt.plot(history['val_loss_aux'], label='Aux Val Loss', linestyle='-.', color='magenta')
     if 'val_loss' in history:
         plt.plot(history['val_loss'], label='Val Loss (Weighted)', linewidth=2)
         
@@ -258,6 +260,8 @@ def plot_training_history(history, fold, session_dir):
     plt.xlabel('Epoch')
     plt.ylabel('R2 Score')
     plt.legend()
+    # CLIP Y-AXIS: R2 can be -infinity. We clip to [-1, 1.1] to see the positive peaks clearly.
+    plt.ylim(-1.0, 1.1)
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()

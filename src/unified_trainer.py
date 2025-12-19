@@ -121,8 +121,8 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             
             weighted_loss_biomass = (loss_biomass * COL_WEIGHTS_TENSOR).mean()
             
-            # 4. Total Loss (Consistent with training weights: 1.0, 0.3, 0.3)
-            total_val_loss = (weighted_loss_biomass + 0.3 * loss_aux + 0.3 * loss_species).item()
+            # 4. Total Loss 
+            total_val_loss = (weighted_loss_biomass + 0.5 * loss_aux + 0.2 * loss_species).item()
             
             # 5. Accumulate Metrics
             running_loss += total_val_loss
@@ -174,8 +174,7 @@ def run_training():
     logger.info(f"Metadata saved to {os.path.join(session_dir, 'metadata.json')}")
 
     # 3. Prepare Groups for GroupKFold
-    # Combine State and Sampling_Date for a robust group
-    df['group'] = df['State'] + "_" + df['Sampling_Date'].astype(str)
+    df['group'] = df['season'] + "_" + df['State'] + "_" + df['Sampling_Date'].astype(str)
     
     gkf = GroupKFold(n_splits=N_FOLDS)
     train_transform, val_transform = get_image_data_transforms()
@@ -200,7 +199,7 @@ def run_training():
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
         criterion_biomass = nn.MSELoss(reduction='none') # MSE is better for Gaussian log-space
         criterion_aux = nn.HuberLoss(delta=1.0) 
-        criterion_species = nn.CrossEntropyLoss()
+        criterion_species = nn.CrossEntropyLoss(label_smoothing=0.1)
         
         steps_per_epoch = len(train_loader)
         scheduler = optim.lr_scheduler.OneCycleLR(

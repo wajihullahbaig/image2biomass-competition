@@ -86,19 +86,24 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
 @torch.no_grad()
 def validate(model, loader, criterion_biomass, criterion_aux, criterion_species, device):
     model.eval()
+    
+    # Explicit initialization
     running_loss = 0.0
     running_aux_loss = 0.0
     running_species_loss = 0.0
+    running_biomass_loss = 0.0
+    
     all_preds = []
     all_targets = []
     
     with torch.no_grad():
         for batch in loader:
             images = batch['image'].to(device)
-            targets = batch['targets'].to(device)
+            targets = batch['targets'].to(device) # Log scale
             aux_feats = batch['aux_feats'].to(device)
             species_id = batch['species_id'].to(device)
             
+            # Forward pass
             biomass_pred_log, aux_pred, species_logits = model(images)
             
             # 1. Prediction Clamping in LOG SPACE (Log1p(200g) ≈ 5.303)
@@ -109,39 +114,39 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             biomass_pred_real = torch.expm1(biomass_pred_log_clamped)
             targets_real = torch.expm1(targets) 
             
-            # Losses (Calculated on LOG targets)
+            # 3. Component Losses (Calculated on LOG targets for biomass)
             loss_biomass = criterion_biomass(biomass_pred_log, targets)
             loss_aux = criterion_aux(aux_pred, aux_feats)
             loss_species = criterion_species(species_logits, species_id)
             
             weighted_loss_biomass = (loss_biomass * COL_WEIGHTS_TENSOR).mean()
             
-            # Metric tracking (Total Val Loss)
-            running_loss += (weighted_loss_biomass + 0.3 * loss_aux + 0.3 * loss_species).item()
+            # 4. Total Loss (Consistent with training weights: 1.0, 0.3, 0.3)
+            total_val_loss = (weighted_loss_biomass + 0.3 * loss_aux + 0.3 * loss_species).item()
+            
+            # 5. Accumulate Metrics
+            running_loss += total_val_loss
+            running_biomass_loss += weighted_loss_biomass.item()
             running_aux_loss += loss_aux.item()
             running_species_loss += loss_species.item()
-            
-            # New: Track validation biomass loss for plotting
-            if not hasattr(self, 'running_biomass_loss'): self.running_biomass_loss = 0.0
-            self.running_biomass_loss += weighted_loss_biomass.item()
             
             all_preds.append(biomass_pred_real.cpu().numpy())
             all_targets.append(targets_real.cpu().numpy())
         
-    all_preds = np.concatenate(all_preds, axis=0)
-    all_targets = np.concatenate(all_targets, axis=0)
+    # Aggregate results
+    all_preds_concat = np.concatenate(all_preds, axis=0)
+    all_targets_concat = np.concatenate(all_targets, axis=0)
     
     # Enforce physics for the metric calculation
-    all_preds_phys = enforce_physical_constraints(all_preds)
+    all_preds_phys = enforce_physical_constraints(all_preds_concat)
+    r2_score = calculate_global_weighted_r2(all_targets_concat, all_preds_phys, OFFICIAL_WEIGHTS)
     
-    # Calculate Special R2
-    r2_score = calculate_global_weighted_r2(all_targets, all_preds_phys, OFFICIAL_WEIGHTS)
-    
+    num_batches = len(loader)
     return {
-        'loss': running_loss / len(loader),
-        'loss_biomass': self.running_biomass_loss / len(loader) if hasattr(self, 'running_biomass_loss') else 0.0,
-        'loss_aux': running_aux_loss / len(loader),
-        'loss_species': running_species_loss / len(loader),
+        'loss': running_loss / num_batches,
+        'loss_biomass': running_biomass_loss / num_batches,
+        'loss_aux': running_aux_loss / num_batches,
+        'loss_species': running_species_loss / num_batches,
         'r2': r2_score
     }
 

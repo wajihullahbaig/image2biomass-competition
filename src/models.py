@@ -52,17 +52,23 @@ class BiomassUnifiedModel(nn.Module):
         # Predict species (categorical logits)
         species_logits = self.species_head(img_feats) # (B, num_species)
         
+        # Non-negative species features for fusion (e.g. probabilities)
+        species_probs = torch.softmax(species_logits, dim=1)
+        
         # Predict auxiliary features (NDVI, Height)
         aux_out = self.aux_head(img_feats) # (B, num_aux)
         
-        # Stability Clamp: prevent wild aux predictions from breaking the biomass head 
-        aux_out_clamped = torch.clamp(aux_out, -2.0, 10.0)
+        # Stability Clamp for auxiliary predictions
+        aux_out_clamped = torch.clamp(aux_out, 0.0, 10.0)
         
-        # Concatenate image features with PREDICTED aux and species features
-        combined_feats = torch.cat([img_feats, aux_out_clamped, species_logits], dim=1)
+        # Concatenate image features with PREDICTED aux and non-negative species features
+        combined_feats = torch.cat([img_feats, aux_out_clamped, species_probs], dim=1)
         
         # Predict biomass targets
         biomass_out = self.biomass_head(combined_feats) # (B, num_targets)
+        
+        # Final safety clamp: Biomass cannot be negative, Max value is 256.0
+        biomass_out = torch.clamp(biomass_out, 0.0, 256.0)
         
         return biomass_out, aux_out, species_logits
 

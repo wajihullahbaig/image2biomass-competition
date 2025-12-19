@@ -52,8 +52,8 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         # 3. Species Loss (Cross Entropy)
         loss_species = criterion_species(species_logits, species_id)
         
-        # Total Loss: Biomass(1.0) + Aux(0.3) + Species(0.3)
-        total_loss = weighted_loss_biomass + 0.3 * loss_aux + 0.3 * loss_species
+        # 4. Total Val Loss (Balanced weights)
+        total_loss = BIOMASS_FEAT_WEIGHT * weighted_loss_biomass + AUX_FEAT_WEIGHT * loss_aux + SPECIES_FEAT_WEIGHT * loss_species
         
         total_loss.backward()
         
@@ -99,30 +99,26 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
     with torch.no_grad():
         for batch in loader:
             images = batch['image'].to(device)
-            targets = batch['targets'].to(device) # Log scale
+            targets = batch['targets'].to(device) # Raw gram scale
             aux_feats = batch['aux_feats'].to(device)
             species_id = batch['species_id'].to(device)
             
-            # Forward pass
-            biomass_pred_log, aux_pred, species_logits = model(images)
+            # Forward pass (now in Raw Space)
+            biomass_pred, aux_pred, species_logits = model(images)
             
-            # 1. Prediction Clamping in LOG SPACE (Log1p(200g) ≈ 5.303)
-            # This prevents extreme values from being exponentiated
-            biomass_pred_log_clamped = torch.clamp(biomass_pred_log, 0, 5.303)
+            # 1. Prediction Clamping (Max 256.0 grams)
+            # Physical limit and biomass cannot be negative
+            biomass_pred_clamped = torch.clamp(biomass_pred, 0.0, 256.0)
             
-            # 2. Invert to REAL scale for R2 Calculation
-            biomass_pred_real = torch.expm1(biomass_pred_log_clamped)
-            targets_real = torch.expm1(targets) 
-            
-            # 3. Component Losses (Calculated on LOG targets for biomass)
-            loss_biomass = criterion_biomass(biomass_pred_log, targets)
+            # 3. Component Losses (Calculated on RAW targets)
+            loss_biomass = criterion_biomass(biomass_pred, targets)
             loss_aux = criterion_aux(aux_pred, aux_feats)
             loss_species = criterion_species(species_logits, species_id)
             
             weighted_loss_biomass = (loss_biomass * COL_WEIGHTS_TENSOR).mean()
             
-            # 4. Total Loss 
-            total_val_loss = (weighted_loss_biomass + 0.5 * loss_aux + 0.2 * loss_species).item()
+            # 4. Total Val Loss (Balanced weights)
+            total_val_loss = (BIOMASS_FEAT_WEIGHT * weighted_loss_biomass + AUX_FEAT_WEIGHT * loss_aux + SPECIES_FEAT_WEIGHT * loss_species).item()
             
             # 5. Accumulate Metrics
             running_loss += total_val_loss
@@ -130,8 +126,8 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             running_aux_loss += loss_aux.item()
             running_species_loss += loss_species.item()
             
-            all_preds.append(biomass_pred_real.cpu().numpy())
-            all_targets.append(targets_real.cpu().numpy())
+            all_preds.append(biomass_pred_clamped.cpu().numpy())
+            all_targets.append(targets.cpu().numpy())
         
     # Aggregate results
     all_preds_concat = np.concatenate(all_preds, axis=0)
@@ -174,7 +170,7 @@ def run_training():
     logger.info(f"Metadata saved to {os.path.join(session_dir, 'metadata.json')}")
 
     # 3. Prepare Groups for GroupKFold
-    df['group'] = df['season'] + "_" + df['State'] + "_" + df['Sampling_Date'].astype(str)
+    df['group'] = df['State'] + "_" + df['season'] + "_" + df['Sampling_Date'].astype(str)
     
     gkf = GroupKFold(n_splits=N_FOLDS)
     train_transform, val_transform = get_image_data_transforms()
@@ -197,7 +193,8 @@ def run_training():
         initialize_weights(model)
         
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-        criterion_biomass = nn.MSELoss(reduction='none') # MSE is better for Gaussian log-space
+        # Using HuberLoss for raw-space: robust to high-grams outliers
+        criterion_biomass = nn.HuberLoss(reduction='none', delta=1.0) 
         criterion_aux = nn.HuberLoss(delta=1.0) 
         criterion_species = nn.CrossEntropyLoss(label_smoothing=0.1)
         

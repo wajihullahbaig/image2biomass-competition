@@ -91,12 +91,8 @@ def validate(model, loader, criterion_biomass, criterion_aux, device):
         
         biomass_pred, aux_pred = model(images)
         
-        # Clamp log-predictions to a safe physical range [0, log1p(200)] 
-        biomass_pred_clamped = torch.clamp(biomass_pred, 0, 5.3)
-        
-        # Convert back to real grams for metric calculation
-        biomass_pred_real = torch.expm1(biomass_pred_clamped)
-        targets_real = torch.expm1(targets)
+        # Physical clamp for raw gram scale [0, 200] to prevent R2 explosion
+        biomass_pred_clamped = torch.clamp(biomass_pred, 0, 200.0)
         
         # We only care about biomass for the main validation metric
         loss_biomass = criterion_biomass(biomass_pred, targets)
@@ -107,8 +103,8 @@ def validate(model, loader, criterion_biomass, criterion_aux, device):
         running_loss += weighted_loss_biomass.item()
         running_aux_loss += loss_aux.item()
         
-        all_preds.append(biomass_pred_real.cpu().numpy())
-        all_targets.append(targets_real.cpu().numpy())
+        all_preds.append(biomass_pred_clamped.cpu().numpy())
+        all_targets.append(targets.cpu().numpy())
         
     all_preds = np.concatenate(all_preds, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
@@ -173,7 +169,7 @@ def run_training():
         initialize_weights(model)
         
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-        criterion_biomass = nn.MSELoss(reduction='none') # We apply weights manually
+        criterion_biomass = nn.HuberLoss(reduction='none', delta=1.0) 
         criterion_aux = nn.MSELoss()
         
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=STAGE1_EPOCHS)
@@ -203,7 +199,7 @@ def run_training():
                 logger.info(f"New Best R2: {best_r2:.4f} (Fold {fold+1})")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold}.pth"))
             
-            # Plotting after EACH epoch via common utility
+
             plot_training_history(history, fold, session_dir)
                 
         fold_results.append(best_r2)

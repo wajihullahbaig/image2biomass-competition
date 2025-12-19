@@ -51,9 +51,8 @@ class BiomassDataset(Dataset):
                 'sample_id': row['sample_id']
             }
             
-        # Biomass targets - Apply log1p for stability
-        targets_raw = row[self.target_cols].values.astype(np.float32)
-        targets = torch.tensor(np.log1p(targets_raw))
+        # Biomass targets - Raw scale (grams)
+        targets = torch.tensor(row[self.target_cols].values.astype(np.float32))
         
         # Aux features (NDVI, Height)
         # Convert to numeric first to avoid object-dtype fillna warnings

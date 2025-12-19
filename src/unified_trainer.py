@@ -172,7 +172,13 @@ def run_training():
         criterion_biomass = nn.HuberLoss(reduction='none', delta=1.0) 
         criterion_aux = nn.MSELoss()
         
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=STAGE1_EPOCHS)
+        steps_per_epoch = len(train_loader)
+        scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer, 
+            max_lr=LEARNING_RATE,
+            epochs=STAGE1_EPOCHS,
+            steps_per_epoch=steps_per_epoch
+        )
         
         best_r2 = -float('inf')
         history = {'train_loss': [], 'val_loss': [], 'val_r2': [], 'loss_biomass': [], 'loss_aux': []}

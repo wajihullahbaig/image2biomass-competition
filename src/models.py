@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import timm
-from configs import BACKBONE_S1, FUSION_DIM
+from configs import BACKBONE_S1, FUSION_DIM, IMAGE_SIZE
 
 class BiomassUnifiedModel(nn.Module):
     def __init__(self, backbone_name=BACKBONE_S1, num_targets=5, num_aux=2, pretrained=True):
@@ -13,7 +13,7 @@ class BiomassUnifiedModel(nn.Module):
         
         # Get backbone output dimension
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, 224, 224)
+            dummy_input = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE)
             self.backbone_dim = self.backbone(dummy_input).shape[1]
             
         # 2. Auxiliary Head (NDVI, Height)

@@ -260,8 +260,7 @@ def plot_training_history(history, fold, session_dir):
     plt.xlabel('Epoch')
     plt.ylabel('R2 Score')
     plt.legend()
-    # CLIP Y-AXIS: R2 can be -infinity. We clip to [-1, 1.1] to see the positive peaks clearly.
-    plt.ylim(-1.0, 1.1)
+    plt.ylim(-2.0, 2.0)
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()

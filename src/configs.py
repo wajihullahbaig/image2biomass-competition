@@ -2,17 +2,17 @@
 import torch
 # ====================== CONFIG ======================
 # CONFIGURATIONS
-IMAGE_SIZE = 224
-BATCH_SIZE = 32
+IMAGE_SIZE = 384
+BATCH_SIZE = 16
 LEARNING_RATE = 4e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Prerocessing
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 # Training
-STAGE1_EPOCHS = 40
+STAGE1_EPOCHS = 100
 STAGE2_EPOCHS = 40
-BACKBONE_S1 = 'convnext_tiny'        
+BACKBONE_S1 = 'convnext_small'        
 BACKBONE_S2 = 'swin_base_patch4_window7_224' 
 N_FOLDS = 4
 TEST_SPLIT_RATIO = 0.10    

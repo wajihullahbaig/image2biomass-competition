@@ -1072,6 +1072,34 @@ def viz_species_correlations(df, target_cols):
     }
 
 # ==============================================================================
+# 10. RAW vs LOG DISTRIBUTION COMPARISON
+# ==============================================================================
+def viz_log_comparison(df, target_cols):
+    """
+    Compares the distribution of target variables in raw and log scales.
+    """
+    print("10. Generating Raw vs Log Target Comparison...")
+    fig, axes = plt.subplots(len(target_cols), 2, figsize=(16, 4 * len(target_cols)))
+    
+    for i, target in enumerate(target_cols):
+        # Raw
+        sns.histplot(df[target], kde=True, ax=axes[i, 0], color='blue', alpha=0.6)
+        axes[i, 0].set_title(f"{target} (Raw Scale)")
+        axes[i, 0].set_xlabel("Value (g)")
+        axes[i, 0].set_ylabel("Frequency")
+        
+        # Log
+        log_target = f'Log_{target}'
+        sns.histplot(df[log_target], kde=True, ax=axes[i, 1], color='green', alpha=0.6)
+        axes[i, 1].set_title(f"{target} (Log1p Scale)")
+        axes[i, 1].set_xlabel("Log(1 + g)")
+        axes[i, 1].set_ylabel("Frequency")
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(BASE_VIZ_PATH, '10_Raw_vs_Log_Comparison.png'))
+    plt.close()
+
+# ==============================================================================
 # MAIN EXECUTION
 # ==============================================================================
 if __name__ == '__main__':
@@ -1092,8 +1120,11 @@ if __name__ == '__main__':
     viz_comprehensive_target_heatmap(df)
     viz_target_variability(df, targets)
     
-    # NEW: Species correlation analysis
+    # Species correlation analysis
     species_results = viz_species_correlations(df, targets)
+    
+    # Log comparison analysis
+    viz_log_comparison(df, targets)
     
     print("\n" + "="*70)
     print(f"✅ Complete! All visualizations saved to: {BASE_VIZ_PATH}/")

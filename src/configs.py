@@ -12,9 +12,9 @@ IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 # Training
 STAGE1_EPOCHS = 40
 STAGE2_EPOCHS = 40
-BACKBONE_S1 = 'tf_efficientnet_b0_ns'        
+BACKBONE_S1 = 'convnext_tiny'        
 BACKBONE_S2 = 'swin_base_patch4_window7_224' 
-N_FOLDS = 5
+N_FOLDS = 4
 TEST_SPLIT_RATIO = 0.10    
 STAGE1_STRATIFICATION_COLUMN = 'season'  
 STAGE2_STRATIFICATION_COLUMN = 'season'   
@@ -29,6 +29,6 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
 
 # Unified Model Fusion Settings
-IMG_FEAT_WEIGHT = 0.3
-TAB_FEAT_WEIGHT = 0.7
+IMG_FEAT_WEIGHT = 0.7
+TAB_FEAT_WEIGHT = 0.3
 FUSION_DIM = 512

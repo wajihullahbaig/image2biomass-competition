@@ -1,14 +1,14 @@
 # common.py
 import os
 import pandas as pd
+pd.set_option('future.no_silent_downcasting', True)
 import numpy as np
 import logging
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import Optional
 import torch
 from torchvision import transforms
-from torch.utils.data import Sampler
-import random
+import matplotlib.pyplot as plt
 
 from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE
 
@@ -151,6 +151,65 @@ def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=No
     return session_dir
 
 
+def get_season(month):
+    if month in [12, 1, 2]:
+        return 'Summer'
+    elif month in [3, 4, 5]:
+        return 'Autumn'
+    elif month in [6, 7, 8]:
+        return 'Winter'
+    else:
+        return 'Spring'
+
+def enforce_physical_constraints(predictions_real_scale):
+    """
+    Enforces strict mass balance post-processing.
+    Input: Numpy array of predictions in REAL GRAMS (not log).
+    Order: [Clover, Dead, Green, Total, GDM]
+    """
+    # 1. Enforce Non-Negativity
+    preds = np.maximum(predictions_real_scale, 0)
+    
+    # 2. Extract components
+    clover = preds[:, 0]
+    dead = preds[:, 1]
+    green = preds[:, 2]
+    
+    # 3. Recalculate aggregates based on components
+    new_gdm = clover + green
+    new_total = clover + dead + green
+    
+    # 4. Update the prediction array
+    preds[:, 3] = new_total  # Total
+    preds[:, 4] = new_gdm    # GDM
+    
+    return preds
+
+def calculate_global_weighted_r2(y_true, y_pred, weights):
+    """
+    Official Metric Implementation.
+    y_true, y_pred: (N, 5) arrays.
+    weights: Pattern [0.1, 0.1, 0.1, 0.5, 0.2]
+    """
+    y_true = np.array(y_true).flatten()
+    y_pred = np.array(y_pred).flatten()
+    
+    if len(y_true) != len(y_pred):
+        raise ValueError(f"Shape mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}")
+    
+    n_samples = len(y_true) // 5
+    w_flat = np.tile(weights, n_samples)
+    
+    global_mean = np.average(y_true, weights=w_flat)
+    
+    ss_res = np.sum(w_flat * (y_true - y_pred)**2)
+    ss_tot = np.sum(w_flat * (y_true - global_mean)**2)
+    
+    if ss_tot == 0:
+        return 1.0
+    
+    return 1 - (ss_res / ss_tot)
+
 def set_seed(seed: Optional[int] = 42, logger=None) -> None:
     """Set all random seeds for reproducibility"""
     if seed is not None:
@@ -163,357 +222,47 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         if logger:
             logger.info(f"Random seed set to {seed} for reproducibility")
 
-def calculate_sample_weights_01_normalized(df, group_col, weight_col='sample_weight', logger=None,
-                                  min_w=0.1):
-    proportions = df[group_col].value_counts(normalize=True)
-    inverse_proportions = 1 / proportions
-
-    # Class-level normalized weights
-    class_weights = inverse_proportions / inverse_proportions.mean()
-
-    # Assign to each row
-    df[weight_col] = df[group_col].map(class_weights)
-
-    # ---- Strictly positive normalization (min_w → 1 range) ----
-    w = df[weight_col]
-    df[weight_col] = min_w + (1 - min_w) * (w - w.min()) / (w.max() - w.min())
-
-    if logger:
-        avg_weights = df.groupby(group_col)[weight_col].mean().to_dict()
-        logger.info(f"Sample weights recalculated based on '{group_col}' (range {min_w} to 1)")
-
-        for group, avg_weight in avg_weights.items():
-            logger.info(f"  {group}: {avg_weight:.4f}")
-
-        logger.info(
-            f"Final Weights — min: {df[weight_col].min():.4f}, "
-            f"max: {df[weight_col].max():.4f}, "
-            f"mean: {df[weight_col].mean():.4f}, "
-            f"sum: {df[weight_col].sum():.4f}"
-        )
-
-    return df, weight_col
-
-
-
-
-def calculate_sample_weights_smooth(df, group_col, weight_col='sample_weight', smooth=10.0, logger=None):
+def plot_training_history(history, fold, session_dir):
     """
-    Calculates sample weights using smoothed inverse frequency.
-    Normalizes by median so the majority class has weight ~1.0.
+    Plots training and validation metrics for the unified model.
+    history: dict with keys 'train_loss', 'val_loss', 'val_r2', 'loss_biomass', 'loss_aux'.
     """
-    counts = df[group_col].value_counts()    
-    weights = 1.0 / (df[group_col].map(counts) + smooth)    
-    weights = weights / weights.median()
-    df[weight_col] = weights.astype('float32')
-    
-    if logger:
-        # Calculate average weight per group for logging verification
-        avg_weights = df.groupby(group_col)[weight_col].mean().to_dict()
-        logger.info(f"Sample weights calculated based on '{group_col}' with smoothing={smooth}")
-        for group, avg_weight in avg_weights.items():
-            logger.info(f"  {group}: {avg_weight:.4f}")
-        
-    return df, weight_col
-
-def calculate_count_frequency_features(
-    train_df: pd.DataFrame, 
-    val_df: pd.DataFrame, 
-    group_col: str, 
-    local_group_col: Optional[str] = None, 
-    logger: Optional[logging.Logger] = None
-) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
-    """
-    Calculates and adds global and optional local count/frequency features.
-    
-    - Statistics are calculated ONLY from the training set to prevent data leakage.
-    - The validation set is imputed using the training set statistics.
-    - Unseen categories in validation are handled by filling with 0 for log-counts
-      and the mean of training frequencies for frequencies.
-    
-    Returns:
-        A tuple containing (processed_train_df, processed_val_df, list_of_new_features).
-    """
-    if logger:
-        logger.info("-" * 50)
-        logger.info("Calculating count and frequency features...")
-        
-    # --- Create copies to avoid SettingWithCopyWarning ---
-    train_df = train_df.copy()
-    val_df = val_df.copy()
-
-    # --- Feature Names ---
-    global_count_feat = f'{group_col.lower()}_count_global'
-    global_freq_feat = f'{group_col.lower()}_freq_global'
-    
-    # --- 1. GLOBAL FEATURES (calculated from training set) ---
-    if logger: logger.info(f"Calculating global features for '{group_col}'...")
-    
-    global_counts = train_df[group_col].value_counts()
-    global_freq = global_counts / len(train_df)
-    global_counts_log = np.log1p(global_counts)
-    
-    # Map to train_df
-    train_df[global_count_feat] = train_df[group_col].map(global_counts_log)
-    train_df[global_freq_feat] = train_df[group_col].map(global_freq)
-    
-    # Map to val_df and impute unseen values
-    val_df[global_count_feat] = val_df[group_col].map(global_counts_log).fillna(0)
-    val_df[global_freq_feat] = val_df[group_col].map(global_freq).fillna(global_freq.mean())
-
-    new_features = [global_count_feat, global_freq_feat]
-
-    # --- 2. LOCAL FEATURES (optional, calculated from training set) ---
-    if local_group_col:
-        local_count_feat = f'{group_col.lower()}_count_{local_group_col.lower()}'
-        local_freq_feat = f'{group_col.lower()}_freq_{local_group_col.lower()}'
-        new_features.extend([local_count_feat, local_freq_feat])
-        
-        if logger: logger.info(f"Calculating local features for '{group_col}' grouped by '{local_group_col}'...")
-
-        # Calculate stats from training set
-        local_counts = train_df.groupby([local_group_col, group_col]).size()
-        local_counts_log = np.log1p(local_counts)
-        
-        # Calculate frequency within each local group
-        local_group_totals = train_df.groupby(local_group_col).size()
-        local_freq = local_counts / local_counts.index.map(lambda x: local_group_totals[x[0]])
-
-        # Map to train_df
-        train_df[local_count_feat] = train_df.apply(
-            lambda row: local_counts_log.get((row[local_group_col], row[group_col]), 0),
-            axis=1
-        )
-        train_df[local_freq_feat] = train_df.apply(
-            lambda row: local_freq.get((row[local_group_col], row[group_col]), 0),
-            axis=1
-        )
-        
-        # Map to val_df and impute unseen values
-        val_df[local_count_feat] = val_df.apply(
-            lambda row: local_counts_log.get((row[local_group_col], row[group_col]), 0),
-            axis=1
-        )
-        # Use the mean of all local frequencies as a robust fallback for unseen combinations
-        val_df[local_freq_feat] = val_df.apply(
-            lambda row: local_freq.get((row[local_group_col], row[group_col]), local_freq.mean()),
-            axis=1
-        )
-
-    if logger:
-        logger.info(f"Successfully added features: {new_features}")
-        logger.info("-" * 50)
-        
-    return train_df, val_df, new_features
-
-
-def print_stratification_stats(df, train_df, val_df,start_col=None, logger=None):
-    """Prints stratification statistics for the start_col column."""
-    if logger:
-        logger.info(f"\n--- {start_col} Distribution Verification ---")
-    
-    # Original Dataset Counts
-    original_counts = df[start_col].value_counts()
-    original_proportions = df[start_col].value_counts(normalize=True).mul(100).round(2)
-    original_stats = pd.DataFrame({'Count': original_counts, 'Proportion (%)': original_proportions})
-    
-    if logger:
-        logger.info(f"Original Dataset:\n{original_stats}")
-    
-    # Training Split Counts
-    train_counts = train_df[start_col].value_counts()
-    train_proportions = train_df[start_col].value_counts(normalize=True).mul(100).round(2)
-    train_stats = pd.DataFrame({'Count': train_counts, 'Proportion (%)': train_proportions})
-    
-    if logger:
-        logger.info(f"\nTraining Split (80%):\n{train_stats}")
-    
-    # Validation Split Counts
-    val_counts = val_df[start_col].value_counts()
-    val_proportions = val_df[start_col].value_counts(normalize=True).mul(100).round(2)
-    val_stats = pd.DataFrame({'Count': val_counts, 'Proportion (%)': val_proportions})
-    
-    if logger:
-        logger.info(f"\nValidation Split (20%):\n{val_stats}")
-
-# Simple Australian Seasons
-def get_season(month):
-    if month in [12, 1, 2]:
-        return 'Summer'
-    elif month in [3, 4, 5]:
-        return 'Autumn'
-    elif month in [6, 7, 8]:
-        return 'Winter'
-    else:
-        return 'Spring'        
-    
-class SeasonalCurriculumSampler(Sampler):
-    """
-    Samples indices in seasonal order: Summer → Autumn → Winter → Spring.
-    Yields individual indices. The DataLoader handles the batching.
-    """
-    def __init__(self, data_df, shuffle_within_season=False, seed=42):
-        self.data_df = data_df
-        self.shuffle_within_season = shuffle_within_season
-        self.seed = seed
-        self.season_order = ['Summer', 'Autumn', 'Winter', 'Spring']
-        self._generate_indices()
-
-    def _generate_indices(self):
-        # Reset seeds so order is deterministic per epoch if needed
-        # (Move this to __iter__ if you want different shuffles every epoch)
-        random.seed(self.seed) 
-        
-        # 1. Group indices by season
-        indices_by_season = {s: [] for s in self.season_order}
-        
-        # Iterate efficiently
-        for idx in range(len(self.data_df)):
-            # Ensure we access the 'season' column safely
-            # We use iloc to get the row by integer position, regardless of DataFrame index
-            season = self.data_df.iloc[idx]['season']
-            if season in indices_by_season:
-                indices_by_season[season].append(idx)
-
-        # 2. Shuffle within seasons and flatten list
-        self.ordered_indices = []
-        for season in self.season_order:
-            season_ind = indices_by_season[season]
-            if self.shuffle_within_season:
-                random.shuffle(season_ind)
-            self.ordered_indices.extend(season_ind)
-
-    def __iter__(self):
-        return iter(self.ordered_indices)
-
-    def __len__(self):
-        return len(self.data_df)
-    
-
-def enforce_physical_constraints(predictions_real_scale):
-    """
-    OPTION B: Post-processing to enforce strict mass balance.
-    Input: Numpy array of predictions in REAL GRAMS (not log).
-    Order: [Clover, Dead, Green, Total, GDM]
-    """
-    # 1. Enforce Non-Negativity (Safety net)
-    preds = np.maximum(predictions_real_scale, 0)
-    
-    # 2. Extract components
-    clover = preds[:, 0]
-    dead = preds[:, 1]
-    green = preds[:, 2]
-    
-    # 3. Recalculate Aggregates based on components
-    new_gdm = clover + green
-    new_total = clover + dead + green
-    
-    # 4. Update the prediction array
-    preds[:, 3] = new_total  # Total
-    preds[:, 4] = new_gdm    # GDM
-    
-    return preds    
-
-
-
-def calculate_global_weighted_r2(y_true, y_pred, weights):
-    """
-    Official Metric Implementation.
-    y_true, y_pred: Flattened or (N, 5) arrays.
-    weights: List of 5 weights [0.1, 0.1, 0.1, 0.5, 0.2]
-    """
-    y_true = np.array(y_true).flatten()
-    y_pred = np.array(y_pred).flatten()
-    
-    # Validation
-    if len(y_true) != len(y_pred):
-        raise ValueError(f"Shape mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}")
-    
-    if len(y_true) % 5 != 0:
-        raise ValueError(f"Input length {len(y_true)} must be divisible by 5")
-    
-    if len(weights) != 5:
-        raise ValueError("weights must have exactly 5 elements")
-    
-    # Repeat weights pattern for every sample
-    n_samples = len(y_true) // 5
-    w_flat = np.tile(weights, n_samples)
-    
-    # Global Weighted Mean
-    global_mean = np.average(y_true, weights=w_flat)
-    
-    # Weighted SS_res and SS_tot
-    ss_res = np.sum(w_flat * (y_true - y_pred)**2)
-    ss_tot = np.sum(w_flat * (y_true - global_mean)**2)
-    
-    
-    if ss_tot == 0:
-        return np.nan  # or 1.0, depending on interpretation
-    
-    return 1 - (ss_res / ss_tot)
-
-import matplotlib.pyplot as plt
-
-def plot_fold_losses(fold, history, save_dir="plots"):
-    """
-    Plots training and validation losses for Stage 1 and Stage 2 per fold.
-    history: dict with keys 'train_s1', 'val_s1', 'train_s2', 'val_s2'.
-    """
+    save_dir = os.path.join(session_dir, 'plots')
     os.makedirs(save_dir, exist_ok=True)
-    epochs = range(1, len(history['train_s1']) + 1)
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    plt.figure(figsize=(15, 5))
     
-    # --- PLOT STAGE 1 (Train vs Val) ---
-    # Metrics: Tot, Sp, Ndvi, H, Mon
-    s1_metrics = [k for k in history['train_s1'][0].keys()]
-    
-    # Use a cycle of colors so Train/Val for same metric share color
-    colors = plt.cm.tab10(np.linspace(0, 1, len(s1_metrics)))
-    
-    for i, metric in enumerate(s1_metrics):
-        train_vals = [log[metric] for log in history['train_s1']]
-        val_vals = [log[metric] for log in history['val_s1']]
+    # --- Loss Plot ---
+    plt.subplot(1, 2, 1)
+    if 'train_loss' in history:
+        plt.plot(history['train_loss'], label='Total Train Loss', linewidth=2)
+    if 'loss_biomass' in history:
+        plt.plot(history['loss_biomass'], label='Biomass Loss', linestyle='--')
+    if 'loss_aux' in history:
+        plt.plot(history['loss_aux'], label='Aux Loss', linestyle=':')
+    if 'val_loss' in history:
+        plt.plot(history['val_loss'], label='Val Loss (Weighted)', linewidth=2)
         
-        # Train = Solid, Val = Dashed
-        ax1.plot(epochs, train_vals, label=f"{metric} (T)", color=colors[i], linestyle='-')
-        ax1.plot(epochs, val_vals, label=f"{metric} (V)", color=colors[i], linestyle='--')
-        
-    ax1.set_title(f"Fold {fold} - Stage 1 Loss (Train vs Val)")
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax1.legend(loc='upper right', fontsize='small', ncol=2)
-    ax1.grid(True, alpha=0.3)
+    plt.title(f'Fold {fold+1} - Training Progress (Loss)')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss Value')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
     
-    # --- PLOT STAGE 2 (Train Loss vs Val MAE) ---
-    # Note: Train is Weighted MSE Loss, Val is MAE. They are different scales.
-    # We will plot them anyway to see trends.
-    s2_metrics = [k for k in history['train_s2'][0].keys() if k != 'Tot']
+    # --- R2 Plot ---
+    plt.subplot(1, 2, 2)
+    if 'val_r2' in history:
+        plt.plot(history['val_r2'], label='Val R2 (Special)', color='green', linewidth=2)
     
-    # Reset colors
-    colors = plt.cm.tab10(np.linspace(0, 1, len(s2_metrics)+1)) # +1 for Total
-    
-    for i, metric in enumerate(s2_metrics):
-        train_vals = [log[metric] for log in history['train_s2']]
-        val_vals = [log[metric] for log in history['val_s2']]
-        
-        ax2.plot(epochs, train_vals, label=f"{metric} (T)", color=colors[i], linestyle='-')
-        ax2.plot(epochs, val_vals, label=f"{metric} (V)", color=colors[i], linestyle='--')
-        
-    # Plot Total separately or with them
-    t_tot = [log['Tot'] for log in history['train_s2']]
-    # For S2 val, we don't strictly have a "Loss" total, we have MAE total, but let's assume 'Total' key exists
-    if 'Tot' in history['val_s2'][0]: 
-        v_tot = [log['Tot'] for log in history['val_s2']]
-        ax2.plot(epochs, t_tot, label="Total (T)", color='k', linestyle='-', linewidth=2)
-        ax2.plot(epochs, v_tot, label="Total (V)", color='k', linestyle='--', linewidth=2)
-    
-    ax2.set_title(f"Fold {fold} - Stage 2 (Train Loss vs Val MAE)")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Value (Loss / MAE)")
-    ax2.legend(loc='upper right', fontsize='small', ncol=2)
-    ax2.grid(True, alpha=0.3)
+    plt.title(f'Fold {fold+1} - Validation Metric (R2)')
+    plt.xlabel('Epoch')
+    plt.ylabel('R2 Score')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f"fold_{fold}_losses.png"))
+    plt.savefig(os.path.join(save_dir, f"fold_{fold+1}_metrics.png"))
     plt.close()
+
+
+    

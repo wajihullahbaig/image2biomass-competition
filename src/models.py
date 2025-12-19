@@ -5,7 +5,7 @@ import timm
 from configs import BACKBONE_S1, FUSION_DIM, IMAGE_SIZE
 
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name=BACKBONE_S1, num_targets=5, num_aux=2, pretrained=True):
+    def __init__(self, backbone_name=BACKBONE_S1, num_targets=5, num_aux=2, num_species=11, pretrained=True):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
@@ -25,10 +25,17 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(256, num_aux)
         )
         
-        # 3. Biomass Head
-        # It takes backbone features + predicted aux features
+        # 3. Species Head (Categorical)
+        self.species_head = nn.Sequential(
+            nn.Linear(self.backbone_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_species)
+        )
+        
+        # 4. Biomass Head
+        # It takes backbone features + predicted aux features + species features
         self.biomass_head = nn.Sequential(
-            nn.Linear(self.backbone_dim + num_aux, FUSION_DIM),
+            nn.Linear(self.backbone_dim + num_aux + num_species, FUSION_DIM),
             nn.BatchNorm1d(FUSION_DIM),
             nn.ReLU(),
             nn.Dropout(0.3),
@@ -42,17 +49,22 @@ class BiomassUnifiedModel(nn.Module):
         # Extract features from image
         img_feats = self.backbone(x) # (B, backbone_dim)
         
+        # Predict species (categorical logits)
+        species_logits = self.species_head(img_feats) # (B, num_species)
+        
         # Predict auxiliary features (NDVI, Height)
         aux_out = self.aux_head(img_feats) # (B, num_aux)
         
-        # Concatenate image features with PREDICTED aux features
-        # This works for both training and inference (where aux features aren't provided)
-        combined_feats = torch.cat([img_feats, aux_out], dim=1)
+        # Stability Clamp: prevent wild aux predictions from breaking the biomass head 
+        aux_out_clamped = torch.clamp(aux_out, -2.0, 10.0)
+        
+        # Concatenate image features with PREDICTED aux and species features
+        combined_feats = torch.cat([img_feats, aux_out_clamped, species_logits], dim=1)
         
         # Predict biomass targets
         biomass_out = self.biomass_head(combined_feats) # (B, num_targets)
         
-        return biomass_out, aux_out
+        return biomass_out, aux_out, species_logits
 
 # Weight Initialization
 def initialize_weights(model):

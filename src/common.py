@@ -235,17 +235,24 @@ def plot_training_history(history, fold, session_dir):
     # --- Loss Plot ---
     plt.subplot(1, 2, 1)
     if 'train_loss' in history:
-        plt.plot(history['train_loss'], label='Total Train Loss', linewidth=2)
+        plt.plot(history['train_loss'], label='Total Train Loss', linewidth=2, color='tab:blue')
     if 'loss_biomass' in history:
-        plt.plot(history['loss_biomass'], label='Biomass Loss', linestyle='--')
+        plt.plot(history['loss_biomass'], label='Biomass Train Loss', linestyle='--', alpha=0.7)
     if 'loss_aux' in history:
-        plt.plot(history['loss_aux'], label='Aux Train Loss', linestyle=':')
-    if 'val_loss_aux' in history:
-        plt.plot(history['val_loss_aux'], label='Aux Val Loss', linestyle='-.', color='magenta')
-    if 'val_loss' in history:
-        plt.plot(history['val_loss'], label='Val Loss (Weighted)', linewidth=2)
+        plt.plot(history['loss_aux'], label='Aux Train Loss', linestyle=':', alpha=0.7)
+    if 'loss_species' in history:
+        plt.plot(history['loss_species'], label='Species Train Loss', linestyle='-.', alpha=0.7)
         
-    plt.title(f'Fold {fold+1} - Training Progress (Loss)')
+    if 'val_loss' in history:
+        plt.plot(history['val_loss'], label='Total Val Loss', linewidth=2, color='tab:red')
+    if 'val_loss_biomass' in history:
+        plt.plot(history['val_loss_biomass'], label='Biomass Val Loss', linestyle='--', color='tab:orange', alpha=0.7)
+    if 'val_loss_aux' in history:
+        plt.plot(history['val_loss_aux'], label='Aux Val Loss', linestyle=':', color='magenta', alpha=0.7)
+    if 'val_loss_species' in history:
+        plt.plot(history['val_loss_species'], label='Species Val Loss', linestyle='-.', color='tab:brown', alpha=0.7)
+        
+    plt.title(f'Fold {fold+1} - Training Progress (Detailed Losses)')
     plt.xlabel('Epoch')
     plt.ylabel('Loss Value')
     plt.legend()

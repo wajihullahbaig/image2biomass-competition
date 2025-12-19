@@ -8,7 +8,7 @@ from PIL import Image
 import logging
 
 class BiomassDataset(Dataset):
-    def __init__(self, df, transform=None, target_cols=None, aux_cols=None, is_test=False):
+    def __init__(self, df, transform=None, target_cols=None, aux_cols=None, is_test=False, species_to_id=None):
         """
         Args:
             df: Dataframe containing image paths and targets
@@ -16,6 +16,7 @@ class BiomassDataset(Dataset):
             target_cols: List of biomass target columns
             aux_cols: List of auxiliary features (NDVI, Height, etc.)
             is_test: If True, only return images and sample_ids
+            species_to_id: Optional dict mapping species names to IDs
         """
         self.df = df.reset_index(drop=True)
         self.transform = transform
@@ -24,9 +25,13 @@ class BiomassDataset(Dataset):
         self.is_test = is_test
         
         # Species mapping
-        self.species_list = sorted(self.df['Species'].unique().tolist())
-        self.species_to_id = {s: i for i, s in enumerate(self.species_list)}
-        self.n_species = len(self.species_list)
+        if species_to_id:
+            self.species_to_id = species_to_id
+            self.species_list = sorted(list(species_to_id.keys()))
+        else:
+            self.species_list = sorted(self.df['Species'].unique().tolist())
+            self.species_to_id = {s: i for i, s in enumerate(self.species_list)}
+        self.n_species = len(self.species_to_id)
 
     def __len__(self):
         return len(self.df)
@@ -51,8 +56,10 @@ class BiomassDataset(Dataset):
                 'sample_id': row['sample_id']
             }
             
-        # Biomass targets - Raw scale (grams)
-        targets = torch.tensor(row[self.target_cols].values.astype(np.float32))
+        # Biomass targets - Log transformed for training stability
+        # Competition uses raw grams, but internal training uses log1p
+        targets_raw = row[self.target_cols].values.astype(np.float32)
+        targets = torch.tensor(np.log1p(targets_raw))
         
         # Aux features (NDVI, Height)
         # Convert to numeric first to avoid object-dtype fillna warnings
@@ -74,3 +81,4 @@ class BiomassDataset(Dataset):
 def get_species_mapping(df):
     species_list = sorted(df['Species'].unique().tolist())
     return {s: i for i, s in enumerate(species_list)}
+

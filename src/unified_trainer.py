@@ -22,34 +22,38 @@ from common import (
 from dataset import BiomassDataset
 from models import BiomassUnifiedModel, initialize_weights
 
-def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, device, scheduler=None):
+def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, criterion_species, device, scheduler=None):
     model.train()
     running_loss = 0.0
     running_loss_biomass = 0.0
     running_loss_aux = 0.0
+    running_loss_species = 0.0
     
     pbar = tqdm(loader, desc="Training")
     for batch in pbar:
         images = batch['image'].to(device)
         targets = batch['targets'].to(device)
         aux_feats = batch['aux_feats'].to(device)
+        species_id = batch['species_id'].to(device)
         
         optimizer.zero_grad()
         
         # Forward pass
-        biomass_pred, aux_pred = model(images)
+        biomass_pred, aux_pred, species_logits = model(images)
         
         # Loss calculation
         # 1. Biomass Loss (Weighted MSE)
         loss_biomass = criterion_biomass(biomass_pred, targets)
-        # Apply official weights
         weighted_loss_biomass = (loss_biomass * COL_WEIGHTS_TENSOR).mean()
         
-        # 2. Aux Loss (MSE)
+        # 2. Aux Loss (Huber)
         loss_aux = criterion_aux(aux_pred, aux_feats)
         
-        # Total Loss
-        total_loss = weighted_loss_biomass + 0.5 * loss_aux # 0.5 is a hyperparameter for aux importance
+        # 3. Species Loss (Cross Entropy)
+        loss_species = criterion_species(species_logits, species_id)
+        
+        # Total Loss: Biomass(1.0) + Aux(0.3) + Species(0.3)
+        total_loss = weighted_loss_biomass + 0.3 * loss_aux + 0.3 * loss_species
         
         total_loss.backward()
         
@@ -63,48 +67,66 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         running_loss += total_loss.item()
         running_loss_biomass += weighted_loss_biomass.item()
         running_loss_aux += loss_aux.item()
+        running_loss_species += loss_species.item()
         
         pbar.set_postfix({
             'L': f"{total_loss.item():.4f}", 
             'LB': f"{weighted_loss_biomass.item():.4f}",
-            'LA': f"{loss_aux.item():.4f}"
+            'LA': f"{loss_aux.item():.4f}",
+            'LS': f"{loss_species.item():.4f}"
         })
         
     return {
         'loss': running_loss / len(loader),
         'loss_biomass': running_loss_biomass / len(loader),
-        'loss_aux': running_loss_aux / len(loader)
+        'loss_aux': running_loss_aux / len(loader),
+        'loss_species': running_loss_species / len(loader)
     }
 
 @torch.no_grad()
-def validate(model, loader, criterion_biomass, criterion_aux, device):
+def validate(model, loader, criterion_biomass, criterion_aux, criterion_species, device):
     model.eval()
     running_loss = 0.0
     running_aux_loss = 0.0
+    running_species_loss = 0.0
     all_preds = []
     all_targets = []
     
-    for batch in loader:
-        images = batch['image'].to(device)
-        targets = batch['targets'].to(device)
-        aux_feats = batch['aux_feats'].to(device)
-        
-        biomass_pred, aux_pred = model(images)
-        
-        # Physical clamp for raw gram scale [0, 200] to prevent R2 explosion
-        biomass_pred_clamped = torch.clamp(biomass_pred, 0, 200.0)
-        
-        # We only care about biomass for the main validation metric
-        loss_biomass = criterion_biomass(biomass_pred, targets)
-        loss_aux = criterion_aux(aux_pred, aux_feats)
-        
-        weighted_loss_biomass = (loss_biomass * COL_WEIGHTS_TENSOR).mean()
-        
-        running_loss += weighted_loss_biomass.item()
-        running_aux_loss += loss_aux.item()
-        
-        all_preds.append(biomass_pred_clamped.cpu().numpy())
-        all_targets.append(targets.cpu().numpy())
+    with torch.no_grad():
+        for batch in loader:
+            images = batch['image'].to(device)
+            targets = batch['targets'].to(device)
+            aux_feats = batch['aux_feats'].to(device)
+            species_id = batch['species_id'].to(device)
+            
+            biomass_pred_log, aux_pred, species_logits = model(images)
+            
+            # 1. Prediction Clamping in LOG SPACE (Log1p(200g) ≈ 5.303)
+            # This prevents extreme values from being exponentiated
+            biomass_pred_log_clamped = torch.clamp(biomass_pred_log, 0, 5.303)
+            
+            # 2. Invert to REAL scale for R2 Calculation
+            biomass_pred_real = torch.expm1(biomass_pred_log_clamped)
+            targets_real = torch.expm1(targets) 
+            
+            # Losses (Calculated on LOG targets)
+            loss_biomass = criterion_biomass(biomass_pred_log, targets)
+            loss_aux = criterion_aux(aux_pred, aux_feats)
+            loss_species = criterion_species(species_logits, species_id)
+            
+            weighted_loss_biomass = (loss_biomass * COL_WEIGHTS_TENSOR).mean()
+            
+            # Metric tracking (Total Val Loss)
+            running_loss += (weighted_loss_biomass + 0.3 * loss_aux + 0.3 * loss_species).item()
+            running_aux_loss += loss_aux.item()
+            running_species_loss += loss_species.item()
+            
+            # New: Track validation biomass loss for plotting
+            if not hasattr(self, 'running_biomass_loss'): self.running_biomass_loss = 0.0
+            self.running_biomass_loss += weighted_loss_biomass.item()
+            
+            all_preds.append(biomass_pred_real.cpu().numpy())
+            all_targets.append(targets_real.cpu().numpy())
         
     all_preds = np.concatenate(all_preds, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
@@ -117,7 +139,9 @@ def validate(model, loader, criterion_biomass, criterion_aux, device):
     
     return {
         'loss': running_loss / len(loader),
+        'loss_biomass': self.running_biomass_loss / len(loader) if hasattr(self, 'running_biomass_loss') else 0.0,
         'loss_aux': running_aux_loss / len(loader),
+        'loss_species': running_species_loss / len(loader),
         'r2': r2_score
     }
 
@@ -159,18 +183,19 @@ def run_training():
         train_df = df.iloc[train_idx]
         val_df = df.iloc[val_idx]
         
-        train_ds = BiomassDataset(train_df, transform=train_transform)
-        val_ds = BiomassDataset(val_df, transform=val_transform)
+        train_ds = BiomassDataset(train_df, transform=train_transform, species_to_id=metadata['species_to_id'])
+        val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=metadata['species_to_id'])
         
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
         
-        model = BiomassUnifiedModel(backbone_name=BACKBONE_S1).to(DEVICE)
+        model = BiomassUnifiedModel(backbone_name=BACKBONE_S1, num_species=len(species_list)).to(DEVICE)
         initialize_weights(model)
         
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-        criterion_biomass = nn.HuberLoss(reduction='none', delta=1.0) 
-        criterion_aux = nn.MSELoss()
+        criterion_biomass = nn.MSELoss(reduction='none') # MSE is better for Gaussian log-space
+        criterion_aux = nn.HuberLoss(delta=1.0) 
+        criterion_species = nn.CrossEntropyLoss()
         
         steps_per_epoch = len(train_loader)
         scheduler = optim.lr_scheduler.OneCycleLR(
@@ -181,24 +206,45 @@ def run_training():
         )
         
         best_r2 = -float('inf')
-        history = {'train_loss': [], 'val_loss': [], 'val_r2': [], 'loss_biomass': [], 'loss_aux': []}
+        history = {
+            'train_loss': [], 'val_loss': [], 'val_r2': [], 
+            'loss_biomass': [], 'loss_aux': [], 'loss_species': [],
+            'val_loss_biomass': [], 'val_loss_aux': [], 'val_loss_species': []
+        }
         
         for epoch in range(STAGE1_EPOCHS):
-            train_metrics = train_one_epoch(model, train_loader, optimizer, criterion_biomass, criterion_aux, DEVICE, scheduler)
-            val_metrics = validate(model, val_loader, criterion_biomass, criterion_aux, DEVICE)
+            train_metrics = train_one_epoch(
+                model, train_loader, optimizer, 
+                criterion_biomass, criterion_aux, criterion_species, 
+                DEVICE, scheduler
+            )
+            val_metrics = validate(
+                model, val_loader, 
+                criterion_biomass, criterion_aux, criterion_species, 
+                DEVICE
+            )
             
             history['train_loss'].append(train_metrics['loss'])
             history['loss_biomass'].append(train_metrics['loss_biomass'])
             history['loss_aux'].append(train_metrics['loss_aux'])
+            history['loss_species'].append(train_metrics['loss_species'])
+            
             history['val_loss'].append(val_metrics['loss'])
             history['val_r2'].append(val_metrics['r2'])
-            # Track validation auxiliary loss as well if needed in future plots
-            if 'val_loss_aux' not in history: history['val_loss_aux'] = []
+            history['val_loss_biomass'].append(val_metrics['loss_biomass'])
             history['val_loss_aux'].append(val_metrics['loss_aux'])
+            history['val_loss_species'].append(val_metrics['loss_species'])
             
             logger.info(f"Epoch {epoch+1}/{STAGE1_EPOCHS} - "
-                        f"Train Loss: {train_metrics['loss']:.4f} (B: {train_metrics['loss_biomass']:.4f}, A: {train_metrics['loss_aux']:.4f}) | "
-                        f"Val Loss: {val_metrics['loss']:.4f} (A: {val_metrics['loss_aux']:.4f}) | R2: {val_metrics['r2']:.4f}")
+                        f"Train Loss: {train_metrics['loss']:.4f} ("
+                        f"Biomass: {train_metrics['loss_biomass']:.4f}, "
+                        f"Aux: {train_metrics['loss_aux']:.4f}, "
+                        f"Species: {train_metrics['loss_species']:.4f}) | "
+                        f"Val Loss: {val_metrics['loss']:.4f} ("
+                        f"Biomass: {val_metrics['loss_biomass']:.4f}, "
+                        f"Aux: {val_metrics['loss_aux']:.4f}, "
+                        f"Species: {val_metrics['loss_species']:.4f}) | "
+                        f"R2: {val_metrics['r2']:.4f}")
             
             if val_metrics['r2'] > best_r2:
                 best_r2 = val_metrics['r2']

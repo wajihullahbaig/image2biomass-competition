@@ -17,7 +17,7 @@ from configs import *
 from common import (
     load_data, setup_logging, set_seed, get_image_data_transforms,
     calculate_global_weighted_r2, enforce_physical_constraints,
-    plot_training_history
+    plot_training_history, apply_tta
 )
 from dataset import BiomassDataset
 from models import BiomassUnifiedModel, initialize_weights
@@ -104,7 +104,10 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             species_id = batch['species_id'].to(device)
             
             # Forward pass (now in Raw Space)
-            biomass_pred, aux_pred, species_logits = model(images)
+            if USE_TTA:
+                biomass_pred, aux_pred, species_logits = apply_tta(model, images, device)
+            else:
+                biomass_pred, aux_pred, species_logits = model(images)
             
             # 1. Prediction Clamping (Max 256.0 grams)
             # Physical limit and biomass cannot be negative
@@ -191,6 +194,11 @@ def run_training():
         
         model = BiomassUnifiedModel(backbone_name=BACKBONE_S1, num_species=len(species_list)).to(DEVICE)
         initialize_weights(model)
+        
+        # Freezing logic for small dataset optimization
+        if FREEZE_BACKBONE:
+            logger.info(f"Freezing backbone (Fraction: {BACKBONE_FREEZE_FRACTION})")
+            model.freeze_backbone(freeze_fraction=BACKBONE_FREEZE_FRACTION)
         
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
         # Using HuberLoss for raw-space: robust to high-grams outliers

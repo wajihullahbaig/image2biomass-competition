@@ -73,30 +73,94 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
 def get_image_data_transforms()->tuple:
     """
     Returns the training and validation data augmentation transforms.
+    Focus on geometric invariance while preserving photometric signal (greenness).
     """
-    # Data Augmentation Transforms
+    # Data Augmentation Transforms for small dataset (357 samples)
     train_transform = transforms.Compose([
-                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomVerticalFlip(),
-                transforms.RandomRotation(15),
-                transforms.RandomAutocontrast(),
-                transforms.RandomEqualize(),
-                transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-                transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
-                transforms.RandomGrayscale(p=0.1),
-                transforms.RandomResizedCrop(size=(IMAGE_SIZE, IMAGE_SIZE), scale=(0.8, 1.0)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-            ])
+        # 1. Structural/Scale (Resizing happens here)
+        # Using scale >= 0.7 to avoid losing the plot context
+        transforms.RandomResizedCrop(size=IMAGE_SIZE, scale=(0.7, 1.0), ratio=(0.9, 1.1)),
+        
+        # 2. Geometric (Full Invariance)
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomVerticalFlip(p=0.5),
+        
+        # 90-degree rotations are often cleaner for plant layouts than arbitrary degrees
+        transforms.RandomChoice([
+            transforms.RandomRotation((0, 0)),
+            transforms.RandomRotation((90, 90)),
+            transforms.RandomRotation((180, 180)),
+            transforms.RandomRotation((270, 270)),
+        ]),
+        
+        # 3. Photometric (Conservative)
+        # CRITICAL: Keep hue jitter very low (<= 0.02) to maintain biomass-greenness relationship
+        transforms.ColorJitter(
+            brightness=0.15, 
+            contrast=0.15, 
+            saturation=0.1, 
+            hue=0.01 
+        ),
+        
+        # 4. Noise/Blur
+        transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.3),
+        
+        # 5. Conversion
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+        
+        # 6. Occlusion (Post-Tensor)
+        # RandomErasing / Cutout forces model to learn global features
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.2), ratio=(0.3, 3.3))
+    ])
 
     val_transform = transforms.Compose([
-                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-            ])
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+    ])
     return train_transform, val_transform       
+
+def apply_tta(model, image, device, n_passes=4):
+    """
+    Performs Test-Time Augmentation (TTA).
+    Average predictions over flipped/rotated versions of the image.
+    """
+    model.eval()
+    all_biomass = []
+    all_aux = []
+    all_species = []
+    
+    # 0. Original image
+    with torch.no_grad():
+        b, a, s = model(image)
+        all_biomass.append(b)
+        all_aux.append(a)
+        all_species.append(s)
+        
+    # 1-N. Augmented versions (Using basic horizontal/vertical flips)
+    # We apply flips directly to the tensor batch
+    batch_size = image.size(0)
+    
+    aug_fns = [
+        lambda x: torch.flip(x, [3]), # H-Flip
+        lambda x: torch.flip(x, [2]), # V-Flip
+        lambda x: torch.flip(x, [2, 3]) # Both
+    ]
+    
+    for aug_fn in aug_fns[:n_passes-1]:
+        with torch.no_grad():
+            b, a, s = model(aug_fn(image))
+            all_biomass.append(b)
+            all_aux.append(a)
+            all_species.append(s)
+            
+    # Average predictions
+    avg_biomass = torch.stack(all_biomass).mean(0)
+    avg_aux = torch.stack(all_aux).mean(0)
+    avg_species = torch.stack(all_species).mean(0)
+    
+    return avg_biomass, avg_aux, avg_species
 
 def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=None) -> str:
     """

@@ -44,6 +44,28 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(256, num_targets),
             nn.Softplus() # Ensures positive outputs for mass
         )
+    def freeze_backbone(self, freeze_fraction=1.0):
+        """
+        Freezes a fraction of the backbone layers to prevent overfitting on small datasets.
+        freeze_fraction: 0.0 to 1.0. 
+        - 1.0 freezes EVERYTHING in the backbone.
+        - 0.5 freezes the first half of the layers.
+        """
+        # Get all parameters in the backbone
+        params = list(self.backbone.parameters())
+        num_to_freeze = int(len(params) * freeze_fraction)
+        
+        for i, param in enumerate(params):
+            if i < num_to_freeze:
+                param.requires_grad = False
+            else:
+                param.requires_grad = True
+        
+        # BatchNorm status: usually better to keep in eval mode if backbone is frozen
+        if freeze_fraction > 0.9:
+            for m in self.backbone.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    m.eval()
 
     def forward(self, x):
         # Extract features from image
@@ -61,8 +83,14 @@ class BiomassUnifiedModel(nn.Module):
         # Stability Clamp for auxiliary predictions
         aux_out_clamped = torch.clamp(aux_out, 0.0, 10.0)
         
-        # Concatenate image features with PREDICTED aux and non-negative species features
-        combined_feats = torch.cat([img_feats, aux_out_clamped, species_probs], dim=1)
+        # FEATURE BOOSTING:
+        # Concatenate image features with PREDICTED aux and species features.
+        # Scale the sturdy features so they aren't drowned out by the 1280 image dims.
+        combined_feats = torch.cat([
+            img_feats, 
+            aux_out_clamped * 10.0, 
+            species_probs * 5.0
+        ], dim=1)
         
         # Predict biomass targets
         biomass_out = self.biomass_head(combined_feats) # (B, num_targets)

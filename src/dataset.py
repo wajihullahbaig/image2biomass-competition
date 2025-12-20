@@ -6,6 +6,7 @@ import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image
 import logging
+from torchvision import transforms
 
 class BiomassDataset(Dataset):
     def __init__(self, df, transform=None, target_cols=None, aux_cols=None, is_test=False, species_to_id=None):
@@ -44,11 +45,21 @@ class BiomassDataset(Dataset):
         try:
             image = Image.open(img_path).convert('RGB')
         except Exception as e:
-            # Fallback to black image if load fails (should not happen in prepared data)
-            image = Image.new('RGB', (224, 224), (0, 0, 0))
+            image = Image.new('RGB', (224, 224), (0, 0, 0)) # Fallback
             
+        # Apply transforms
+        # self.transform should include RandomResizedCrop(scale=(0.5, 1.0)) for training!
+        # This acts as our "Random Tile Selector"
         if self.transform:
             image = self.transform(image)
+        else:
+            # Basic fallback
+            to_tensor = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+            image = to_tensor(image)
             
         if self.is_test:
             return {
@@ -60,7 +71,6 @@ class BiomassDataset(Dataset):
         targets = torch.tensor(row[self.target_cols].values.astype(np.float32))
         
         # Aux features (NDVI, Height)
-        # Convert to numeric first to avoid object-dtype fillna warnings
         aux_values = row[self.aux_cols].values
         aux_values = np.nan_to_num(aux_values.astype(np.float32), nan=0.0)
         aux_feats = torch.tensor(aux_values)
@@ -68,11 +78,26 @@ class BiomassDataset(Dataset):
         # Species One-Hot or Label
         species_id = self.species_to_id.get(row['Species'], 0)
         
+        # Month Label (0-11) for Phenology Regularization
+        try:
+            date_str = str(row['Sampling_Date'])
+            # Expecting format YYYY-MM-DD or something parsable
+            # Simple parsing: most libraries put date in standard format or we use pandas to_datetime before
+            # Assuming row['Sampling_Date'] might already be a timestamp if loaded via pandas
+            if hasattr(row['Sampling_Date'], 'month'):
+                month_idx = row['Sampling_Date'].month - 1
+            else:
+                # String parsing fallback
+                month_idx = int(pd.to_datetime(date_str).month) - 1
+        except:
+            month_idx = 0 # Default to Jan if fail
+            
         return {
             'image': image,
             'targets': targets,
-                'aux_feats': aux_feats,
+            'aux_feats': aux_feats,
             'species_id': species_id,
+            'month_id': month_idx,
             'sample_id': row['sample_id']
         }
 

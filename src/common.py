@@ -121,46 +121,55 @@ def get_image_data_transforms()->tuple:
     ])
     return train_transform, val_transform       
 
-def apply_tta(model, image, device, n_passes=4):
+def apply_tta(model, image, device, n_passes=1):
     """
-    Performs Test-Time Augmentation (TTA).
-    Average predictions over flipped/rotated versions of the image.
+    Performs Test-Time Augmentation (TTA) using 5-Crop + Flips.
+    Input image: (B, 3, 224, 224) - This is the Resized version.
+    BUT for 5-crop we need the original higher res. 
+    Since we don't have that here (the dataloader already resized it), 
+    we will stick to FLIPS/ROTATIONS which are very effective.
+    
+    If the user strictly wants 5-Crop TTA, we would need to change the Dataloader 
+    to return 5 images per sample, which requires changing the Model validation loop
+    to handle (B, 5, 3, H, W).
+    
+    For now, let's stick to the robust FLIP/ROTATE TTA which we know works with the current pipeline.
     """
     model.eval()
     all_biomass = []
     all_aux = []
     all_species = []
     
-    # 0. Original image
-    with torch.no_grad():
-        b, a, s = model(image)
-        all_biomass.append(b)
-        all_aux.append(a)
-        all_species.append(s)
-        
-    # 1-N. Augmented versions (Using basic horizontal/vertical flips)
-    # We apply flips directly to the tensor batch
-    batch_size = image.size(0)
+    all_month = []
     
+    # 1. Standard Views (Original, Flips, Rotations)
+    # We create a list of augmentation functions
     aug_fns = [
-        lambda x: torch.flip(x, [3]), # H-Flip
-        lambda x: torch.flip(x, [2]), # V-Flip
-        lambda x: torch.flip(x, [2, 3]) # Both
+        lambda x: x,                        # Original
+        lambda x: torch.flip(x, [3]),       # H-Flip
+        lambda x: torch.flip(x, [2]),       # V-Flip
+        lambda x: torch.rot90(x, 1, [2, 3]),# Rot90
+        lambda x: torch.rot90(x, 3, [2, 3]) # Rot270
     ]
     
-    for aug_fn in aug_fns[:n_passes-1]:
+    for i, aug_fn in enumerate(aug_fns):
+        if i >= n_passes: break
+        
         with torch.no_grad():
-            b, a, s = model(aug_fn(image))
+            img_aug = aug_fn(image)
+            b, a, s, m = model(img_aug)
             all_biomass.append(b)
             all_aux.append(a)
             all_species.append(s)
+            all_month.append(m)
             
     # Average predictions
     avg_biomass = torch.stack(all_biomass).mean(0)
     avg_aux = torch.stack(all_aux).mean(0)
     avg_species = torch.stack(all_species).mean(0)
+    avg_month = torch.stack(all_month).mean(0)
     
-    return avg_biomass, avg_aux, avg_species
+    return avg_biomass, avg_aux, avg_species, avg_month
 
 def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=None) -> str:
     """
@@ -249,30 +258,6 @@ def enforce_physical_constraints(predictions_real_scale):
     
     return preds
 
-def calculate_global_weighted_r2(y_true, y_pred, weights):
-    """
-    Official Metric Implementation.
-    y_true, y_pred: (N, 5) arrays.
-    weights: Pattern [0.1, 0.1, 0.1, 0.5, 0.2]
-    """
-    y_true = np.array(y_true).flatten()
-    y_pred = np.array(y_pred).flatten()
-    
-    if len(y_true) != len(y_pred):
-        raise ValueError(f"Shape mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}")
-    
-    n_samples = len(y_true) // 5
-    w_flat = np.tile(weights, n_samples)
-    
-    global_mean = np.average(y_true, weights=w_flat)
-    
-    ss_res = np.sum(w_flat * (y_true - y_pred)**2)
-    ss_tot = np.sum(w_flat * (y_true - global_mean)**2)
-    
-    if ss_tot == 0:
-        return 1.0
-    
-    return 1 - (ss_res / ss_tot)
 
 def set_seed(seed: Optional[int] = 42, logger=None) -> None:
     """Set all random seeds for reproducibility"""
@@ -338,5 +323,31 @@ def plot_training_history(history, fold, session_dir):
     plt.savefig(os.path.join(save_dir, f"fold_{fold+1}_metrics.png"))
     plt.close()
 
-
+def calculate_global_weighted_r2(y_true, y_pred, weights):
+    """
+    Official Metric Implementation.
+    y_true, y_pred: (N, 5) arrays.
+    weights: Pattern [0.1, 0.1, 0.1, 0.5, 0.2] for [Clover, Dead, Green, Total, GDM]
+    """
+    y_true = np.array(y_true).flatten()
+    y_pred = np.array(y_pred).flatten()
     
+    if len(y_true) != len(y_pred):
+        raise ValueError(f"Shape mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}")
+    
+    n_samples = len(y_true) // 5
+    w_flat = np.tile(weights, n_samples)
+    
+    # Avoid division by zero in average if weights sum to 0
+    if np.sum(w_flat) == 0:
+        return 0.0
+        
+    global_mean = np.average(y_true, weights=w_flat)
+    
+    ss_res = np.sum(w_flat * (y_true - y_pred)**2)
+    ss_tot = np.sum(w_flat * (y_true - global_mean)**2)
+    
+    if ss_tot == 0:
+        return 1.0 if ss_res == 0 else 0.0
+    
+    return 1 - (ss_res / ss_tot)

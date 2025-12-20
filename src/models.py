@@ -5,7 +5,7 @@ import timm
 from configs import BACKBONE_S1, FUSION_DIM, IMAGE_SIZE
 
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name=BACKBONE_S1, num_targets=5, num_aux=2, num_species=11, pretrained=True):
+    def __init__(self, backbone_name=BACKBONE_S1, num_targets=5, num_aux=2, num_species=11, num_months=12, pretrained=True):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
@@ -32,26 +32,32 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(128, num_species)
         )
         
-        # 4. Biomass Head
-        # It takes backbone features + predicted aux features + species features
+        # 4. Month Head (Categorical - Regularizer)
+        # Forces backbone to learn seasonality/phenology
+        self.month_head = nn.Sequential(
+            nn.Linear(self.backbone_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_months)
+        )
+        
+        # 5. Biomass Head
+        # Fusion Dim is now controlled by config (256)
+        fusion_dim = FUSION_DIM
+        
         self.biomass_head = nn.Sequential(
-            nn.Linear(self.backbone_dim + num_aux + num_species, FUSION_DIM),
-            nn.BatchNorm1d(FUSION_DIM),
+            nn.Linear(self.backbone_dim + num_aux + num_species, fusion_dim),
+            nn.BatchNorm1d(fusion_dim),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(FUSION_DIM, 256),
+            nn.Linear(fusion_dim, 128),
             nn.ReLU(),
-            nn.Linear(256, num_targets),
-            nn.Softplus() # Ensures positive outputs for mass
+            nn.Linear(128, num_targets),
+            nn.Softplus() # Ensures positive outputs
         )
+
     def freeze_backbone(self, freeze_fraction=1.0):
-        """
-        Freezes a fraction of the backbone layers to prevent overfitting on small datasets.
-        freeze_fraction: 0.0 to 1.0. 
-        - 1.0 freezes EVERYTHING in the backbone.
-        - 0.5 freezes the first half of the layers.
-        """
-        # Get all parameters in the backbone
+        """Freezes a fraction of the backbone layers."""
         params = list(self.backbone.parameters())
         num_to_freeze = int(len(params) * freeze_fraction)
         
@@ -61,31 +67,28 @@ class BiomassUnifiedModel(nn.Module):
             else:
                 param.requires_grad = True
         
-        # BatchNorm status: usually better to keep in eval mode if backbone is frozen
         if freeze_fraction > 0.9:
             for m in self.backbone.modules():
-                if isinstance(m, nn.BatchNorm2d):
-                    m.eval()
+                if isinstance(m, nn.BatchNorm2d): m.eval()
 
     def forward(self, x):
         # Extract features from image
         img_feats = self.backbone(x) # (B, backbone_dim)
         
         # Predict species (categorical logits)
-        species_logits = self.species_head(img_feats) # (B, num_species)
-        
-        # Non-negative species features for fusion (e.g. probabilities)
+        species_logits = self.species_head(img_feats) 
         species_probs = torch.softmax(species_logits, dim=1)
         
-        # Predict auxiliary features (NDVI, Height)
-        aux_out = self.aux_head(img_feats) # (B, num_aux)
+        # Predict month (categorical logits) - Regularizer only
+        month_logits = self.month_head(img_feats)
         
-        # Stability Clamp for auxiliary predictions
+        # Predict auxiliary features (NDVI, Height)
+        aux_out = self.aux_head(img_feats) 
         aux_out_clamped = torch.clamp(aux_out, 0.0, 10.0)
         
         # FEATURE BOOSTING:
-        # Concatenate image features with PREDICTED aux and species features.
-        # Scale the sturdy features so they aren't drowned out by the 1280 image dims.
+        # Scale the sturdy features so they aren't drowned out
+        # We DO NOT include month predictions in the fusion, it is purely a backbone teacher
         combined_feats = torch.cat([
             img_feats, 
             aux_out_clamped * 10.0, 
@@ -93,12 +96,10 @@ class BiomassUnifiedModel(nn.Module):
         ], dim=1)
         
         # Predict biomass targets
-        biomass_out = self.biomass_head(combined_feats) # (B, num_targets)
-        
-        # Final safety clamp: Biomass cannot be negative, Max value is 256.0
+        biomass_out = self.biomass_head(combined_feats)
         biomass_out = torch.clamp(biomass_out, 0.0, 256.0)
         
-        return biomass_out, aux_out, species_logits
+        return biomass_out, aux_out, species_logits, month_logits
 
 # Weight Initialization
 def initialize_weights(model):

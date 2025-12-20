@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import timm
-from configs import BACKBONE_S1, FUSION_DIM, IMAGE_SIZE
+from configs import BACKBONE_S1, FUSION_DIM, IMAGE_SIZE, BACKBONE_FREEZE_FRACTION, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, MONTH_FEAT_WEIGHT, BIOMASS_FEAT_WEIGHT
 
 class BiomassUnifiedModel(nn.Module):
     def __init__(self, backbone_name=BACKBONE_S1, num_targets=5, num_aux=2, num_species=11, num_months=12, pretrained=True):
@@ -25,20 +25,22 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(256, num_aux)
         )
         
-        # 3. Species Head (Categorical)
+        # Multi-task heads with amnesia (dropout) to prevent memorization
+        self.species_dropout = nn.Dropout(0.5)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
             nn.ReLU(),
             nn.Linear(128, num_species)
         )
         
-        # 4. Month Head (Categorical - Regularizer)
-        # Forces backbone to learn seasonality/phenology
+        self.month_dropout = nn.Dropout(0.5)
+        # 4. Month Head (Cyclical Regression - Regularizer)
+        # Forces backbone to learn seasonal cycles (sin/cos)
         self.month_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(128, num_months)
+            nn.Linear(128, 2) # Sin, Cos
         )
         
         # 5. Biomass Head
@@ -49,14 +51,14 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim + num_aux + num_species, fusion_dim),
             nn.BatchNorm1d(fusion_dim),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),
             nn.Linear(fusion_dim, 128),
             nn.ReLU(),
             nn.Linear(128, num_targets),
             nn.Softplus() # Ensures positive outputs
         )
 
-    def freeze_backbone(self, freeze_fraction=1.0):
+    def freeze_backbone(self, freeze_fraction=BACKBONE_FREEZE_FRACTION):
         """Freezes a fraction of the backbone layers."""
         params = list(self.backbone.parameters())
         num_to_freeze = int(len(params) * freeze_fraction)
@@ -76,11 +78,11 @@ class BiomassUnifiedModel(nn.Module):
         img_feats = self.backbone(x) # (B, backbone_dim)
         
         # Predict species (categorical logits)
-        species_logits = self.species_head(img_feats) 
+        species_logits = self.species_head(self.species_dropout(img_feats)) 
         species_probs = torch.softmax(species_logits, dim=1)
         
         # Predict month (categorical logits) - Regularizer only
-        month_logits = self.month_head(img_feats)
+        month_logits = self.month_head(self.month_dropout(img_feats))
         
         # Predict auxiliary features (NDVI, Height)
         aux_out = self.aux_head(img_feats) 
@@ -91,8 +93,8 @@ class BiomassUnifiedModel(nn.Module):
         # We DO NOT include month predictions in the fusion, it is purely a backbone teacher
         combined_feats = torch.cat([
             img_feats, 
-            aux_out_clamped * 10.0, 
-            species_probs * 5.0
+            aux_out_clamped * AUX_FEAT_WEIGHT, 
+            species_probs * SPECIES_FEAT_WEIGHT
         ], dim=1)
         
         # Predict biomass targets

@@ -78,26 +78,26 @@ class BiomassDataset(Dataset):
         # Species One-Hot or Label
         species_id = self.species_to_id.get(row['Species'], 0)
         
-        # Month Label (0-11) for Phenology Regularization
+        # Cyclical Month Encoding for Phenology Regularization
         try:
-            date_str = str(row['Sampling_Date'])
-            # Expecting format YYYY-MM-DD or something parsable
-            # Simple parsing: most libraries put date in standard format or we use pandas to_datetime before
-            # Assuming row['Sampling_Date'] might already be a timestamp if loaded via pandas
             if hasattr(row['Sampling_Date'], 'month'):
-                month_idx = row['Sampling_Date'].month - 1
+                m = row['Sampling_Date'].month
             else:
-                # String parsing fallback
-                month_idx = int(pd.to_datetime(date_str).month) - 1
+                m = pd.to_datetime(str(row['Sampling_Date'])).month
+            
+            # Convert to radians (1-12 range)
+            month_rad = 2.0 * np.pi * (m - 1) / 12.0
+            month_sin = np.sin(month_rad)
+            month_cos = np.cos(month_rad)
         except:
-            month_idx = 0 # Default to Jan if fail
+            month_sin, month_cos = 0.0, 1.0 # Default to Jan (rad 0)
             
         return {
             'image': image,
             'targets': targets,
             'aux_feats': aux_feats,
             'species_id': species_id,
-            'month_id': month_idx,
+            'month_sin_cos': torch.tensor([month_sin, month_cos], dtype=torch.float32),
             'sample_id': row['sample_id']
         }
 

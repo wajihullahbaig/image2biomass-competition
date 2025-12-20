@@ -284,24 +284,28 @@ def plot_training_history(history, fold, session_dir):
     # --- Loss Plot ---
     plt.subplot(1, 2, 1)
     if 'train_loss' in history:
-        plt.plot(history['train_loss'], label='Total Train Loss', linewidth=2, color='tab:blue')
+        plt.plot(np.array(history['train_loss'])/1000.0, label='Total Train Loss (k)', linewidth=2, color='tab:blue')
     if 'loss_biomass' in history:
-        plt.plot(history['loss_biomass'], label='Biomass Train Loss', linestyle='--', alpha=0.7)
+        plt.plot(np.array(history['loss_biomass'])/1000.0, label='Biomass Train Loss (k)', linestyle='--', alpha=0.7)
     if 'loss_aux' in history:
         plt.plot(history['loss_aux'], label='Aux Train Loss', linestyle=':', alpha=0.7)
     if 'loss_species' in history:
         plt.plot(history['loss_species'], label='Species Train Loss', linestyle='-.', alpha=0.7)
+    if 'loss_month' in history:
+        plt.plot(history['loss_month'], label='Month Train Loss', linestyle='-', alpha=0.4, color='gray')
         
     if 'val_loss' in history:
-        plt.plot(history['val_loss'], label='Total Val Loss', linewidth=2, color='tab:red')
+        plt.plot(np.array(history['val_loss'])/1000.0, label='Total Val Loss (k)', linewidth=2, color='tab:red')
     if 'val_loss_biomass' in history:
-        plt.plot(history['val_loss_biomass'], label='Biomass Val Loss', linestyle='--', color='tab:orange', alpha=0.7)
+        plt.plot(np.array(history['val_loss_biomass'])/1000.0, label='Biomass Val Loss (k)', linestyle='--', color='tab:orange', alpha=0.7)
     if 'val_loss_aux' in history:
         plt.plot(history['val_loss_aux'], label='Aux Val Loss', linestyle=':', color='magenta', alpha=0.7)
     if 'val_loss_species' in history:
         plt.plot(history['val_loss_species'], label='Species Val Loss', linestyle='-.', color='tab:brown', alpha=0.7)
+    if 'val_loss_month' in history:
+        plt.plot(history['val_loss_month'], label='Month Val Loss', linestyle='-', alpha=0.4, color='purple')
         
-    plt.title(f'Fold {fold+1} - Training Progress (Detailed Losses)')
+    plt.title(f'Fold {fold+1} - Training Progress (Scaled: k=x1000)')
     plt.xlabel('Epoch')
     plt.ylabel('Loss Value')
     plt.legend()

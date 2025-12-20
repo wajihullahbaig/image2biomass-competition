@@ -17,8 +17,7 @@ from configs import *
 from common import (
     load_data, setup_logging, set_seed, get_image_data_transforms,
     calculate_global_weighted_r2, enforce_physical_constraints,
-    plot_training_history, apply_tta,
-    calculate_global_weighted_r2
+    plot_training_history, apply_tta
 )
 from dataset import BiomassDataset
 from models import BiomassUnifiedModel, initialize_weights
@@ -37,7 +36,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         targets = batch['targets'].to(device)
         aux_feats = batch['aux_feats'].to(device)
         species_id = batch['species_id'].to(device)
-        month_id = batch['month_id'].to(device)
+        month_target = batch['month_sin_cos'].to(device)
         
         optimizer.zero_grad()
         
@@ -56,8 +55,8 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         # 3. Species Loss (Cross Entropy)
         loss_species = criterion_species(species_logits, species_id)
         
-        # 4. Month Loss (Cross Entropy) - Phenology Regularizer
-        loss_month = criterion_month(month_logits, month_id)
+        # 4. Month Loss (Huber on Sin/Cos) - Phenology Regularizer
+        loss_month = criterion_month(month_logits, month_target).mean()
         
         # Combined Loss
         total_loss = (loss_biomass * BIOMASS_FEAT_WEIGHT) + \
@@ -81,7 +80,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         running_loss_month += loss_month.item()
         
         pbar.set_postfix({
-            'L_Bio': f"{loss_biomass.item():.4f}", 
+            'L_Bio': f"{loss_biomass.item()/1000:.4f}", 
             'L_Aux': f"{loss_aux.item():.4f}",
             'L_Sp': f"{loss_species.item():.4f}",
             'L_Mo': f"{loss_month.item():.4f}"
@@ -94,6 +93,25 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         'loss_species': running_loss_species / len(loader),
         'loss_month': running_loss_month / len(loader)
     }
+
+def log_dataset_stats(df, logger, title="Dataset Stats"):
+    logger.info(f"\n--- {title} ---")
+    logger.info(f"Total Samples: {len(df)}")
+    
+    # 1. Target Stats
+    logger.info("Target Distributions (g):")
+    for col in TARGET_COLS:
+        stats = df[col].describe()
+        logger.info(f"  - {col:15}: Mean={stats['mean']:.2f}, Std={stats['std']:.2f}, Max={stats['max']:.2f}")
+    
+    # 2. Categorical Counts
+    logger.info(f"Unique Species: {df['Species'].nunique()}")
+    logger.info(f"Unique States : {df['State'].nunique()} ({', '.join(df['State'].unique())})")
+    
+    # Seasonality
+    if 'Sampling_Date' in df.columns:
+        months = pd.to_datetime(df['Sampling_Date']).dt.month
+        logger.info(f"Unique Months : {months.nunique()}")
 
 @torch.no_grad()
 def validate(model, loader, criterion_biomass, criterion_aux, criterion_species, criterion_month, device):
@@ -113,7 +131,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             targets = batch['targets'].to(device) # Raw gram scale
             aux_feats = batch['aux_feats'].to(device)
             species_id = batch['species_id'].to(device)
-            month_id = batch['month_id'].to(device)
+            month_target = batch['month_sin_cos'].to(device)
             
             # Forward pass (now in Raw Space)
             if USE_TTA:
@@ -132,7 +150,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             
             loss_aux = criterion_aux(aux_pred, aux_feats).mean()
             loss_species = criterion_species(species_logits, species_id)
-            loss_month = criterion_month(month_logits, month_id)
+            loss_month = criterion_month(month_logits, month_target).mean()
             
             total_loss = (loss_biomass * BIOMASS_FEAT_WEIGHT) + \
                          (loss_aux * AUX_FEAT_WEIGHT) + \
@@ -150,6 +168,9 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             
     all_targets = np.concatenate(all_targets)
     all_preds_biomass = np.concatenate(all_preds_biomass)
+    
+    # 2. Apply Physical Constraints (Total = Sum of Components)
+    all_preds_biomass = enforce_physical_constraints(all_preds_biomass)
     
     # Calculate R2 Score (Official Weighted Global Metric)
     # We use the OFFICIAL_WEIGHTS from configs.py
@@ -173,6 +194,9 @@ def run_training():
     set_seed(42, logger)
     
     df = load_data(logger)
+    
+    # Log Global Stats
+    log_dataset_stats(df, logger, "GLOBAL DATASET OVERVIEW")
     
     # 2. Save Metadata for Inference
     species_list = sorted(df['Species'].unique().tolist())
@@ -206,7 +230,10 @@ def run_training():
         train_ds = BiomassDataset(train_df, transform=train_transform, species_to_id=metadata['species_to_id'])
         val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=metadata['species_to_id'])
         
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+        # Log Fold-Specific Val Stats
+        log_dataset_stats(val_df, logger, f"FOLD {fold+1} VALIDATION STATS")
+        
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
         
         model = BiomassUnifiedModel(backbone_name=BACKBONE_S1, num_species=len(species_list)).to(DEVICE)
@@ -222,7 +249,7 @@ def run_training():
         criterion_biomass = nn.HuberLoss(reduction='none', delta=5.0) 
         criterion_aux = nn.HuberLoss(delta=5.0) 
         criterion_species = nn.CrossEntropyLoss(label_smoothing=0.1)
-        criterion_month = nn.CrossEntropyLoss() # New
+        criterion_month = nn.HuberLoss(delta=1.0) # Regression on sin/cos
         
         steps_per_epoch = len(train_loader)
         scheduler = optim.lr_scheduler.OneCycleLR(
@@ -251,6 +278,7 @@ def run_training():
                 DEVICE
             )
             
+            # Store history (Raw values now, scaling moved to plotting)
             history['train_loss'].append(train_metrics['loss'])
             history['loss_biomass'].append(train_metrics['loss_biomass'])
             history['loss_aux'].append(train_metrics['loss_aux'])
@@ -265,13 +293,13 @@ def run_training():
             history['val_loss_month'].append(val_metrics['loss_month'])
             
             logger.info(f"Epoch {epoch+1}/{STAGE1_EPOCHS} - "
-                        f"Train Loss: {train_metrics['loss']:.4f} ("
-                        f"B: {train_metrics['loss_biomass']:.2f}, "
+                        f"Train Loss: {train_metrics['loss']/1000.0:.2f}k ("
+                        f"B: {train_metrics['loss_biomass']/1000.0:.2f}k, "
                         f"A: {train_metrics['loss_aux']:.2f}, "
                         f"S: {train_metrics['loss_species']:.2f}, "
                         f"M: {train_metrics['loss_month']:.2f}) | "
-                        f"Val Loss: {val_metrics['loss']:.4f} ("
-                        f"B: {val_metrics['loss_biomass']:.2f}, "
+                        f"Val Loss: {val_metrics['loss']/1000.0:.2f}k ("
+                        f"B: {val_metrics['loss_biomass']/1000.0:.2f}k, "
                         f"A: {val_metrics['loss_aux']:.2f}, "
                         f"S: {val_metrics['loss_species']:.2f}, "
                         f"M: {val_metrics['loss_month']:.2f}) | "

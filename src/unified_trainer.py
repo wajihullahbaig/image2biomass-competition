@@ -59,11 +59,11 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         # 4. Month Loss (Cross Entropy) - Phenology Regularizer
         loss_month = criterion_month(month_logits, month_id)
         
-        # Combined Loss (Month weight fixed at 0.2)
+        # Combined Loss
         total_loss = (loss_biomass * BIOMASS_FEAT_WEIGHT) + \
                      (loss_aux * AUX_FEAT_WEIGHT) + \
                      (loss_species * SPECIES_FEAT_WEIGHT) + \
-                     (loss_month * 0.2) 
+                     (loss_month * MONTH_FEAT_WEIGHT) 
         
         total_loss.backward()
         
@@ -137,7 +137,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             total_loss = (loss_biomass * BIOMASS_FEAT_WEIGHT) + \
                          (loss_aux * AUX_FEAT_WEIGHT) + \
                          (loss_species * SPECIES_FEAT_WEIGHT) + \
-                         (loss_month * 0.2)
+                         (loss_month * MONTH_FEAT_WEIGHT)
             
             running_loss += total_loss.item()
             running_loss_biomass += loss_biomass.item()
@@ -219,8 +219,8 @@ def run_training():
         
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
         # Using HuberLoss for raw-space: robust to high-grams outliers
-        criterion_biomass = nn.HuberLoss(reduction='none', delta=1.0) 
-        criterion_aux = nn.HuberLoss(delta=1.0) 
+        criterion_biomass = nn.HuberLoss(reduction='none', delta=5.0) 
+        criterion_aux = nn.HuberLoss(delta=5.0) 
         criterion_species = nn.CrossEntropyLoss(label_smoothing=0.1)
         criterion_month = nn.CrossEntropyLoss() # New
         

@@ -44,7 +44,7 @@ class BiomassUnifiedModel(nn.Module):
         )
         
         # 5. Biomass Head
-        # Fusion Dim is now controlled by config (256)
+        # Fusion Dim is now controlled by config (512)
         fusion_dim = FUSION_DIM
         
         self.biomass_head = nn.Sequential(

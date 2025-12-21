@@ -355,3 +355,62 @@ def calculate_global_weighted_r2(y_true, y_pred, weights):
         return 1.0 if ss_res == 0 else 0.0
     
     return 1 - (ss_res / ss_tot)
+
+
+def upsample_minority_classes(df, target_col, logger):
+    """
+    Upsamples under-represented classes in target_col to the MEDIAN count.
+    This creates a more balanced dataset without over-representing rare classes.
+    Only upsamples classes that exist in the current fold.
+    """
+    counts = df[target_col].value_counts()
+    
+    if len(counts) == 0:
+        logger.info(f"No classes found in '{target_col}'. Skipping upsampling.")
+        return df
+    
+    # Calculate median count as the target
+    median_count = int(counts.median())
+    
+    # Only upsample classes below median
+    minority_classes = counts[counts < median_count].index
+    
+    if len(minority_classes) == 0:
+        logger.info(f"No upsampling needed. All '{target_col}' classes are at or above median ({median_count} samples).")
+        return df
+    
+    # Log before upsampling
+    logger.info(f"\n--- Before Upsampling ---")
+    logger.info(f"Total Samples: {len(df)}")
+    logger.info(f"Median class count: {median_count}")
+    logger.info(f"Classes below median ({median_count}):")
+    for cls in minority_classes:
+        logger.info(f"  - {cls}: {counts[cls]} samples")
+    logger.info(f"Upsampling Regime: Boosting {len(minority_classes)} '{target_col}' classes to median ({median_count} samples).")
+    
+    upsampled_dfs = [df]
+    total_added = 0
+    
+    for cls in minority_classes:
+        cls_df = df[df[target_col] == cls]
+        current_count = len(cls_df)
+        num_to_add = median_count - current_count
+        
+        if num_to_add > 0:
+            # Sample with replacement to reach median
+            added_df = cls_df.sample(n=num_to_add, replace=True, random_state=42)
+            upsampled_dfs.append(added_df)
+            total_added += num_to_add
+            logger.info(f"  + Added {num_to_add} samples for '{cls}'")
+    
+    new_df = pd.concat(upsampled_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    
+    # Log after upsampling
+    logger.info(f"\n--- After Upsampling ---")
+    logger.info(f"Total Samples: {len(new_df)} (added {total_added})")
+    new_counts = new_df[target_col].value_counts()
+    logger.info(f"Updated class distribution:")
+    for cls in sorted(new_counts.index):
+        logger.info(f"  - {cls}: {new_counts[cls]} samples")
+    
+    return new_df

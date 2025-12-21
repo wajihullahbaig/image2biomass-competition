@@ -213,7 +213,7 @@ def run_training():
         'aux_cols': ['Pre_GSHH_NDVI', 'Height_Ave_cm_log'],
         'official_weights': OFFICIAL_WEIGHTS,
         'image_size': IMAGE_SIZE,
-        'backbone': BACKBONE_S1
+        'backbone': BACKBONE
     }
     with open(os.path.join(session_dir, 'metadata.json'), 'wb') as f:
         f.write(json.dumps(metadata, indent=4).encode('utf-8'))
@@ -222,7 +222,7 @@ def run_training():
     # 3. Prepare Groups and Stratification Targets
     # Grouping by Sampling_Date attempts to prevent intra-day/site leakage 
     # while allowing the model to learn from the same season/state on different days.
-    df['group'] = df['Sampling_Date'].astype(str) 
+    df['group'] = df['Sampling_Date'].astype(str) + "_" + df['State'].astype(str) + "_" + df['season'].astype(str)
     
     sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     train_transform, val_transform = get_image_data_transforms()
@@ -250,7 +250,7 @@ def run_training():
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, drop_last=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
         
-        model = BiomassUnifiedModel(backbone_name=BACKBONE_S1, num_species=len(species_list)).to(DEVICE)
+        model = BiomassUnifiedModel(backbone_name=BACKBONE, num_species=len(species_list)).to(DEVICE)
         initialize_weights(model)
         
         # Freezing logic for small dataset optimization

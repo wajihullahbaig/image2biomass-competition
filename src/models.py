@@ -2,10 +2,10 @@
 import torch
 import torch.nn as nn
 import timm
-from configs import BACKBONE_S1, FUSION_DIM, IMAGE_SIZE, BACKBONE_FREEZE_FRACTION, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, MONTH_FEAT_WEIGHT, BIOMASS_FEAT_WEIGHT
+from configs import BACKBONE, FUSION_DIM, IMAGE_SIZE, BACKBONE_FREEZE_FRACTION, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, MONTH_FEAT_WEIGHT, BIOMASS_FEAT_WEIGHT
 
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name=BACKBONE_S1, num_targets=5, num_aux=2, num_species=11, num_months=12, pretrained=True):
+    def __init__(self, backbone_name=BACKBONE, num_targets=5, num_aux=2, num_species=11, num_months=12, pretrained=True):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone

@@ -118,28 +118,62 @@ def log_dataset_stats(df, logger, title="Dataset Stats"):
         months = pd.to_datetime(df['Sampling_Date']).dt.month
         logger.info(f"Unique Months : {months.nunique()}")
 
-def upsample_minority_classes(df, target_col, threshold, logger):
+def upsample_minority_classes(df, target_col, logger):
     """
-    Upsamples under-represented classes in target_col in the training set
-    to reach a minimum sample threshold.
+    Upsamples under-represented classes in target_col to the MEDIAN count.
+    This creates a more balanced dataset without over-representing rare classes.
+    Only upsamples classes that exist in the current fold.
     """
     counts = df[target_col].value_counts()
-    minority_classes = counts[counts < threshold].index
+    
+    if len(counts) == 0:
+        logger.info(f"No classes found in '{target_col}'. Skipping upsampling.")
+        return df
+    
+    # Calculate median count as the target
+    median_count = int(counts.median())
+    
+    # Only upsample classes below median
+    minority_classes = counts[counts < median_count].index
     
     if len(minority_classes) == 0:
+        logger.info(f"No upsampling needed. All '{target_col}' classes are at or above median ({median_count} samples).")
         return df
-        
-    logger.info(f"Upsampling Regime: Boosting {len(minority_classes)} '{target_col}' classes to {threshold} samples.")
+    
+    # Log before upsampling
+    logger.info(f"\n--- Before Upsampling ---")
+    logger.info(f"Total Samples: {len(df)}")
+    logger.info(f"Median class count: {median_count}")
+    logger.info(f"Classes below median ({median_count}):")
+    for cls in minority_classes:
+        logger.info(f"  - {cls}: {counts[cls]} samples")
+    logger.info(f"Upsampling Regime: Boosting {len(minority_classes)} '{target_col}' classes to median ({median_count} samples).")
+    
     upsampled_dfs = [df]
+    total_added = 0
+    
     for cls in minority_classes:
         cls_df = df[df[target_col] == cls]
-        num_to_add = threshold - len(cls_df)
+        current_count = len(cls_df)
+        num_to_add = median_count - current_count
+        
         if num_to_add > 0:
+            # Sample with replacement to reach median
             added_df = cls_df.sample(n=num_to_add, replace=True, random_state=42)
             upsampled_dfs.append(added_df)
-            
+            total_added += num_to_add
+            logger.info(f"  + Added {num_to_add} samples for '{cls}'")
+    
     new_df = pd.concat(upsampled_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
-    logger.info(f"Regime complete. Training size increased from {len(df)} to {len(new_df)} samples.")
+    
+    # Log after upsampling
+    logger.info(f"\n--- After Upsampling ---")
+    logger.info(f"Total Samples: {len(new_df)} (added {total_added})")
+    new_counts = new_df[target_col].value_counts()
+    logger.info(f"Updated class distribution:")
+    for cls in sorted(new_counts.index):
+        logger.info(f"  - {cls}: {new_counts[cls]} samples")
+    
     return new_df
 
 @torch.no_grad()
@@ -243,10 +277,9 @@ def run_training():
     logger.info(f"Metadata saved to {os.path.join(session_dir, 'metadata.json')}")
 
     # 3. Prepare Groups and Stratification Targets
-    df['group'] = df['State'] + "_" + df['season'] + "_" + df['Sampling_Date'].astype(str)
-    # Create Height Bins for more granular sampling (Low, Med, High)
-    df['height_bin'] = pd.qcut(df['Height_Ave_cm_log'], 3, labels=['Short', 'Mid', 'Tall'])
-    df['upsample_target'] = df['Species'].astype(str) + "_" + df['height_bin'].astype(str)
+    # Grouping by Sampling_Date attempts to prevent intra-day/site leakage 
+    # while allowing the model to learn from the same season/state on different days.
+    df['group'] = df['Sampling_Date'].astype(str) 
     
     sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     train_transform, val_transform = get_image_data_transforms()
@@ -260,9 +293,9 @@ def run_training():
         train_df = df.iloc[train_idx]
         val_df = df.iloc[val_idx]
         
-        # apply upsampling regime to train_df ONLY
-        # We ensure every Species x Height combo has a minimum presence
-        train_df = upsample_minority_classes(train_df, 'upsample_target', threshold=8, logger=logger)
+        # Apply median-based balanced upsampling to train_df ONLY
+        # Upsamples minority species to the median count for better balance
+        train_df = upsample_minority_classes(train_df, 'Species', logger)
         
         train_ds = BiomassDataset(train_df, transform=train_transform, species_to_id=metadata['species_to_id'])
         val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=metadata['species_to_id'])

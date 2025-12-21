@@ -7,14 +7,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Prerocessing
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
-# Training Hyperparameters
 IMAGE_SIZE = 224
-BATCH_SIZE = 32
+# Training Hyperparameters
+BATCH_SIZE = 16
 LEARNING_RATE = 2e-4
 N_FOLDS = 4
 STAGE1_EPOCHS = 40
 STAGE2_EPOCHS = 40
-BACKBONE_S1 = 'timm/tf_efficientnet_b3.ns_jft_in1k' 
+BACKBONE_S1 = 'timm/tf_efficientnet_b4.ns_jft_in1k' 
 BACKBONE_S2 = 'efficientnet_b4' 
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']

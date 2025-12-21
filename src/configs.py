@@ -32,3 +32,6 @@ AUX_FEAT_WEIGHT = 500.0
 SPECIES_FEAT_WEIGHT = 50.0
 MONTH_FEAT_WEIGHT = 50.0
 BIOMASS_FEAT_WEIGHT = 1.0
+
+# Sampling Regime
+UPSAMPLE_THRESHOLD = 25 # Ensure min 25 samples per species in training

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import StratifiedGroupKFold
 import pandas as pd
 import numpy as np
 import logging
@@ -106,12 +106,41 @@ def log_dataset_stats(df, logger, title="Dataset Stats"):
     
     # 2. Categorical Counts
     logger.info(f"Unique Species: {df['Species'].nunique()}")
+    counts = df['Species'].value_counts()
+    logger.info("  Species Breakdown:")
+    for s, count in counts.items():
+        logger.info(f"    - {s:25}: {count}")
+        
     logger.info(f"Unique States : {df['State'].nunique()} ({', '.join(df['State'].unique())})")
     
     # Seasonality
     if 'Sampling_Date' in df.columns:
         months = pd.to_datetime(df['Sampling_Date']).dt.month
         logger.info(f"Unique Months : {months.nunique()}")
+
+def upsample_minority_classes(df, target_col, threshold, logger):
+    """
+    Upsamples under-represented classes in target_col in the training set
+    to reach a minimum sample threshold.
+    """
+    counts = df[target_col].value_counts()
+    minority_classes = counts[counts < threshold].index
+    
+    if len(minority_classes) == 0:
+        return df
+        
+    logger.info(f"Upsampling Regime: Boosting {len(minority_classes)} '{target_col}' classes to {threshold} samples.")
+    upsampled_dfs = [df]
+    for cls in minority_classes:
+        cls_df = df[df[target_col] == cls]
+        num_to_add = threshold - len(cls_df)
+        if num_to_add > 0:
+            added_df = cls_df.sample(n=num_to_add, replace=True, random_state=42)
+            upsampled_dfs.append(added_df)
+            
+    new_df = pd.concat(upsampled_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    logger.info(f"Regime complete. Training size increased from {len(df)} to {len(new_df)} samples.")
+    return new_df
 
 @torch.no_grad()
 def validate(model, loader, criterion_biomass, criterion_aux, criterion_species, criterion_month, device):
@@ -213,19 +242,27 @@ def run_training():
         f.write(json.dumps(metadata, indent=4).encode('utf-8'))
     logger.info(f"Metadata saved to {os.path.join(session_dir, 'metadata.json')}")
 
-    # 3. Prepare Groups for GroupKFold
+    # 3. Prepare Groups and Stratification Targets
     df['group'] = df['State'] + "_" + df['season'] + "_" + df['Sampling_Date'].astype(str)
+    # Create Height Bins for more granular sampling (Low, Med, High)
+    df['height_bin'] = pd.qcut(df['Height_Ave_cm_log'], 3, labels=['Short', 'Mid', 'Tall'])
+    df['upsample_target'] = df['Species'].astype(str) + "_" + df['height_bin'].astype(str)
     
-    gkf = GroupKFold(n_splits=N_FOLDS)
+    sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     train_transform, val_transform = get_image_data_transforms()
     
     fold_results = []
     
-    for fold, (train_idx, val_idx) in enumerate(gkf.split(df, groups=df['group'])):
+    # Stratify by Species while respecting farm-day groups
+    for fold, (train_idx, val_idx) in enumerate(sgkf.split(df, y=df['Species'], groups=df['group'])):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
         
         train_df = df.iloc[train_idx]
         val_df = df.iloc[val_idx]
+        
+        # apply upsampling regime to train_df ONLY
+        # We ensure every Species x Height combo has a minimum presence
+        train_df = upsample_minority_classes(train_df, 'upsample_target', threshold=8, logger=logger)
         
         train_ds = BiomassDataset(train_df, transform=train_transform, species_to_id=metadata['species_to_id'])
         val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=metadata['species_to_id'])

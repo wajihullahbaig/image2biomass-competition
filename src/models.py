@@ -88,13 +88,12 @@ class BiomassUnifiedModel(nn.Module):
         aux_out = self.aux_head(img_feats) 
         aux_out_clamped = torch.clamp(aux_out, 0.0, 10.0)
             
-        # FEATURE BOOSTING:
-        # Scale the sturdy features so they aren't drowned out
+        # --- FUSION OF ALL FEATURES ---
         combined_feats = torch.cat([
             img_feats, 
             aux_out_clamped, 
             species_probs,
-            month_logits # Add explicit seasonality (Predicted)
+            month_logits
         ], dim=1)
         
         # --- PHYSICS-INFORMED HEAD ---

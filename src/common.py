@@ -148,7 +148,7 @@ def get_image_data_transforms()->tuple:
             ])
     return train_transform, val_transform  
 
-def apply_tta(model, image, device, n_passes=1, month_input=None):
+def apply_tta(model, image, device, n_passes=1):
     """
     Performs Test-Time Augmentation (TTA) using 5-Crop + Flips.
     """
@@ -156,7 +156,6 @@ def apply_tta(model, image, device, n_passes=1, month_input=None):
     all_biomass = []
     all_aux = []
     all_species = []
-    
     all_month = []
     
     # 1. Standard Views (Original, Flips, Rotations)
@@ -174,8 +173,7 @@ def apply_tta(model, image, device, n_passes=1, month_input=None):
         
         with torch.no_grad():
             img_aug = aug_fn(image)
-            # Pass month_input if available
-            b, a, s, m = model(img_aug, month_input=month_input)
+            b, a, s, m = model(img_aug)
             all_biomass.append(b)
             all_aux.append(a)
             all_species.append(s)
@@ -439,3 +437,5 @@ def upsample_minority_classes(df, target_col, logger):
         logger.info(f"  - {cls}: {new_counts[cls]} samples")
     
     return new_df
+
+

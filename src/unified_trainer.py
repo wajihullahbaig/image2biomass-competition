@@ -337,10 +337,10 @@ def run_training():
                         f"H_R2 (Group): {holdout_metrics['r2']:.4f}")
             
             # Save based on Inner Stratified R2 (Optimization Goal)
-            val_r2 = val_metrics['r2']
-            if val_r2 > best_r2:
-                best_r2 = val_r2
-                logger.info(f"New Best Stratified R2: {best_r2:.4f} (Holdout: {holdout_metrics['r2']:.4f})")
+            holdout_r2 = holdout_metrics['r2']
+            if holdout_r2 > best_r2:
+                best_r2 = holdout_r2
+                logger.info(f"New Best R2: Holdout: {holdout_metrics['r2']:.4f} - Stratified: {val_metrics['r2']:.4f} ")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold}.pth"))
             
             plot_training_history(history, fold, session_dir)

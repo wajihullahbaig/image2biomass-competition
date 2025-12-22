@@ -70,70 +70,87 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     wide.to_csv('wide.csv', index=False)
     return wide
     
+# def get_image_data_transforms()->tuple:
+#     """
+#     Returns the training and validation data augmentation transforms.
+#     Focus on geometric invariance while preserving photometric signal (greenness).
+#     """
+#     # Data Augmentation Transforms for small dataset (357 samples)
+#     train_transform = transforms.Compose([
+#         # 1. Structural/Scale (Resizing happens here)
+#         # Using scale >= 0.7 to avoid losing the plot context
+#         transforms.RandomResizedCrop(size=IMAGE_SIZE, scale=(0.7, 1.0), ratio=(0.9, 1.1)),
+        
+#         # 2. Geometric (Full Invariance)
+#         transforms.RandomHorizontalFlip(p=0.5),
+#         transforms.RandomVerticalFlip(p=0.5),
+        
+#         # 90-degree rotations are often cleaner for plant layouts than arbitrary degrees
+#         transforms.RandomChoice([
+#             transforms.RandomRotation((0, 0)),
+#             transforms.RandomRotation((90, 90)),
+#             transforms.RandomRotation((180, 180)),
+#             transforms.RandomRotation((270, 270)),
+#         ]),
+        
+#         # 3. Photometric (Conservative)
+#         # CRITICAL: Keep hue jitter very low (<= 0.02) to maintain biomass-greenness relationship
+#         transforms.ColorJitter(
+#             brightness=0.15, 
+#             contrast=0.15, 
+#             saturation=0.1, 
+#             hue=0.01 
+#         ),
+        
+#         # 4. Noise/Blur
+#         transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.3),
+        
+#         # 5. Conversion
+#         transforms.ToTensor(),
+#         transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+        
+#         # 6. Occlusion (Post-Tensor)
+#         # RandomErasing / Cutout forces model to learn global features
+#         transforms.RandomErasing(p=0.3, scale=(0.02, 0.2), ratio=(0.3, 3.3))
+#     ])
+
+#     val_transform = transforms.Compose([
+#         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+#         transforms.ToTensor(),
+#         transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+#     ])
+#     return train_transform, val_transform       
+
 def get_image_data_transforms()->tuple:
     """
     Returns the training and validation data augmentation transforms.
-    Focus on geometric invariance while preserving photometric signal (greenness).
     """
-    # Data Augmentation Transforms for small dataset (357 samples)
+    # Data Augmentation Transforms
     train_transform = transforms.Compose([
-        # 1. Structural/Scale (Resizing happens here)
-        # Using scale >= 0.7 to avoid losing the plot context
-        transforms.RandomResizedCrop(size=IMAGE_SIZE, scale=(0.7, 1.0), ratio=(0.9, 1.1)),
-        
-        # 2. Geometric (Full Invariance)
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),
-        
-        # 90-degree rotations are often cleaner for plant layouts than arbitrary degrees
-        transforms.RandomChoice([
-            transforms.RandomRotation((0, 0)),
-            transforms.RandomRotation((90, 90)),
-            transforms.RandomRotation((180, 180)),
-            transforms.RandomRotation((270, 270)),
-        ]),
-        
-        # 3. Photometric (Conservative)
-        # CRITICAL: Keep hue jitter very low (<= 0.02) to maintain biomass-greenness relationship
-        transforms.ColorJitter(
-            brightness=0.15, 
-            contrast=0.15, 
-            saturation=0.1, 
-            hue=0.01 
-        ),
-        
-        # 4. Noise/Blur
-        transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.3),
-        
-        # 5. Conversion
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-        
-        # 6. Occlusion (Post-Tensor)
-        # RandomErasing / Cutout forces model to learn global features
-        transforms.RandomErasing(p=0.3, scale=(0.02, 0.2), ratio=(0.3, 3.3))
-    ])
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomVerticalFlip(),
+                transforms.RandomRotation(15),
+                transforms.RandomAutocontrast(),
+                transforms.RandomEqualize(),
+                transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+                transforms.RandomGrayscale(p=0.25),
+                transforms.RandomResizedCrop(size=(IMAGE_SIZE, IMAGE_SIZE), scale=(0.8, 1.0)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+            ])
 
     val_transform = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-    ])
-    return train_transform, val_transform       
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+            ])
+    return train_transform, val_transform  
 
-def apply_tta(model, image, device, n_passes=1):
+def apply_tta(model, image, device, n_passes=1, month_input=None):
     """
     Performs Test-Time Augmentation (TTA) using 5-Crop + Flips.
-    Input image: (B, 3, 224, 224) - This is the Resized version.
-    BUT for 5-crop we need the original higher res. 
-    Since we don't have that here (the dataloader already resized it), 
-    we will stick to FLIPS/ROTATIONS which are very effective.
-    
-    If the user strictly wants 5-Crop TTA, we would need to change the Dataloader 
-    to return 5 images per sample, which requires changing the Model validation loop
-    to handle (B, 5, 3, H, W).
-    
-    For now, let's stick to the robust FLIP/ROTATE TTA which we know works with the current pipeline.
     """
     model.eval()
     all_biomass = []
@@ -157,7 +174,8 @@ def apply_tta(model, image, device, n_passes=1):
         
         with torch.no_grad():
             img_aug = aug_fn(image)
-            b, a, s, m = model(img_aug)
+            # Pass month_input if available
+            b, a, s, m = model(img_aug, month_input=month_input)
             all_biomass.append(b)
             all_aux.append(a)
             all_species.append(s)
@@ -315,6 +333,13 @@ def plot_training_history(history, fold, session_dir):
     plt.subplot(1, 2, 2)
     if 'val_r2' in history:
         plt.plot(history['val_r2'], label='Val R2 (Special)', color='green', linewidth=2)
+    
+    plt.title(f'Fold {fold+1} - Validation Metric (R2)')
+    plt.xlabel('Epoch')
+    plt.ylabel('R2 Score')
+    plt.legend()
+    if 'holdout_r2' in history:
+        plt.plot(history['holdout_r2'], label='Holdout R2 (Strict)', color='red', linewidth=2, linestyle=':')
     
     plt.title(f'Fold {fold+1} - Validation Metric (R2)')
     plt.xlabel('Epoch')

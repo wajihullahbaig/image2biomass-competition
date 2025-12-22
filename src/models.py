@@ -48,13 +48,13 @@ class BiomassUnifiedModel(nn.Module):
         fusion_dim = FUSION_DIM
         
         self.biomass_head = nn.Sequential(
-            nn.Linear(self.backbone_dim + num_aux + num_species, fusion_dim),
+            nn.Linear(self.backbone_dim + num_aux + num_species + 2, fusion_dim), # +2 for Month Sin/Cos
             nn.BatchNorm1d(fusion_dim),
             nn.ReLU(),
             nn.Dropout(0.4),
             nn.Linear(fusion_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, num_targets),
+            nn.Linear(128, 3), # OUTPUT: [Clover, Dead, Green] ONLY
             nn.Softplus() # Ensures positive outputs
         )
 
@@ -73,7 +73,7 @@ class BiomassUnifiedModel(nn.Module):
             for m in self.backbone.modules():
                 if isinstance(m, nn.BatchNorm2d): m.eval()
 
-    def forward(self, x):
+    def forward(self, x, month_input=None):
         # Extract features from image
         img_feats = self.backbone(x) # (B, backbone_dim)
         
@@ -88,18 +88,39 @@ class BiomassUnifiedModel(nn.Module):
         aux_out = self.aux_head(img_feats) 
         aux_out_clamped = torch.clamp(aux_out, 0.0, 10.0)
         
+        # Ensure month_input is present
+        if month_input is None:
+            # Fallback to zeros if not provided (should not happen in training)
+            month_input = torch.zeros(x.shape[0], 2, device=x.device)
+            
         # FEATURE BOOSTING:
         # Scale the sturdy features so they aren't drowned out
-        # We DO NOT include month predictions in the fusion, it is purely a backbone teacher
         combined_feats = torch.cat([
             img_feats, 
-            aux_out_clamped * AUX_FEAT_WEIGHT, 
-            species_probs * SPECIES_FEAT_WEIGHT
+            aux_out_clamped, 
+            species_probs,
+            month_input # Add explicit seasonality
         ], dim=1)
         
-        # Predict biomass targets
-        biomass_out = self.biomass_head(combined_feats)
-        biomass_out = torch.clamp(biomass_out, 0.0, 256.0)
+        # --- PHYSICS-INFORMED HEAD ---
+        # 1. Predict ONLY Components (Clover, Dead, Green)
+        # We use Softplus ensuring non-negative raw mass (0 to inf)
+        components_pred = self.biomass_head(combined_feats) # (B, 3)
+        components_pred = torch.clamp(components_pred, 0.0, 256.0)
+        
+        c = components_pred[:, 0:1] # Clover
+        d = components_pred[:, 1:2] # Dead
+        g = components_pred[:, 2:3] # Green
+        
+        # 2. Physics Constraints (Performed in Computational Graph)
+        # Total = Clover + Dead + Green
+        # GDM   = Clover + Green
+        total = c + d + g
+        gdm   = c + g
+        
+        # 3. Concatenate for Loss Calculation (Order: C, D, G, Total, GDM)
+        # This allows gradients from 'Total' loss to flow back to C, D, G
+        biomass_out = torch.cat([c, d, g, total, gdm], dim=1)
         
         return biomass_out, aux_out, species_logits, month_logits
 

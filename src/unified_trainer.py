@@ -41,7 +41,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         optimizer.zero_grad()
         
         # Forward pass
-        biomass_pred, aux_pred, species_logits, month_logits = model(images, month_input=month_target)
+        biomass_pred, aux_pred, species_logits, month_logits = model(images)
         
         # Loss calculation
         # 1. Biomass Loss (Weighted MSE)
@@ -141,9 +141,9 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             
             # Forward pass (now in Raw Space)
             if USE_TTA:
-                biomass_pred, aux_pred, species_logits, month_logits = apply_tta(model, images, device, n_passes=5, month_input=month_target)
+                biomass_pred, aux_pred, species_logits, month_logits = apply_tta(model, images, device, n_passes=5)
             else:
-                biomass_pred, aux_pred, species_logits, month_logits = model(images, month_input=month_target)
+                biomass_pred, aux_pred, species_logits, month_logits = model(images)
             
             # 1. Prediction Clamping (Max 256.0 grams)
             # Physical limit and biomass cannot be negative
@@ -174,10 +174,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             
     all_targets = np.concatenate(all_targets)
     all_preds_biomass = np.concatenate(all_preds_biomass)
-    
-    # 2. Physics Constrains are now built-in to the model!
-    # all_preds_biomass = enforce_physical_constraints(all_preds_biomass)
-    
+       
     # Calculate R2 Score (Official Weighted Global Metric)
     # We use the OFFICIAL_WEIGHTS from configs.py
     # Order: [Clover, Dead, Green, Total, GDM]

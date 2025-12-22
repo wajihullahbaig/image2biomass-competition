@@ -73,7 +73,7 @@ class BiomassUnifiedModel(nn.Module):
             for m in self.backbone.modules():
                 if isinstance(m, nn.BatchNorm2d): m.eval()
 
-    def forward(self, x, month_input=None):
+    def forward(self, x):
         # Extract features from image
         img_feats = self.backbone(x) # (B, backbone_dim)
         
@@ -81,17 +81,12 @@ class BiomassUnifiedModel(nn.Module):
         species_logits = self.species_head(self.species_dropout(img_feats)) 
         species_probs = torch.softmax(species_logits, dim=1)
         
-        # Predict month (categorical logits) - Regularizer only
+        # Predict month (categorical logits)
         month_logits = self.month_head(self.month_dropout(img_feats))
         
         # Predict auxiliary features (NDVI, Height)
         aux_out = self.aux_head(img_feats) 
         aux_out_clamped = torch.clamp(aux_out, 0.0, 10.0)
-        
-        # Ensure month_input is present
-        if month_input is None:
-            # Fallback to zeros if not provided (should not happen in training)
-            month_input = torch.zeros(x.shape[0], 2, device=x.device)
             
         # FEATURE BOOSTING:
         # Scale the sturdy features so they aren't drowned out
@@ -99,7 +94,7 @@ class BiomassUnifiedModel(nn.Module):
             img_feats, 
             aux_out_clamped, 
             species_probs,
-            month_input # Add explicit seasonality
+            month_logits # Add explicit seasonality (Predicted)
         ], dim=1)
         
         # --- PHYSICS-INFORMED HEAD ---
@@ -122,7 +117,7 @@ class BiomassUnifiedModel(nn.Module):
         # This allows gradients from 'Total' loss to flow back to C, D, G
         biomass_out = torch.cat([c, d, g, total, gdm], dim=1)
         
-        return biomass_out, aux_out, species_logits, month_logits
+        return biomass_out, aux_out_clamped, species_logits, month_logits
 
 # Weight Initialization
 def initialize_weights(model):

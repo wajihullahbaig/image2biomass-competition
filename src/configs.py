@@ -11,7 +11,7 @@ IMAGE_SIZE = 384
 BATCH_SIZE = 32 
 LEARNING_RATE = 2e-4 
 N_FOLDS = 4
-STAGE1_EPOCHS = 50 
+STAGE1_EPOCHS = 40 
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -20,7 +20,7 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
 # training settings
 FREEZE_BACKBONE = False
-BACKBONE_FREEZE_FRACTION = 0.0
+BACKBONE_FREEZE_FRACTION = 0.8
 USE_TTA = True
 
 # Model Settings

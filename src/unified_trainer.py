@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from configs import *
 from common import (
-    load_data, setup_logging, set_seed, get_image_data_transforms,
+    check_group_leakage, load_data, setup_logging, set_seed, get_image_data_transforms,
     calculate_global_weighted_r2, enforce_physical_constraints,
     plot_training_history, apply_tta, upsample_minority_classes
 )
@@ -223,19 +223,26 @@ def run_training():
     # Shuffle DF to ensure random groups for GroupKFold (which doesn't shuffle)
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
     
-    df['group'] = df['State'].astype(str) + "_" + df['Sampling_Date'].astype(str)
-    
-    gkf = GroupKFold(n_splits=N_FOLDS)
-    train_transform, val_transform = get_image_data_transforms()
-    
+    train_transform, val_transform = get_image_data_transforms()    
     fold_results = []
+    gkf = GroupKFold(n_splits=N_FOLDS)    
+    df['group'] = df["State"] + "_" +   df["Sampling_Date"].astype(str) + "_" + df["season"].astype(str)        
     
     # Outer Split: Group-based
-    for fold, (outer_train_idx, outer_holdout_idx) in enumerate(gkf.split(df, y=df['Species'], groups=df['group'])):
+    for fold, (outer_train_idx, outer_holdout_idx) in enumerate(gkf.split(df,groups=df['group'])):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
         
         df_outer_train = df.iloc[outer_train_idx]
         df_holdout = df.iloc[outer_holdout_idx]
+        check_group_leakage(df_outer_train, df_holdout)
+
+        # create path and save outer split csvs        
+        outer_df_path = os.path.join(session_dir,"splits", f"fold{fold+1}_train.csv")
+        os.makedirs(os.path.dirname(outer_df_path), exist_ok=True)
+        df_outer_train.to_csv(outer_df_path, index=False)
+        df_holdout_path = os.path.join(session_dir, "splits", f"fold{fold+1}_holdout.csv")
+        os.makedirs(os.path.dirname(df_holdout_path), exist_ok=True)
+        df_holdout.to_csv(df_holdout_path, index=False)
         
         # Inner Split: Stratified by Species (Optimization Set)
         # We take 20% of the TRAINING data to act as the validation set for the scheduler/early stopping

@@ -30,7 +30,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.5),
             nn.Linear(128, num_species)
         )
         
@@ -51,7 +51,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim + num_aux + num_species + 2, fusion_dim), # +2 for Month Sin/Cos
             nn.BatchNorm1d(fusion_dim),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.5),
             nn.Linear(fusion_dim, 256),
             nn.ReLU(),
             nn.Linear(256, 3), # OUTPUT: [Clover, Dead, Green] ONLY
@@ -81,17 +81,17 @@ class BiomassUnifiedModel(nn.Module):
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
-        # Predict month (categorical logits)
+        # Predict month (continous logits)
         month_logits = self.month_head(img_feats)
         
         # Predict auxiliary features (NDVI, Height)
         aux_out = self.aux_head(img_feats) 
-        aux_out_clamped = torch.clamp(aux_out, 0.0, 10.0)
+        #aux_out = torch.clamp(aux_out, 0.0, 10.0)
             
         # --- FUSION OF ALL FEATURES ---
         combined_feats = torch.cat([
             img_feats, 
-            aux_out_clamped, 
+            aux_out, 
             species_probs,
             month_logits
         ], dim=1)
@@ -100,7 +100,7 @@ class BiomassUnifiedModel(nn.Module):
         # 1. Predict ONLY Components (Clover, Dead, Green)
         # We use Softplus ensuring non-negative raw mass (0 to inf)
         components_pred = self.biomass_head(combined_feats) # (B, 3)
-        components_pred = torch.clamp(components_pred, 0.0, 256.0)
+        #components_pred = torch.clamp(components_pred, 0.0, 256.0)
         
         c = components_pred[:, 0:1] # Clover
         d = components_pred[:, 1:2] # Dead
@@ -116,7 +116,7 @@ class BiomassUnifiedModel(nn.Module):
         # This allows gradients from 'Total' loss to flow back to C, D, G
         biomass_out = torch.cat([c, d, g, total, gdm], dim=1)
         
-        return biomass_out, aux_out_clamped, species_logits, month_logits
+        return biomass_out, aux_out, species_logits, month_logits
 
 # Weight Initialization
 def initialize_weights(model):

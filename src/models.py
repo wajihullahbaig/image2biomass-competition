@@ -25,16 +25,15 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(256, num_aux)
         )
         
-        # Multi-task heads with amnesia (dropout) to prevent memorization
-        self.species_dropout = nn.Dropout(0.5)
+        # Multi-task heads 
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(128, num_species)
         )
         
-        self.month_dropout = nn.Dropout(0.5)
-        # 4. Month Head (Cyclical Regression - Regularizer)
+        # 4. Month Head (Cyclical Regression)
         # Forces backbone to learn seasonal cycles (sin/cos)
         self.month_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
@@ -78,11 +77,11 @@ class BiomassUnifiedModel(nn.Module):
         img_feats = self.backbone(x) # (B, backbone_dim)
         
         # Predict species (categorical logits)
-        species_logits = self.species_head(self.species_dropout(img_feats)) 
+        species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
         # Predict month (categorical logits)
-        month_logits = self.month_head(self.month_dropout(img_feats))
+        month_logits = self.month_head(img_feats)
         
         # Predict auxiliary features (NDVI, Height)
         aux_out = self.aux_head(img_feats) 

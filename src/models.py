@@ -28,6 +28,7 @@ class BiomassUnifiedModel(nn.Module):
         # Multi-task heads 
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(128, num_species)
@@ -37,13 +38,13 @@ class BiomassUnifiedModel(nn.Module):
         # Forces backbone to learn seasonal cycles (sin/cos)
         self.month_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(128, 2) # Sin, Cos
         )
         
         # 5. Biomass Head
-        # Fusion Dim is now controlled by config (512)
         fusion_dim = FUSION_DIM
         
         self.biomass_head = nn.Sequential(
@@ -51,9 +52,9 @@ class BiomassUnifiedModel(nn.Module):
             nn.BatchNorm1d(fusion_dim),
             nn.ReLU(),
             nn.Dropout(0.4),
-            nn.Linear(fusion_dim, 128),
+            nn.Linear(fusion_dim, 256),
             nn.ReLU(),
-            nn.Linear(128, 3), # OUTPUT: [Clover, Dead, Green] ONLY
+            nn.Linear(256, 3), # OUTPUT: [Clover, Dead, Green] ONLY
             nn.Softplus() # Ensures positive outputs
         )
 

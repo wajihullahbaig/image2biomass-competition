@@ -230,14 +230,14 @@ def run_training():
     
     # Outer Split: Group-based
     for fold, (outer_train_idx, outer_holdout_idx) in enumerate(gkf.split(df,groups=df['group'])):
-        logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
+        logger.info(f"\n{'='*20} Fold {fold}/{N_FOLDS} {'='*20}")
         
         df_outer_train = df.iloc[outer_train_idx]
         df_holdout = df.iloc[outer_holdout_idx]
         check_group_leakage(df_outer_train, df_holdout)
 
         # create path and save outer split csvs        
-        outer_df_path = os.path.join(session_dir,"splits", f"fold{fold+1}_train.csv")
+        outer_df_path = os.path.join(session_dir,"splits", f"fold{fold}_train.csv")
         os.makedirs(os.path.dirname(outer_df_path), exist_ok=True)
         df_outer_train.to_csv(outer_df_path, index=False)
         df_holdout_path = os.path.join(session_dir, "splits", f"fold{fold}_holdout.csv")
@@ -263,8 +263,8 @@ def run_training():
         holdout_ds = BiomassDataset(df_holdout, transform=val_transform, species_to_id=metadata['species_to_id'])
         
         # Log Stats
-        log_dataset_stats(inner_val_df, logger, f"FOLD {fold+1} INNER VAL STATS (Stratified)")
-        log_dataset_stats(df_holdout, logger, f"FOLD {fold+1} OUTER HOLDOUT STATS (Groups)")
+        log_dataset_stats(inner_val_df, logger, f"FOLD {fold} INNER VAL STATS (Stratified)")
+        log_dataset_stats(df_holdout, logger, f"FOLD {fold} OUTER HOLDOUT STATS (Groups)")
         
         # Loaders
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, drop_last=True)

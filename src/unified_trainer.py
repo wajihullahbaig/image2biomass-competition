@@ -46,7 +46,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         # Loss calculation
         # 1. Biomass Loss (Weighted MSE)
         weights = COL_WEIGHTS_TENSOR.view(1, -1)
-        loss_biomass = criterion_biomass(biomass_pred, targets)
+        loss_biomass = criterion_biomass(biomass_pred, targets) /1000.0 # Scale down for stability
         loss_biomass = (loss_biomass * weights).sum() / weights.sum()
         
         # 2. Auxiliary Loss (Huber on NDVI/Height)
@@ -80,7 +80,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         running_loss_month += loss_month.item()
         
         pbar.set_postfix({
-            'L_Bio': f"{loss_biomass.item()/1000:.4f}", 
+            'L_Bio': f"{loss_biomass.item():.4f}", 
             'L_Aux': f"{loss_aux.item():.4f}",
             'L_Sp': f"{loss_species.item():.4f}",
             'L_Mo': f"{loss_month.item():.4f}"
@@ -151,7 +151,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             
             # Loss Calculation
             weights = COL_WEIGHTS_TENSOR.view(1, -1)
-            loss_biomass = criterion_biomass(biomass_pred, targets)
+            loss_biomass = criterion_biomass(biomass_pred, targets)/ 1000.0 # Scale down for stability
             loss_biomass = (loss_biomass * weights).sum() / weights.sum()
             
             loss_aux = criterion_aux(aux_pred, aux_feats).mean()

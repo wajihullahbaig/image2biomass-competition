@@ -236,7 +236,7 @@ def run_training():
         df_holdout = df.iloc[outer_holdout_idx]
         check_group_leakage(df_outer_train, df_holdout)
 
-        # create path and save outer split csvs        
+        # create path and save splits        
         outer_df_path = os.path.join(session_dir,"splits", f"fold{fold}_train.csv")
         os.makedirs(os.path.dirname(outer_df_path), exist_ok=True)
         df_outer_train.to_csv(outer_df_path, index=False)
@@ -337,11 +337,15 @@ def run_training():
             history['val_loss_species'].append(val_metrics['loss_species'])
             history['val_loss_month'].append(val_metrics['loss_month'])
             
-            logger.info(f"Epoch {epoch+1}/{STAGE1_EPOCHS} | "
-                        f"T_Loss: {train_metrics['loss']/1000.0:.2f}k | "
-                        f"V_Loss: {val_metrics['loss']/1000.0:.2f}k | "
-                        f"V_R2 (Strat): {val_metrics['r2']:.4f} | "
-                        f"H_R2 (Group): {holdout_metrics['r2']:.4f}")
+            # detailed logging of each component loss per epoch
+            logger.info(
+                f"Epoch [{epoch+1}/{STAGE1_EPOCHS}] "
+                f"Train Loss: {train_metrics['loss']:.4f} (Bio: {train_metrics['loss_biomass']:.4f}, Aux: {train_metrics['loss_aux']:.4f}, Sp: {train_metrics['loss_species']:.4f}, Mo: {train_metrics['loss_month']:.4f}) | "
+                f"Val Loss: {val_metrics['loss']:.4f} (Bio: {val_metrics['loss_biomass']:.4f}, Aux: {val_metrics['loss_aux']:.4f}, Sp: {val_metrics['loss_species']:.4f}, Mo: {val_metrics['loss_month']:.4f}) | "
+                f"Val R2: {val_metrics['r2']:.4f} | "
+                f"Holdout R2: {holdout_metrics['r2']:.4f}"
+            )
+            
             
             # Save based on Inner Stratified R2 (Optimization Goal)
             holdout_r2 = holdout_metrics['r2']

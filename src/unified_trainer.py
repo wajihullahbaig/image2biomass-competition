@@ -240,7 +240,7 @@ def run_training():
         outer_df_path = os.path.join(session_dir,"splits", f"fold{fold+1}_train.csv")
         os.makedirs(os.path.dirname(outer_df_path), exist_ok=True)
         df_outer_train.to_csv(outer_df_path, index=False)
-        df_holdout_path = os.path.join(session_dir, "splits", f"fold{fold+1}_holdout.csv")
+        df_holdout_path = os.path.join(session_dir, "splits", f"fold{fold}_holdout.csv")
         os.makedirs(os.path.dirname(df_holdout_path), exist_ok=True)
         df_holdout.to_csv(df_holdout_path, index=False)
         

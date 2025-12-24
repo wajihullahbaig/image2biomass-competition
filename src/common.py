@@ -326,7 +326,7 @@ def plot_training_history(history, fold, session_dir):
     if 'val_loss_month' in history:
         plt.plot(history['val_loss_month'], label='Month Val Loss', linestyle='-', alpha=0.4, color='purple')
         
-    plt.title(f'Fold {fold+1} - Training Progress (Loss)')
+    plt.title(f'Fold {fold} - Training Progress (Loss)')
     plt.xlabel('Epoch')
     plt.ylabel('Loss Value')
     plt.legend()
@@ -337,14 +337,14 @@ def plot_training_history(history, fold, session_dir):
     if 'val_r2' in history:
         plt.plot(history['val_r2'], label='Val R2 (Special)', color='green', linewidth=2)
     
-    plt.title(f'Fold {fold+1} - Validation Metric (R2)')
+    plt.title(f'Fold {fold} - Validation Metric (R2)')
     plt.xlabel('Epoch')
     plt.ylabel('R2 Score')
     plt.legend()
     if 'holdout_r2' in history:
         plt.plot(history['holdout_r2'], label='Holdout R2 (Strict)', color='red', linewidth=2, linestyle=':')
     
-    plt.title(f'Fold {fold+1} - Validation Metric (R2)')
+    plt.title(f'Fold {fold} - Validation Metric (R2)')
     plt.xlabel('Epoch')
     plt.ylabel('R2 Score')
     plt.legend()
@@ -352,7 +352,7 @@ def plot_training_history(history, fold, session_dir):
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f"fold_{fold+1}_metrics.png"))
+    plt.savefig(os.path.join(save_dir, f"fold_{fold}_metrics.png"))
     plt.close()
 
 def calculate_global_weighted_r2(y_true, y_pred, weights):

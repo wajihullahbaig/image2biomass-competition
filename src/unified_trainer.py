@@ -195,7 +195,7 @@ def run_training():
     session_dir = setup_logging(file_name_part="Unified_Trainer")
     logger = logging.getLogger("System Logger")
     set_seed(42, logger)
-    
+    logger.info(config_str())
     df = load_data(logger)
     
     # Log Global Stats
@@ -288,7 +288,7 @@ def run_training():
         scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer, 
             max_lr=LEARNING_RATE,
-            epochs=STAGE1_EPOCHS,
+            epochs=EPOCHS,
             steps_per_epoch=steps_per_epoch
         )
         
@@ -299,7 +299,7 @@ def run_training():
             'val_loss_biomass': [], 'val_loss_aux': [], 'val_loss_species': [], 'val_loss_month': []
         }
         
-        for epoch in range(STAGE1_EPOCHS):
+        for epoch in range(EPOCHS):
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, 
                 criterion_biomass, criterion_aux, criterion_species, criterion_month,
@@ -339,7 +339,7 @@ def run_training():
             
             # detailed logging of each component loss per epoch
             logger.info(
-                f"Epoch [{epoch+1}/{STAGE1_EPOCHS}] "
+                f"Epoch [{epoch+1}/{EPOCHS}] "
                 f"Train Loss: {train_metrics['loss']:.4f} (Bio: {train_metrics['loss_biomass']:.4f}, Aux: {train_metrics['loss_aux']:.4f}, Sp: {train_metrics['loss_species']:.4f}, Mo: {train_metrics['loss_month']:.4f}) | "
                 f"Val Loss: {val_metrics['loss']:.4f} (Bio: {val_metrics['loss_biomass']:.4f}, Aux: {val_metrics['loss_aux']:.4f}, Sp: {val_metrics['loss_species']:.4f}, Mo: {val_metrics['loss_month']:.4f}) | "
                 f"Val R2: {val_metrics['r2']:.4f} | "
@@ -351,7 +351,7 @@ def run_training():
             holdout_r2 = holdout_metrics['r2']
             if holdout_r2 > best_r2:
                 best_r2 = holdout_r2
-                logger.info(f"New Best R2: Holdout: {holdout_metrics['r2']:.4f} - Stratified: {val_metrics['r2']:.4f} ")
+                logger.info(f"New Best R2: Stratified: {val_metrics['r2']:.4f} - Holdout: {holdout_metrics['r2']:.4f} ")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold}.pth"))
             
             plot_training_history(history, fold, session_dir)

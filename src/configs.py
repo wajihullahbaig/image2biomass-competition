@@ -8,10 +8,10 @@ IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 IMAGE_SIZE = 384
 # Training Hyperparameters
-BATCH_SIZE = 32 
-LEARNING_RATE = 2e-4 
+BATCH_SIZE = 16 
+LEARNING_RATE = 1e-4 
 N_FOLDS = 4
-STAGE1_EPOCHS = 40 
+EPOCHS = 50 
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -19,13 +19,36 @@ TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_
 OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
 COL_WEIGHTS_TENSOR = torch.tensor([1.0,1.0,1.0,1.0,1.0], device=DEVICE)
 # training settings
-FREEZE_BACKBONE = False
-BACKBONE_FREEZE_FRACTION = 0.8
+FREEZE_BACKBONE = True
+BACKBONE_FREEZE_FRACTION = 0.6
 USE_TTA = True
 
 # Model Settings
 FUSION_DIM = 512
 AUX_FEAT_WEIGHT = 1.0
-SPECIES_FEAT_WEIGHT = 1.0
+SPECIES_FEAT_WEIGHT = 1.5
 MONTH_FEAT_WEIGHT = 1.0
-BIOMASS_FEAT_WEIGHT = 1.0
+BIOMASS_FEAT_WEIGHT = 1.5
+
+# return a string representation of the configuration
+def config_str():
+    config_items = [
+        f"DEVICE: {DEVICE}",
+        f"IMAGE_SIZE: {IMAGE_SIZE}",
+        f"BATCH_SIZE: {BATCH_SIZE}",
+        f"LEARNING_RATE: {LEARNING_RATE}",
+        f"N_FOLDS: {N_FOLDS}",
+        f"EPOCHS: {EPOCHS}",
+        f"BACKBONE: {BACKBONE}",
+        f"TARGET_COLS: {TARGET_COLS}",
+        f"OFFICIAL_WEIGHTS: {OFFICIAL_WEIGHTS}",
+        f"FREEZE_BACKBONE: {FREEZE_BACKBONE}",
+        f"BACKBONE_FREEZE_FRACTION: {BACKBONE_FREEZE_FRACTION}",
+        f"USE_TTA: {USE_TTA}",
+        f"FUSION_DIM: {FUSION_DIM}",
+        f"AUX_FEAT_WEIGHT: {AUX_FEAT_WEIGHT}",
+        f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
+        f"MONTH_FEAT_WEIGHT: {MONTH_FEAT_WEIGHT}",
+        f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}"
+    ]
+    return "\n".join(config_items)

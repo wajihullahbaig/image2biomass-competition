@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from configs import *
 from common import (
-    check_group_leakage, load_data, setup_logging, set_seed, get_image_data_transforms,
+    check_group_leakage, load_data, setup_logging, set_seed, get_image_data_transforms_v1,
     calculate_global_weighted_r2, enforce_physical_constraints,
     plot_training_history, apply_tta, upsample_minority_classes
 )
@@ -223,7 +223,7 @@ def run_training():
     # Shuffle DF to ensure random groups for GroupKFold (which doesn't shuffle)
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
     
-    train_transform, val_transform = get_image_data_transforms()    
+    train_transform, val_transform = get_image_data_transforms_v1()    
     fold_results = []
     gkf = GroupKFold(n_splits=N_FOLDS)    
     df['group'] = df["State"] + "_" +   df["Sampling_Date"].astype(str) + "_" + df["season"].astype(str)        
@@ -250,7 +250,7 @@ def run_training():
         train_df, inner_val_df = train_test_split(
             df_outer_train, 
             test_size=0.2, 
-            stratify=df_outer_train['season'],
+            stratify=df_outer_train['Species'],
             random_state=42
         )
         

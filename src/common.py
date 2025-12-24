@@ -70,58 +70,63 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     wide.to_csv('wide.csv', index=False)
     return wide
     
-# def get_image_data_transforms()->tuple:
-#     """
-#     Returns the training and validation data augmentation transforms.
-#     Focus on geometric invariance while preserving photometric signal (greenness).
-#     """
-#     # Data Augmentation Transforms for small dataset (357 samples)
-#     train_transform = transforms.Compose([
-#         # 1. Structural/Scale (Resizing happens here)
-#         # Using scale >= 0.7 to avoid losing the plot context
-#         transforms.RandomResizedCrop(size=IMAGE_SIZE, scale=(0.7, 1.0), ratio=(0.9, 1.1)),
-        
-#         # 2. Geometric (Full Invariance)
-#         transforms.RandomHorizontalFlip(p=0.5),
-#         transforms.RandomVerticalFlip(p=0.5),
-        
-#         # 90-degree rotations are often cleaner for plant layouts than arbitrary degrees
-#         transforms.RandomChoice([
-#             transforms.RandomRotation((0, 0)),
-#             transforms.RandomRotation((90, 90)),
-#             transforms.RandomRotation((180, 180)),
-#             transforms.RandomRotation((270, 270)),
-#         ]),
-        
-#         # 3. Photometric (Conservative)
-#         # CRITICAL: Keep hue jitter very low (<= 0.02) to maintain biomass-greenness relationship
-#         transforms.ColorJitter(
-#             brightness=0.15, 
-#             contrast=0.15, 
-#             saturation=0.1, 
-#             hue=0.01 
-#         ),
-        
-#         # 4. Noise/Blur
-#         transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.3),
-        
-#         # 5. Conversion
-#         transforms.ToTensor(),
-#         transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-        
-#         # 6. Occlusion (Post-Tensor)
-#         # RandomErasing / Cutout forces model to learn global features
-#         transforms.RandomErasing(p=0.3, scale=(0.02, 0.2), ratio=(0.3, 3.3))
-#     ])
-
-#     val_transform = transforms.Compose([
-#         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-#         transforms.ToTensor(),
-#         transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-#     ])
-#     return train_transform, val_transform       
-
 def get_image_data_transforms()->tuple:
+    """
+    Returns the training and validation data augmentation transforms.
+    Focus on geometric invariance while preserving photometric signal (greenness).
+    """
+    # Data Augmentation Transforms for small dataset (357 samples)
+    train_transform = transforms.Compose([
+        # 1. Structural/Scale (Resizing happens here)
+        # Using scale >= 0.7 to avoid losing the plot context
+        transforms.RandomResizedCrop(size=IMAGE_SIZE, scale=(0.7, 1.0), ratio=(0.9, 1.1)),
+        
+        # 2. Geometric (Full Invariance)
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomVerticalFlip(p=0.5),
+        
+        # 90-degree rotations are often cleaner for plant layouts than arbitrary degrees
+        transforms.RandomChoice([
+            transforms.RandomRotation((0, 0)),
+            transforms.RandomRotation((90, 90)),
+            transforms.RandomRotation((180, 180)),
+            transforms.RandomRotation((270, 270)),
+        ]),
+        
+        # 3. Photometric (Conservative)
+        # CRITICAL: Keep hue jitter very low (<= 0.02) to maintain biomass-greenness relationship
+        transforms.ColorJitter(
+            brightness=0.15, 
+            contrast=0.15, 
+            saturation=0.1, 
+            hue=0.01 
+        ),
+        
+        # 4. Noise/Blur
+        transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.3),
+        
+        # 5. For texture
+        transforms.RandomGrayscale(p=0.25),
+
+        # 6. Conversion
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+        
+        # 7. Occlusion (Post-Tensor)
+        # RandomErasing / Cutout forces model to learn global features
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.2), ratio=(0.3, 3.3))
+
+        
+    ])
+
+    val_transform = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+    ])
+    return train_transform, val_transform       
+
+def get_image_data_transforms_v1()->tuple:
     """
     Returns the training and validation data augmentation transforms.
     """

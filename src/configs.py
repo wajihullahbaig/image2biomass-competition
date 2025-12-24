@@ -8,7 +8,7 @@ IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 IMAGE_SIZE = 384
 # Training Hyperparameters
-BATCH_SIZE = 16 
+BATCH_SIZE = 32 
 LEARNING_RATE = 1e-4 
 N_FOLDS = 4
 EPOCHS = 50 
@@ -28,7 +28,7 @@ FUSION_DIM = 512
 AUX_FEAT_WEIGHT = 1.0
 SPECIES_FEAT_WEIGHT = 1.5
 MONTH_FEAT_WEIGHT = 1.0
-BIOMASS_FEAT_WEIGHT = 1.5
+BIOMASS_FEAT_WEIGHT = 3.0
 
 # return a string representation of the configuration
 def config_str():

@@ -21,6 +21,8 @@ def generate_holdout(n_base_dates=2, seed=42):
 
     HOLDOUT_CSV = OUTPUT_DIR / 'holdout.csv'
     TRAIN_CSV = OUTPUT_DIR / 'train_filtered.csv'
+    HOLDOUT_REPORT = OUTPUT_DIR / 'holdout_report.csv'
+    SPECIES_REPORT = OUTPUT_DIR / 'holdout_species_detail.csv'
     
     random.seed(seed)
 
@@ -80,6 +82,37 @@ def generate_holdout(n_base_dates=2, seed=42):
     train_rows = [row for row in rows if row['sample_id'] not in holdout_sample_ids]
 
     # ============================================================================
+    # Analysis & Reporting
+    # ============================================================================
+    holdout_counts = Counter(row['Species'] for row in holdout_rows)
+    train_counts = Counter(row['Species'] for row in train_rows)
+    species_date_counts = {s: len(set(d for d, r in data)) for s, data in species_data.items()}
+
+    species_detail = []
+    conflicts = 0
+    for species in sorted(all_species_set):
+        h_count = holdout_counts[species]
+        t_count = train_counts[species]
+        total = h_count + t_count
+        d_count = species_date_counts[species]
+        
+        if t_count == 0: conflicts += 1
+        
+        h_states = set(row['State'] for row in holdout_rows if row['Species'] == species)
+        h_seasons = set(row['season'] for row in holdout_rows if row['Species'] == species)
+        
+        species_detail.append({
+            'Species': species,
+            'Total_Count': total,
+            'Train_Count': t_count,
+            'Holdout_Count': h_count,
+            'Unique_Dates': d_count,
+            'Holdout_States': '|'.join(sorted(h_states)),
+            'Holdout_Seasons': '|'.join(sorted(h_seasons)),
+            'In_Train': 'Yes' if t_count > 0 else 'NO',
+        })
+
+    # ============================================================================
     # Write Outputs
     # ============================================================================
     with open(HOLDOUT_CSV, 'w', newline='', encoding='utf-8') as f:
@@ -93,6 +126,22 @@ def generate_holdout(n_base_dates=2, seed=42):
             writer = csv.DictWriter(f, fieldnames=train_rows[0].keys())
             writer.writeheader()
             writer.writerows(train_rows)
+
+    with open(SPECIES_REPORT, 'w', newline='', encoding='utf-8') as f:
+        if species_detail:
+            writer = csv.DictWriter(f, fieldnames=species_detail[0].keys())
+            writer.writeheader()
+            writer.writerows(species_detail)
+
+    with open(HOLDOUT_REPORT, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Metric', 'Value'])
+        writer.writerow(['Total_Samples', len(rows)])
+        writer.writerow(['Holdout_Samples', len(holdout_rows)])
+        writer.writerow(['Train_Samples', len(train_rows)])
+        writer.writerow(['Holdout_Species_Covered', len(species_in_base.union(missing_species))])
+        writer.writerow(['Species_Missing_From_Train', conflicts])
+        writer.writerow(['Base_Holdout_Dates', '|'.join(map(str, base_holdout_dates))])
 
     return len(holdout_rows), len(train_rows)
 

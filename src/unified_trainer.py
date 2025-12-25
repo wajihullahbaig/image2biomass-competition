@@ -53,7 +53,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         loss_aux = criterion_aux(aux_pred, aux_feats).mean()
         
         # 3. Species Loss (Cross Entropy)
-        loss_species = criterion_species(species_logits, species_id)
+        loss_species = criterion_species(species_logits, species_id) / 10.0 # Scale down for stability
         
         # 4. Month Loss (Huber on Sin/Cos) - Phenology Regularizer
         loss_month = criterion_month(month_logits, month_target).mean()
@@ -155,7 +155,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             loss_biomass = (loss_biomass * weights).sum() / weights.sum()
             
             loss_aux = criterion_aux(aux_pred, aux_feats).mean()
-            loss_species = criterion_species(species_logits, species_id)
+            loss_species = criterion_species(species_logits, species_id)/10.0 # Scale down for stability
             loss_month = criterion_month(month_logits, month_target).mean()
             
             total_loss = (loss_biomass * BIOMASS_FEAT_WEIGHT) + \

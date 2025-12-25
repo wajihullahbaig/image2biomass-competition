@@ -46,7 +46,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux,
         weights = COL_WEIGHTS_TENSOR.view(1, -1)
         loss_bio = (nn.functional.huber_loss(biomass_pred, targets, reduction='none') * weights).sum() / weights.sum()
         loss_aux = criterion_aux(aux_pred, aux_feats).mean()
-        loss_sp = criterion_species(species_logits, species_id)
+        loss_sp = criterion_species(species_logits, species_id) / 10.0
         loss_mo = criterion_month(month_logits, month_target).mean()
         
         total = (loss_bio * BIOMASS_FEAT_WEIGHT + loss_aux * AUX_FEAT_WEIGHT + 

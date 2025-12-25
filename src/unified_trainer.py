@@ -209,7 +209,7 @@ def run_training():
         val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=metadata['species_to_id'])
         holdout_ds = BiomassDataset(df_holdout, transform=val_transform, species_to_id=metadata['species_to_id'])
         
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, drop_last=False)
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, drop_last=len(train_ds) > BATCH_SIZE)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
         holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False)
 

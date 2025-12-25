@@ -19,7 +19,7 @@ class BiomassUnifiedModel(nn.Module):
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(256, num_aux)
@@ -28,7 +28,7 @@ class BiomassUnifiedModel(nn.Module):
         # Multi-task heads 
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(64, num_species)
@@ -38,24 +38,24 @@ class BiomassUnifiedModel(nn.Module):
         # Forces backbone to learn seasonal cycles (sin/cos)
         self.month_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
-            nn.BatchNorm1d(128),
+            nn.LayerNorm(128),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(128, 2) # Sin, Cos
+            nn.Linear(128, 2)
         )
         
         # 5. Biomass Head
         fusion_dim = FUSION_DIM
         
         self.biomass_head = nn.Sequential(
-            nn.Linear(self.backbone_dim + num_aux + num_species + 2, fusion_dim), # +2 for Month Sin/Cos
-            nn.BatchNorm1d(fusion_dim),
+            nn.Linear(self.backbone_dim + num_aux + num_species + 2, fusion_dim),
+            nn.LayerNorm(fusion_dim),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(fusion_dim, 256),
             nn.ReLU(),
-            nn.Linear(256, 3), # OUTPUT: [Clover, Dead, Green] ONLY
-            nn.Softplus() # Ensures positive outputs
+            nn.Linear(256, 3),
+            nn.Softplus()
         )
 
     def freeze_backbone(self, freeze_fraction=BACKBONE_FREEZE_FRACTION):
@@ -133,6 +133,6 @@ def initialize_weights(model):
             nn.init.kaiming_normal_(m.weight)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.BatchNorm1d):
+        elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.weight, 1)
             nn.init.constant_(m.bias, 0)

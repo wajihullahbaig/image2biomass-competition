@@ -313,7 +313,7 @@ def plot_training_history(history, fold, session_dir):
     if 'train_loss scaled - biomass loss x(1/100)' in history:
         plt.plot(np.array(history['train_loss']), label='Total Train Loss', linewidth=2, color='tab:blue')
     if 'loss_biomass' in history:
-        plt.plot(np.array(history['loss_biomass']) * 100.0, label='Biomass Train Loss (x100)', linestyle='--', alpha=0.7)
+        plt.plot(np.array(history['loss_biomass']) / 100.0, label='Biomass Train Loss (x100)', linestyle='--', alpha=0.7)
     if 'loss_aux' in history:
         plt.plot(history['loss_aux'], label='Aux Train Loss', linestyle=':', alpha=0.7)
     if 'loss_species' in history:
@@ -324,7 +324,7 @@ def plot_training_history(history, fold, session_dir):
     if 'val_loss' in history:
         plt.plot(np.array(history['val_loss']), label='Total Val Loss', linewidth=2, color='tab:red')
     if 'val_loss_biomass' in history:
-        plt.plot(np.array(history['val_loss_biomass']) * 100.0, label='Biomass Val Loss (x100)', linestyle='--', color='tab:orange', alpha=0.7)
+        plt.plot(np.array(history['val_loss_biomass']) / 100.0, label='Biomass Val Loss (x100)', linestyle='--', color='tab:orange', alpha=0.7)
     if 'val_loss_aux' in history:
         plt.plot(history['val_loss_aux'], label='Aux Val Loss', linestyle=':', color='magenta', alpha=0.7)
     if 'val_loss_species' in history:

@@ -12,7 +12,7 @@ from torchvision import transforms
 import matplotlib.pyplot as plt
 from copy import deepcopy
 
-from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE
+from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE, BIOMASS_FEAT_WEIGHT
 
 class EWC:
     def __init__(self, model, dataloader, device, importance=1000):
@@ -30,7 +30,7 @@ class EWC:
             images = batch['image'].to(self.device)
             targets = batch['targets'].to(self.device)
             biomass_pred, _, _, _ = self.model(images)
-            loss = nn.functional.huber_loss(biomass_pred, targets)
+            loss = nn.functional.huber_loss(biomass_pred, targets) * BIOMASS_FEAT_WEIGHT
             loss.backward()
             for n, p in self.model.named_parameters():
                 if p.requires_grad and p.grad is not None:
@@ -99,20 +99,19 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     # Rename clean_id back to sample_id for consistency
     wide = wide.rename(columns={'clean_id': 'sample_id'})
     
-    # 6. SCALE TARGETS: Log-Space Scaling (log1p)
-    # This compresses the range [0, 250] grams into [0, 5.5] log units.
-    # It addresses the skewness and prevents magnitude bias.
+    # 6. SCALE TARGETS: KG Scale (Grams / 1000)
+    # This keeps values in [0, ~0.5] range mostly, suitable for neural nets.
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-    wide[target_cols] = np.log1p(wide[target_cols].astype(float))
+    wide[target_cols] = wide[target_cols].astype(float) / 1000.0
     
-    logger.info(f"Data Loaded Successfully. Rows: {len(wide)} (Targets Log-Scaled)")
+    logger.info(f"Data Loaded Successfully. Rows: {len(wide)} (Targets KG-Scaled)")
     
     # SANITY CHECK
     # Dry_Total should roughly equal components. 
     # If there's a massive mismatch, print warning.
     calc_total = wide['Dry_Clover_g'] + wide['Dry_Dead_g'] + wide['Dry_Green_g']
     diff = (wide['Dry_Total_g'] - calc_total).abs().mean()
-    logger.info(f"Average Physics Consistency Error (Total vs Sum): {diff:.4f}g")
+    logger.info(f"Average Physics Consistency Error (Total vs Sum): {diff:.6f} kg")
     wide.to_csv('wide.csv', index=False)
     return wide
     
@@ -360,7 +359,7 @@ def plot_training_history(history, fold, session_dir):
         axes[1].plot(history['val_loss_biomass'], label='Val CV Biomass', color='tab:red')
     if 'ind_loss_biomass' in history:
         axes[1].plot(history['ind_loss_biomass'], label='Ind Test Biomass', color='tab:green', linestyle=':')
-    axes[1].set_title('Biomass Loss (Log1p Space)')
+    axes[1].set_title('Biomass Loss (KG Scale)')
     axes[1].legend()
     
     # 3. Auxiliary Loss (NDVI/Height)
@@ -399,8 +398,8 @@ def plot_training_history(history, fold, session_dir):
     if 'holdout_r2' in history:
         axes[5].plot(history['holdout_r2'], label='Strict Ind-Test R2', color='green', linewidth=2)
     axes[5].set_title('R2 Metrics (Higher is Better)')
-    axes[5].set_ylim(-1.5, 1.5)
-    axes[5].axhline(y=0, color='black', linestyle='-', alpha=0.2)
+    axes[5].axhline(y=0, color='black', linestyle='-', alpha=0.5)
+    axes[5].set_ylim(-1.1, 1.1)
     axes[5].legend()
     
     for ax in axes:

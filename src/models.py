@@ -97,31 +97,27 @@ class BiomassUnifiedModel(nn.Module):
         ], dim=1)
         
         # --- PHYSICS-INFORMED HEAD ---
-        # 1. Predict Log-Components (log(1 + Clover), log(1 + Dead), log(1 + Green))
-        # Softplus ensures log predictions are positive (since mass >= 0, log(1+mass) >= 0)
-        log_components_pred = self.biomass_head(combined_feats) # (B, 3)
+        # 1. Predict raw KG Components (Clover, Dead, Green)
+        # Softplus ensures non-negative mass
+        raw_components_kg = self.biomass_head(combined_feats) # (B, 3)
         
-        # 2. Physics Constraints (Performed in Raw Gram Space)
-        # We must sum in RAW space, then convert BACK to Log space for the loss
-        raw_c = torch.expm1(log_components_pred[:, 0:1])
-        raw_d = torch.expm1(log_components_pred[:, 1:2])
-        raw_g = torch.expm1(log_components_pred[:, 2:3])
+        # 2. Extract Components 
+        raw_c = raw_components_kg[:, 0:1]
+        raw_d = raw_components_kg[:, 1:2]
+        raw_g = raw_components_kg[:, 2:3]
         
-        # Reconstruct Raw Aggregates
+        # 3. Reconstruct Aggregates (Linear Sum)
         raw_total = raw_c + raw_d + raw_g
         raw_gdm   = raw_c + raw_g
         
-        # 3. Convert Aggregates back to Log-Space (log1p)
-        log_total = torch.log1p(raw_total)
-        log_gdm   = torch.log1p(raw_gdm)
-        
-        # 4. Concatenate for Log-Space Loss (Order: C, D, G, Total, GDM)
+        # 4. Concatenate for Loss (Order: C, D, G, Total, GDM)
+        # All in KG scale
         biomass_out = torch.cat([
-            log_components_pred[:, 0:1], 
-            log_components_pred[:, 1:2], 
-            log_components_pred[:, 2:3], 
-            log_total, 
-            log_gdm
+            raw_c, 
+            raw_d, 
+            raw_g, 
+            raw_total, 
+            raw_gdm
         ], dim=1)
         
         return biomass_out, aux_out, species_logits, month_logits

@@ -41,7 +41,11 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux,
         biomass_pred, aux_pred, species_logits, month_logits = model(images)
         
         weights = COL_WEIGHTS_TENSOR.view(1, -1)
-        loss_bio = (nn.functional.huber_loss(biomass_pred, targets, reduction='none') * weights).sum() / weights.sum()
+        w_sum = weights.sum()
+        # Per-sample weighted loss
+        weighted_loss = nn.functional.huber_loss(biomass_pred, targets, reduction='none') * weights
+        loss_bio = (weighted_loss.sum(dim=1) / w_sum).mean()
+        
         loss_aux = criterion_aux(aux_pred, aux_feats).mean()
         loss_sp = criterion_species(species_logits, species_id) / 10.0
         loss_mo = criterion_month(month_logits, month_target).mean()
@@ -66,7 +70,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux,
         running['sp'] += loss_sp.item()
         running['mo'] += loss_mo.item()
         
-        pbar.set_postfix({'Bio': f"{loss_bio.item():.3f}", 'Sp': f"{loss_sp.item():.3f}"})
+        pbar.set_postfix({'Bio': f"{loss_bio.item():.4f}", 'Sp': f"{loss_sp.item():.4f}"})
     
     n = len(loader)
     return {k: v/n for k, v in running.items()}
@@ -99,7 +103,11 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             biomass_pred, aux_pred, species_logits, month_logits = model(images)
         
         weights = COL_WEIGHTS_TENSOR.view(1, -1)
-        loss_bio = (criterion_biomass(biomass_pred, targets) * weights).sum() / weights.sum()
+        w_sum = weights.sum()
+        
+        weighted_loss = nn.functional.huber_loss(biomass_pred, targets, reduction='none') * weights
+        loss_bio = (weighted_loss.sum(dim=1) / w_sum).mean()
+        
         loss_aux = criterion_aux(aux_pred, aux_feats).mean()
         loss_sp = criterion_species(species_logits, species_id) / 10.0
         loss_mo = criterion_month(month_logits, month_target).mean()
@@ -116,8 +124,15 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
         all_targets.append(targets.cpu().numpy())
         all_preds.append(biomass_pred.cpu().numpy())
     
-    targets_real = np.expm1(np.concatenate(all_targets))
-    preds_real = enforce_physical_constraints(np.expm1(np.concatenate(all_preds)))
+    # Already in KG space, no need for expm1
+    targets_real = np.concatenate(all_targets)
+    preds_real = enforce_physical_constraints(np.concatenate(all_preds))
+    
+    # Official metric expects GRAMS? 
+    # If calculate_global_weighted_r2 handles scale (it's R2, so it should be fine), but weights are relative.
+    # However, enforce_physical_constraints works on what it's given. It sums components.
+    # If we trained in kg, preds are kg.
+    
     r2 = calculate_global_weighted_r2(targets_real, preds_real, OFFICIAL_WEIGHTS)
     
     n = len(loader)

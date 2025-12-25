@@ -274,7 +274,7 @@ def run_training():
 
             plot_training_history(history, fold, session_dir)
 
-        model.load_state_dict(torch.load(os.path.join(session_dir, f"best_fold{fold}.pth")))
+        model.load_state_dict(torch.load(os.path.join(session_dir, f"best_fold{fold}.pth"), weights_only=True))
         ewc = EWC(model, train_loader, DEVICE, importance=EWC_IMPORTANCE)
         logger.info(f"EWC updated after fold {fold}")
 

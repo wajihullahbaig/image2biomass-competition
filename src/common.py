@@ -7,10 +7,44 @@ import logging
 from datetime import datetime
 from typing import Optional
 import torch
+from torch import nn
 from torchvision import transforms
 import matplotlib.pyplot as plt
+from copy import deepcopy
 
 from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE
+
+class EWC:
+    def __init__(self, model, dataloader, device, importance=1000):
+        self.model = model
+        self.device = device
+        self.importance = importance
+        self.params = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
+        self.fisher = self._compute_fisher(dataloader)
+    
+    def _compute_fisher(self, dataloader):
+        fisher = {n: torch.zeros_like(p) for n, p in self.model.named_parameters() if p.requires_grad}
+        self.model.eval()
+        for batch in dataloader:
+            self.model.zero_grad()
+            images = batch['image'].to(self.device)
+            targets = batch['targets'].to(self.device)
+            biomass_pred, _, _, _ = self.model(images)
+            loss = nn.functional.huber_loss(biomass_pred, targets)
+            loss.backward()
+            for n, p in self.model.named_parameters():
+                if p.requires_grad and p.grad is not None:
+                    fisher[n] += p.grad.data.clone().pow(2)
+        for n in fisher:
+            fisher[n] /= len(dataloader)
+        return fisher
+    
+    def penalty(self, model):
+        loss = 0
+        for n, p in model.named_parameters():
+            if p.requires_grad and n in self.fisher:
+                loss += (self.fisher[n] * (p - self.params[n]).pow(2)).sum()
+        return self.importance * loss
 
 # ====================== DATA PREP ======================
 def load_data(logger: logging.Logger) -> pd.DataFrame:
@@ -139,30 +173,24 @@ def get_image_data_transforms()->tuple:
     return train_transform, val_transform       
 
 def get_image_data_transforms_v1()->tuple:
-    """
-    Returns the training and validation data augmentation transforms.
-    """
-    # Data Augmentation Transforms
     train_transform = transforms.Compose([
-                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomVerticalFlip(),
-                transforms.RandomRotation(15),
-                transforms.RandomAutocontrast(),
-                transforms.RandomEqualize(),
-                transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
-                transforms.RandomGrayscale(p=0.25),
-                transforms.RandomResizedCrop(size=(IMAGE_SIZE, IMAGE_SIZE), scale=(0.8, 1.0)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-            ])
-
+        transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.5, 1.0)),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomVerticalFlip(p=0.5),
+        transforms.RandomRotation(45),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.02),
+        transforms.RandomApply([transforms.GaussianBlur(5, sigma=(0.1, 3.0))], p=0.4),
+        transforms.RandomGrayscale(p=0.15),
+        transforms.RandomAffine(degrees=0, translate=(0.15, 0.15), scale=(0.85, 1.15)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+        transforms.RandomErasing(p=0.4, scale=(0.02, 0.25), ratio=(0.3, 3.3)),
+    ])
     val_transform = transforms.Compose([
-                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-            ])
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+    ])
     return train_transform, val_transform  
 
 def apply_tta(model, image, device, n_passes=1):
@@ -371,7 +399,7 @@ def plot_training_history(history, fold, session_dir):
     if 'holdout_r2' in history:
         axes[5].plot(history['holdout_r2'], label='Strict Ind-Test R2', color='green', linewidth=2)
     axes[5].set_title('R2 Metrics (Higher is Better)')
-    axes[5].set_ylim(-1.5, 1.0)
+    axes[5].set_ylim(-1.5, 1.5)
     axes[5].axhline(y=0, color='black', linestyle='-', alpha=0.2)
     axes[5].legend()
     

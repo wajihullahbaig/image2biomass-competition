@@ -52,7 +52,7 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         
         # 1. Biomass Loss (Huber on Decagrams)
         weights = COL_WEIGHTS_TENSOR.view(1, -1)
-        # No longer need /1000.0 because targets are now [0, 20] range
+        
         loss_biomass = criterion_biomass(biomass_pred, targets)
         loss_biomass = (loss_biomass * weights).sum() / weights.sum()
         
@@ -152,11 +152,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             else:
                 biomass_pred, aux_pred, species_logits, month_logits = model(images)
             
-            # 1. Prediction Clamping (Max 256.0 grams)
-            # Physical limit and biomass cannot be negative
-            biomass_pred = torch.clamp(biomass_pred, 0.0, 256.0)
-            
-            # Loss Calculation (In Decagram Space)
+            # Loss Calculation (In Log Space)
             weights = COL_WEIGHTS_TENSOR.view(1, -1)
             loss_biomass = criterion_biomass(biomass_pred, targets)
             loss_biomass = (loss_biomass * weights).sum() / weights.sum()
@@ -179,9 +175,9 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             all_targets.append(targets.cpu().numpy())
             all_preds_biomass.append(biomass_pred.cpu().numpy())
             
-    # Calculate R2 Score (Multiply by 10 to get real scale Grams)
-    all_targets_real = np.concatenate(all_targets) * 10.0
-    all_preds_real = np.concatenate(all_preds_biomass) * 10.0
+    # Calculate R2 Score (Convert log-space back to real scale Grams)
+    all_targets_real = np.expm1(np.concatenate(all_targets))
+    all_preds_real = np.expm1(np.concatenate(all_preds_biomass))
        
     # Apply physical constraints to real-scale predictions
     all_preds_real = enforce_physical_constraints(all_preds_real)
@@ -301,10 +297,10 @@ def run_training():
             model.freeze_backbone(freeze_fraction=BACKBONE_FREEZE_FRACTION)
         
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-        criterion_biomass = nn.HuberLoss(reduction='none', delta=5.0) 
-        criterion_aux = nn.HuberLoss(delta=5.0) 
+        criterion_biomass = nn.MSELoss(reduction='none') 
+        criterion_aux = nn.HuberLoss(delta=1.0) 
         criterion_species = nn.CrossEntropyLoss(label_smoothing=0.1)
-        criterion_month = nn.HuberLoss(delta=1.0) 
+        criterion_month = nn.MSELoss() 
         
         scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer, 

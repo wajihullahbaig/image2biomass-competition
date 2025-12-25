@@ -59,12 +59,13 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     # Rename clean_id back to sample_id for consistency
     wide = wide.rename(columns={'clean_id': 'sample_id'})
     
-    # 6. SCALE TARGETS: Convert Grams to Decagrams (Grams / 10)
-    # This brings the range from [0, 200] to [0, 20] for better NN stability.
+    # 6. SCALE TARGETS: Log-Space Scaling (log1p)
+    # This compresses the range [0, 250] grams into [0, 5.5] log units.
+    # It addresses the skewness and prevents magnitude bias.
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-    wide[target_cols] = wide[target_cols] / 10.0
+    wide[target_cols] = np.log1p(wide[target_cols].astype(float))
     
-    logger.info(f"Data Loaded Successfully. Rows: {len(wide)} (Targets scaled by 0.1)")
+    logger.info(f"Data Loaded Successfully. Rows: {len(wide)} (Targets Log-Scaled)")
     
     # SANITY CHECK
     # Dry_Total should roughly equal components. 
@@ -309,10 +310,10 @@ def plot_training_history(history, fold, session_dir):
     
     # --- Loss Plot ---
     plt.subplot(1, 2, 1)
-    if 'train_loss' in history:
-        plt.plot(np.array(history['train_loss']), label='Total Train Loss (k)', linewidth=2, color='tab:blue')
+    if 'train_loss scaled - biomass loss x(1/100)' in history:
+        plt.plot(np.array(history['train_loss']), label='Total Train Loss', linewidth=2, color='tab:blue')
     if 'loss_biomass' in history:
-        plt.plot(np.array(history['loss_biomass']), label='Biomass Train Loss (k)', linestyle='--', alpha=0.7)
+        plt.plot(np.array(history['loss_biomass']) * 100.0, label='Biomass Train Loss (x100)', linestyle='--', alpha=0.7)
     if 'loss_aux' in history:
         plt.plot(history['loss_aux'], label='Aux Train Loss', linestyle=':', alpha=0.7)
     if 'loss_species' in history:
@@ -321,9 +322,9 @@ def plot_training_history(history, fold, session_dir):
         plt.plot(history['loss_month'], label='Month Train Loss', linestyle='-', alpha=0.4, color='gray')
         
     if 'val_loss' in history:
-        plt.plot(np.array(history['val_loss']), label='Total Val Loss (k)', linewidth=2, color='tab:red')
+        plt.plot(np.array(history['val_loss']), label='Total Val Loss', linewidth=2, color='tab:red')
     if 'val_loss_biomass' in history:
-        plt.plot(np.array(history['val_loss_biomass']), label='Biomass Val Loss (k)', linestyle='--', color='tab:orange', alpha=0.7)
+        plt.plot(np.array(history['val_loss_biomass']) * 100.0, label='Biomass Val Loss (x100)', linestyle='--', color='tab:orange', alpha=0.7)
     if 'val_loss_aux' in history:
         plt.plot(history['val_loss_aux'], label='Aux Val Loss', linestyle=':', color='magenta', alpha=0.7)
     if 'val_loss_species' in history:

@@ -325,8 +325,8 @@ def run_inference():
         preds_array = all_model_preds[0]
         print(f"   📊 Single model prediction")
     
-    # RESCALE BACK TO GRAMS (Model predicts Decagrams)
-    preds_array = preds_array * 10.0
+    # RESCALE BACK TO GRAMS (Model predicts Log-Space)
+    preds_array = np.expm1(preds_array)
     
     # Safety clip and enforce basic physics (Total = C+D+G)
     preds_array = np.maximum(preds_array, 0)

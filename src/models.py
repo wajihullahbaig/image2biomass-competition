@@ -97,24 +97,32 @@ class BiomassUnifiedModel(nn.Module):
         ], dim=1)
         
         # --- PHYSICS-INFORMED HEAD ---
-        # 1. Predict ONLY Components (Clover, Dead, Green)
-        # We use Softplus ensuring non-negative raw mass (0 to inf)
-        components_pred = self.biomass_head(combined_feats) # (B, 3)
-        #components_pred = torch.clamp(components_pred, 0.0, 256.0)
+        # 1. Predict Log-Components (log(1 + Clover), log(1 + Dead), log(1 + Green))
+        # Softplus ensures log predictions are positive (since mass >= 0, log(1+mass) >= 0)
+        log_components_pred = self.biomass_head(combined_feats) # (B, 3)
         
-        c = components_pred[:, 0:1] # Clover
-        d = components_pred[:, 1:2] # Dead
-        g = components_pred[:, 2:3] # Green
+        # 2. Physics Constraints (Performed in Raw Gram Space)
+        # We must sum in RAW space, then convert BACK to Log space for the loss
+        raw_c = torch.expm1(log_components_pred[:, 0:1])
+        raw_d = torch.expm1(log_components_pred[:, 1:2])
+        raw_g = torch.expm1(log_components_pred[:, 2:3])
         
-        # 2. Physics Constraints (Performed in Computational Graph)
-        # Total = Clover + Dead + Green
-        # GDM   = Clover + Green
-        total = c + d + g
-        gdm   = c + g
+        # Reconstruct Raw Aggregates
+        raw_total = raw_c + raw_d + raw_g
+        raw_gdm   = raw_c + raw_g
         
-        # 3. Concatenate for Loss Calculation (Order: C, D, G, Total, GDM)
-        # This allows gradients from 'Total' loss to flow back to C, D, G
-        biomass_out = torch.cat([c, d, g, total, gdm], dim=1)
+        # 3. Convert Aggregates back to Log-Space (log1p)
+        log_total = torch.log1p(raw_total)
+        log_gdm   = torch.log1p(raw_gdm)
+        
+        # 4. Concatenate for Log-Space Loss (Order: C, D, G, Total, GDM)
+        biomass_out = torch.cat([
+            log_components_pred[:, 0:1], 
+            log_components_pred[:, 1:2], 
+            log_components_pred[:, 2:3], 
+            log_total, 
+            log_gdm
+        ], dim=1)
         
         return biomass_out, aux_out, species_logits, month_logits
 

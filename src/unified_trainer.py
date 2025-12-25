@@ -24,23 +24,20 @@ from common import (
 from dataset import BiomassDataset
 from models import BiomassUnifiedModel, initialize_weights
 
-EWC_IMPORTANCE = 500
-EARLY_STOP_PATIENCE = 12
-
 def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
                     criterion_species, criterion_month, device, ewc=None):
     model.train()
     running = {'loss': 0, 'bio': 0, 'aux': 0, 'sp': 0, 'mo': 0}
+    optimizer.zero_grad()
     
     pbar = tqdm(loader, desc="Training")
-    for batch in pbar:
+    for i, batch in enumerate(pbar):
         images = batch['image'].to(device)
         targets = batch['targets'].to(device)
         aux_feats = batch['aux_feats'].to(device)
         species_id = batch['species_id'].to(device)
         month_target = batch['month_sin_cos'].to(device)
         
-        optimizer.zero_grad()
         biomass_pred, aux_pred, species_logits, month_logits = model(images)
         
         weights = COL_WEIGHTS_TENSOR.view(1, -1)
@@ -55,11 +52,15 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux,
         if ewc is not None:
             total += ewc.penalty(model)
         
+        total = total / ACCUMULATION_STEPS
         total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
         
-        running['loss'] += total.item()
+        if (i + 1) % ACCUMULATION_STEPS == 0 or (i + 1) == len(loader):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+        
+        running['loss'] += total.item() * ACCUMULATION_STEPS
         running['bio'] += loss_bio.item()
         running['aux'] += loss_aux.item()
         running['sp'] += loss_sp.item()

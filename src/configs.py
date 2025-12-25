@@ -30,6 +30,10 @@ SPECIES_FEAT_WEIGHT=0.75
 MONTH_FEAT_WEIGHT=1.25
 BIOMASS_FEAT_WEIGHT=1.25
 
+EWC_IMPORTANCE = 500
+EARLY_STOP_PATIENCE = 15
+ACCUMULATION_STEPS = 4
+
 # return a string representation of the configuration
 def config_str():
     config_items = [
@@ -49,6 +53,9 @@ def config_str():
         f"AUX_FEAT_WEIGHT: {AUX_FEAT_WEIGHT}",
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
         f"MONTH_FEAT_WEIGHT: {MONTH_FEAT_WEIGHT}",
-        f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}"
+        f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
+        f"EWC_IMPORTANCE: {EWC_IMPORTANCE}",
+        f"EARLY_STOP_PATIENCE: {EARLY_STOP_PATIENCE}",
+        f"ACCUMULATION_STEPS: {ACCUMULATION_STEPS}"
     ]
     return "\n".join(config_items)

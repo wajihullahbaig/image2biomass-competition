@@ -27,11 +27,11 @@ class BiomassUnifiedModel(nn.Module):
         
         # Multi-task heads 
         self.species_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(self.backbone_dim, 64),
+            nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(128, num_species)
+            nn.Linear(64, num_species)
         )
         
         # 4. Month Head (Cyclical Regression)

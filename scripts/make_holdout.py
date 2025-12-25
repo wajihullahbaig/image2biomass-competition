@@ -6,13 +6,13 @@ Patch: For any species missing from base, take exactly ONE sample from its lates
 Train: Complement of holdout.
 """
 import csv
-from collections import defaultdict, Counter
 from datetime import datetime
 from pathlib import Path
 import random
 import pandas as pd
+from pandas import Timedelta as pd_Timedelta
 
-def generate_holdout(n_base_dates=2, seed=42):
+def generate_holdout(n_days=45, seed=42):
     # Setup paths relative to project root
     ROOT_DIR = Path(__file__).parent.parent
     CSV_PATH = ROOT_DIR / 'wide.csv'
@@ -26,124 +26,70 @@ def generate_holdout(n_base_dates=2, seed=42):
     
     random.seed(seed)
 
-    # ============================================================================
-    # Load data
-    # ============================================================================
+    # 1. Load data
     if not CSV_PATH.exists():
         raise FileNotFoundError(f"wide.csv not found at {CSV_PATH}. Run load_data() first.")
 
-    rows = []
-    with open(CSV_PATH, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-
-    # Parse dates and group by species/date
-    date_rows = []
-    all_species_set = set()
-    species_data = defaultdict(list) # species -> list of (date, row)
-
-    for row in rows:
-        try:
-            d = datetime.strptime(row['Sampling_Date'], '%Y-%m-%d').date()
-            date_rows.append((d, row))
-            species_data[row['Species']].append((d, row))
-            all_species_set.add(row['Species'])
-        except (ValueError, KeyError):
-            continue
-
-    # Sort unique dates descending
-    unique_dates = sorted(set(d for d, _ in date_rows), reverse=True)
+    df = pd.read_csv(CSV_PATH)
+    df['Sampling_Date'] = pd.to_datetime(df['Sampling_Date'])
     
-    # ============================================================================
-    # Create Holdout
-    # ============================================================================
-    base_holdout_dates = unique_dates[:n_base_dates]
+    # 2. TEMPORAL SLICE LOGIC
+    # Last 45 days go to Independent Holdout
+    max_date = df['Sampling_Date'].max()
+    cutoff_date = max_date - pd_Timedelta(days=n_days)
     
-    holdout_rows = []
-    holdout_sample_ids = set()
+    df['cv_group'] = df['State'] + "_" + df['Sampling_Date'].dt.strftime('%Y-%m-%d')
+    
+    holdout_df = df[df['Sampling_Date'] >= cutoff_date].copy()
+    train_df = df[df['Sampling_Date'] < cutoff_date].copy()
+    
+    # Check for CV Group Leakage
+    h_groups = set(holdout_df['cv_group'])
+    t_groups = set(train_df['cv_group'])
+    overlap = h_groups.intersection(t_groups)
+    
+    if overlap:
+        # If a date is partially in both, move its neighbors to sustain the block
+        # (Though with >= cutoff, this shouldn't happen unless a date is exactly the cutoff)
+        # To be safe: move all rows of overlapping groups to holdout
+        holdout_df = pd.concat([holdout_df, train_df[train_df['cv_group'].isin(overlap)]])
+        train_df = train_df[~train_df['cv_group'].isin(overlap)]
+    
+    # 3. Clean-up for Writing
+    # Convert dates back to string for CSV
+    holdout_df['Sampling_Date'] = holdout_df['Sampling_Date'].dt.strftime('%Y-%m-%d')
+    train_df['Sampling_Date'] = train_df['Sampling_Date'].dt.strftime('%Y-%m-%d')
 
-    # 1. Add all rows from base dates
-    for d, row in date_rows:
-        if d in base_holdout_dates:
-            holdout_rows.append(row)
-            holdout_sample_ids.add(row['sample_id'])
-
-    species_in_base = set(row['Species'] for row in holdout_rows)
-    missing_species = all_species_set - species_in_base
-
-    # 2. Patch missing species
-    for species in sorted(missing_species):
-        candidates = sorted(species_data[species], key=lambda x: x[0], reverse=True)
-        latest_date, row = candidates[0]
-        holdout_rows.append(row)
-        holdout_sample_ids.add(row['sample_id'])
-
-    # 3. Create Train Set (Complement)
-    train_rows = [row for row in rows if row['sample_id'] not in holdout_sample_ids]
-
-    # ============================================================================
-    # Analysis & Reporting
-    # ============================================================================
-    holdout_counts = Counter(row['Species'] for row in holdout_rows)
-    train_counts = Counter(row['Species'] for row in train_rows)
-    species_date_counts = {s: len(set(d for d, r in data)) for s, data in species_data.items()}
+    # 4. Analysis & Reporting
+    all_species = sorted(df['Species'].unique())
+    holdout_counts = holdout_df['Species'].value_counts()
+    train_counts = train_df['Species'].value_counts()
 
     species_detail = []
-    conflicts = 0
-    for species in sorted(all_species_set):
-        h_count = holdout_counts[species]
-        t_count = train_counts[species]
-        total = h_count + t_count
-        d_count = species_date_counts[species]
-        
-        if t_count == 0: conflicts += 1
-        
-        h_states = set(row['State'] for row in holdout_rows if row['Species'] == species)
-        h_seasons = set(row['season'] for row in holdout_rows if row['Species'] == species)
-        
+    for sp in all_species:
         species_detail.append({
-            'Species': species,
-            'Total_Count': total,
-            'Train_Count': t_count,
-            'Holdout_Count': h_count,
-            'Unique_Dates': d_count,
-            'Holdout_States': '|'.join(sorted(h_states)),
-            'Holdout_Seasons': '|'.join(sorted(h_seasons)),
-            'In_Train': 'Yes' if t_count > 0 else 'NO',
+            'Species': sp,
+            'Total_Count': len(df[df['Species'] == sp]),
+            'Train_Count': train_counts.get(sp, 0),
+            'Holdout_Count': holdout_counts.get(sp, 0),
+            'In_Holdout': 'Yes' if sp in holdout_counts else 'NO',
+            'In_Train': 'Yes' if sp in train_counts else 'NO'
         })
 
-    # ============================================================================
-    # Write Outputs
-    # ============================================================================
-    with open(HOLDOUT_CSV, 'w', newline='', encoding='utf-8') as f:
-        if holdout_rows:
-            writer = csv.DictWriter(f, fieldnames=holdout_rows[0].keys())
-            writer.writeheader()
-            writer.writerows(holdout_rows)
+    # write outputs
+    holdout_df.to_csv(HOLDOUT_CSV, index=False)
+    train_df.to_csv(TRAIN_CSV, index=False)
+    pd.DataFrame(species_detail).to_csv(SPECIES_REPORT, index=False)
+    
+    with open(HOLDOUT_REPORT, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['Metric', 'Value'])
+        w.writerow(['Cutoff_Date', cutoff_date.strftime('%Y-%m-%d')])
+        w.writerow(['Holdout_Samples', len(holdout_df)])
+        w.writerow(['Train_Samples', len(train_df)])
+        w.writerow(['Total_Samples', len(df)])
 
-    with open(TRAIN_CSV, 'w', newline='', encoding='utf-8') as f:
-        if train_rows:
-            writer = csv.DictWriter(f, fieldnames=train_rows[0].keys())
-            writer.writeheader()
-            writer.writerows(train_rows)
-
-    with open(SPECIES_REPORT, 'w', newline='', encoding='utf-8') as f:
-        if species_detail:
-            writer = csv.DictWriter(f, fieldnames=species_detail[0].keys())
-            writer.writeheader()
-            writer.writerows(species_detail)
-
-    with open(HOLDOUT_REPORT, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Metric', 'Value'])
-        writer.writerow(['Total_Samples', len(rows)])
-        writer.writerow(['Holdout_Samples', len(holdout_rows)])
-        writer.writerow(['Train_Samples', len(train_rows)])
-        writer.writerow(['Holdout_Species_Covered', len(species_in_base.union(missing_species))])
-        writer.writerow(['Species_Missing_From_Train', conflicts])
-        writer.writerow(['Base_Holdout_Dates', '|'.join(map(str, base_holdout_dates))])
-
-    return len(holdout_rows), len(train_rows)
+    return len(holdout_df), len(train_df)
 
 if __name__ == "__main__":
     h_len, t_len = generate_holdout()

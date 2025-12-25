@@ -206,17 +206,13 @@ def run_training():
     # --- AUTOMATED DATA PIPELINE ---
     logger.info("Starting Data Refresh (Scale -> Split)...")
     load_data(logger) # Scales to Decagrams and saves wide.csv
-    h_len, t_len = generate_holdout() # Reads wide.csv and creates temporal splits
-    logger.info(f"Data ready: {t_len} training samples, {h_len} independent holdout samples.")
+    generate_holdout(n_days=45) # 45 days is roughly 1.5 months
+    
+    holdout_dir = ROOT_DIR / 'holdout_outputs'
+    train_csv_path = holdout_dir / 'train_filtered.csv'
+    holdout_csv_path = holdout_dir / 'holdout.csv'
 
-    # Load the Temporally Honest Splits
-    holdout_dir = os.path.join(os.getcwd(), 'holdout_outputs')
-    train_csv_path = os.path.join(holdout_dir, 'train_filtered.csv')
-    test_csv_path = os.path.join(holdout_dir, 'holdout.csv')
-
-    holdout_csv_path = os.path.join(holdout_dir, 'holdout.csv')
-
-    if not os.path.exists(train_csv_path) or not os.path.exists(holdout_csv_path):
+    if not train_csv_path.exists() or not holdout_csv_path.exists():
         logger.error(f"Required files not found in {holdout_dir}. Run scripts/make_holdout.py first.")
         return
 
@@ -257,14 +253,15 @@ def run_training():
         json.dump(metadata, f, indent=4)
     logger.info(f"Metadata saved to {os.path.join(session_dir, 'metadata.json')}")
 
-    # 3. K-Fold Training Cycle
+    # 3. K-Fold Training Cycle (On DEVELOPMENT Set)
     # We maintain temporal honesty by sorting by date.
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
     
-    # We group by State + Date to separate ENVIRONMENTS (Farms/Times)
-    # This allows the model to learn Species-specific textures while testing 
-    # spatial/temporal generalization.
-    df['cv_group'] = df['State'] + "_" + df['Sampling_Date'].astype(str)
+    # SPECIES-GROUPING FOR CV
+    # We use 'Species' as the grouping key for the internal folds.
+    # This prevents the model from memorizing species-specific distributions
+    # and forces it to learn transferable features.
+    group_col = 'Species'
     
     train_transform, val_transform = get_image_data_transforms_v1()    
     
@@ -276,9 +273,9 @@ def run_training():
     # Independent Loader (eval on this every epoch)
     independent_ds = BiomassDataset(df_independent_test, transform=val_transform, species_to_id=metadata['species_to_id'])
     independent_loader = DataLoader(independent_ds, batch_size=BATCH_SIZE, shuffle=False)
-    
-    for fold, (train_idx, val_idx) in enumerate(gkf.split(df, groups=df['cv_group'])):
-        logger.info(f"\n{'='*20} Fold {fold}/{N_FOLDS} (Environment-Grouped) {'='*20}")
+
+    for fold, (train_idx, val_idx) in enumerate(gkf.split(df, groups=df[group_col])):
+        logger.info(f"\n{'='*20} Fold {fold}/{N_FOLDS} (Species-Grouped CV) {'='*20}")
         
         train_df = df.iloc[train_idx]
         val_df = df.iloc[val_idx]
@@ -302,7 +299,7 @@ def run_training():
         val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=metadata['species_to_id'])
         
         # Loaders
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, drop_last=True)
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, drop_last=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
         
         model = BiomassUnifiedModel(backbone_name=BACKBONE, num_species=len(species_list)).to(DEVICE)

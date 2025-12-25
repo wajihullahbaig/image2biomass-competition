@@ -48,9 +48,15 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     wide = pd.merge(meta, targets, on='clean_id', how='left')
     
     # 5. Feature Engineering
-    wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'])
-    wide['month'] = wide['Sampling_Date'].dt.month
+    # Explicitly parse the date format to avoid month/day swapping
+    wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'], format='mixed', dayfirst=False)
+    
+    # Store as canonical string for CSV stability, but keep as datetime for engineering
+    date_series = wide['Sampling_Date']
+    wide['month'] = date_series.dt.month
     wide['season'] = wide['month'].apply(get_season)
+    
+    logger.info(f"Date Range in train.csv: {date_series.min().date()} to {date_series.max().date()}")
     
     wide['Height_Ave_cm'] = pd.to_numeric(wide['Height_Ave_cm'], errors='coerce')
     wide['Pre_GSHH_NDVI'] = pd.to_numeric(wide['Pre_GSHH_NDVI'], errors='coerce')

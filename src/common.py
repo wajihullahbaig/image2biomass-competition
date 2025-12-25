@@ -59,7 +59,12 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     # Rename clean_id back to sample_id for consistency
     wide = wide.rename(columns={'clean_id': 'sample_id'})
     
-    logger.info(f"Data Loaded Successfully. Rows: {len(wide)}")
+    # 6. SCALE TARGETS: Convert Grams to Decagrams (Grams / 10)
+    # This brings the range from [0, 200] to [0, 20] for better NN stability.
+    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    wide[target_cols] = wide[target_cols] / 10.0
+    
+    logger.info(f"Data Loaded Successfully. Rows: {len(wide)} (Targets scaled by 0.1)")
     
     # SANITY CHECK
     # Dry_Total should roughly equal components. 

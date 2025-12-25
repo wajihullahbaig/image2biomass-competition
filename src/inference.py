@@ -325,8 +325,14 @@ def run_inference():
         preds_array = all_model_preds[0]
         print(f"   📊 Single model prediction")
     
-    # Safety clip to non-negative
+    # RESCALE BACK TO GRAMS (Model predicts Decagrams)
+    preds_array = preds_array * 10.0
+    
+    # Safety clip and enforce basic physics (Total = C+D+G)
     preds_array = np.maximum(preds_array, 0)
+    # Re-calc Total and GDM to ensure consistency on Kaggle
+    preds_array[:, 3] = preds_array[:, 0] + preds_array[:, 1] + preds_array[:, 2] # Total
+    preds_array[:, 4] = preds_array[:, 0] + preds_array[:, 2] # GDM
     
     target_cols = metadata['target_cols']  # ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     

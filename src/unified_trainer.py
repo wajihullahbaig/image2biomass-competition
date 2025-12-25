@@ -12,6 +12,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import json
 from tqdm import tqdm
+import sys
+from pathlib import Path
+
+# Add project root to path for package imports
+ROOT_DIR = Path(__file__).parent.parent
+sys.path.append(str(ROOT_DIR))
 
 from configs import *
 from common import (
@@ -21,6 +27,7 @@ from common import (
 )
 from dataset import BiomassDataset
 from models import BiomassUnifiedModel, initialize_weights
+from scripts.make_holdout import generate_holdout
 
 def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, criterion_species, criterion_month, device, scheduler=None):
     model.train()
@@ -43,10 +50,10 @@ def train_one_epoch(model, loader, optimizer, criterion_biomass, criterion_aux, 
         # Forward pass
         biomass_pred, aux_pred, species_logits, month_logits = model(images)
         
-        # Loss calculation
-        # 1. Biomass Loss (Weighted MSE)
+        # 1. Biomass Loss (Huber on Decagrams)
         weights = COL_WEIGHTS_TENSOR.view(1, -1)
-        loss_biomass = criterion_biomass(biomass_pred, targets) /1000.0 # Scale down for stability
+        # No longer need /1000.0 because targets are now [0, 20] range
+        loss_biomass = criterion_biomass(biomass_pred, targets)
         loss_biomass = (loss_biomass * weights).sum() / weights.sum()
         
         # 2. Auxiliary Loss (Huber on NDVI/Height)
@@ -149,9 +156,9 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             # Physical limit and biomass cannot be negative
             biomass_pred = torch.clamp(biomass_pred, 0.0, 256.0)
             
-            # Loss Calculation
+            # Loss Calculation (In Decagram Space)
             weights = COL_WEIGHTS_TENSOR.view(1, -1)
-            loss_biomass = criterion_biomass(biomass_pred, targets)/ 1000.0 # Scale down for stability
+            loss_biomass = criterion_biomass(biomass_pred, targets)
             loss_biomass = (loss_biomass * weights).sum() / weights.sum()
             
             loss_aux = criterion_aux(aux_pred, aux_feats).mean()
@@ -172,13 +179,16 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
             all_targets.append(targets.cpu().numpy())
             all_preds_biomass.append(biomass_pred.cpu().numpy())
             
-    all_targets = np.concatenate(all_targets)
-    all_preds_biomass = np.concatenate(all_preds_biomass)
+    # Calculate R2 Score (Multiply by 10 to get real scale Grams)
+    all_targets_real = np.concatenate(all_targets) * 10.0
+    all_preds_real = np.concatenate(all_preds_biomass) * 10.0
        
+    # Apply physical constraints to real-scale predictions
+    all_preds_real = enforce_physical_constraints(all_preds_real)
+
     # Calculate R2 Score (Official Weighted Global Metric)
-    # We use the OFFICIAL_WEIGHTS from configs.py
     # Order: [Clover, Dead, Green, Total, GDM]
-    official_avg_r2 = calculate_global_weighted_r2(all_targets, all_preds_biomass, OFFICIAL_WEIGHTS)
+    official_avg_r2 = calculate_global_weighted_r2(all_targets_real, all_preds_real, OFFICIAL_WEIGHTS)
     
     num_batches = len(loader)
     return {
@@ -196,13 +206,37 @@ def run_training():
     logger = logging.getLogger("System Logger")
     set_seed(42, logger)
     logger.info(config_str())
-    df = load_data(logger)
+
+    # --- AUTOMATED DATA PIPELINE ---
+    logger.info("Starting Data Refresh (Scale -> Split)...")
+    load_data(logger) # Scales to Decagrams and saves wide.csv
+    h_len, t_len = generate_holdout() # Reads wide.csv and creates temporal splits
+    logger.info(f"Data ready: {t_len} training samples, {h_len} independent holdout samples.")
+
+    # Load the Temporally Honest Splits
+    holdout_dir = os.path.join(os.getcwd(), 'holdout_outputs')
+    train_csv_path = os.path.join(holdout_dir, 'train_filtered.csv')
+    test_csv_path = os.path.join(holdout_dir, 'holdout.csv')
+
+    if not os.path.exists(train_csv_path) or not os.path.exists(test_csv_path):
+        logger.error(f"Required files not found in {holdout_dir}. Run scripts/make_holdout.py first.")
+        return
+
+    df = pd.read_csv(train_csv_path)
+    df_independent_test = pd.read_csv(test_csv_path)
     
+    # Ensure date parsing for both
+    df['Sampling_Date'] = pd.to_datetime(df['Sampling_Date'])
+    df_independent_test['Sampling_Date'] = pd.to_datetime(df_independent_test['Sampling_Date'])
+
     # Log Global Stats
-    log_dataset_stats(df, logger, "GLOBAL DATASET OVERVIEW")
+    log_dataset_stats(df, logger, "DEVELOPMENT SET (FOR K-FOLD)")
+    log_dataset_stats(df_independent_test, logger, "INDEPENDENT TEMPORAL HOLDOUT (FOR FINAL TESTING)")
     
     # 2. Save Metadata for Inference
-    species_list = sorted(df['Species'].unique().tolist())
+    # Use global species list (from both sets) to ensure consistency
+    all_combined = pd.concat([df, df_independent_test])
+    species_list = sorted(all_combined['Species'].unique().tolist())
     metadata = {
         'species_list': species_list,
         'species_to_id': {s: i for i, s in enumerate(species_list)},
@@ -212,70 +246,58 @@ def run_training():
         'image_size': IMAGE_SIZE,
         'backbone': BACKBONE
     }
-    with open(os.path.join(session_dir, 'metadata.json'), 'wb') as f:
-        f.write(json.dumps(metadata, indent=4).encode('utf-8'))
+    with open(os.path.join(session_dir, 'metadata.json'), 'w') as f:
+        json.dump(metadata, f, indent=4)
     logger.info(f"Metadata saved to {os.path.join(session_dir, 'metadata.json')}")
 
-    # 3. Nested Validation Strategy
-    # Outer Loop: GroupKFold (Strictly separates Farms/Dates to prevent leakage)
-    # Inner Loop: Stratified Split (Ensures stable optimization with balanced species)
+    # 3. K-Fold Training Cycle
+    # We maintain temporal honesty by sorting by date.
+    df = df.sort_values('Sampling_Date').reset_index(drop=True)
     
-    # Shuffle DF to ensure random groups for GroupKFold (which doesn't shuffle)
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+    # We group by State + Date to separate ENVIRONMENTS (Farms/Times)
+    # This allows the model to learn Species-specific textures while testing 
+    # spatial/temporal generalization.
+    df['cv_group'] = df['State'] + "_" + df['Sampling_Date'].astype(str)
     
     train_transform, val_transform = get_image_data_transforms_v1()    
-    fold_results = []
-    gkf = GroupKFold(n_splits=N_FOLDS)    
-    df['group'] = df["State"] + "_" +   df["Sampling_Date"].astype(str) + "_" + df["season"].astype(str)        
     
-    # Outer Split: Group-based
-    for fold, (outer_train_idx, outer_holdout_idx) in enumerate(gkf.split(df,groups=df['group'])):
-        logger.info(f"\n{'='*20} Fold {fold}/{N_FOLDS} {'='*20}")
-        
-        df_outer_train = df.iloc[outer_train_idx]
-        df_holdout = df.iloc[outer_holdout_idx]
-        check_group_leakage(df_outer_train, df_holdout)
+    fold_results = []
+    independent_holdout_results = []
+    
+    gkf = GroupKFold(n_splits=N_FOLDS)    
+    
+    # Independent Loader (eval on this every epoch)
+    independent_ds = BiomassDataset(df_independent_test, transform=val_transform, species_to_id=metadata['species_to_id'])
+    independent_loader = DataLoader(independent_ds, batch_size=BATCH_SIZE, shuffle=False)
 
-        # create path and save splits        
-        outer_df_path = os.path.join(session_dir,"splits", f"fold{fold}_train.csv")
-        os.makedirs(os.path.dirname(outer_df_path), exist_ok=True)
-        df_outer_train.to_csv(outer_df_path, index=False)
-        df_holdout_path = os.path.join(session_dir, "splits", f"fold{fold}_holdout.csv")
-        os.makedirs(os.path.dirname(df_holdout_path), exist_ok=True)
-        df_holdout.to_csv(df_holdout_path, index=False)
+    for fold, (train_idx, val_idx) in enumerate(gkf.split(df, groups=df['cv_group'])):
+        logger.info(f"\n{'='*20} Fold {fold}/{N_FOLDS} (Environment-Grouped) {'='*20}")
         
-        # Inner Split: Stratified by Species (Optimization Set)
-        # We take 20% of the TRAINING data to act as the validation set for the scheduler/early stopping
-        # This allows the model to learn from a balanced signal, even if it creates slight leakage vs 'true' generalization
-        train_df, inner_val_df = train_test_split(
-            df_outer_train, 
-            test_size=0.2, 
-            stratify=df_outer_train['Species'],
-            random_state=42
-        )
+        train_df = df.iloc[train_idx]
+        val_df = df.iloc[val_idx]
         
-        # Upsample the Inner Train set
+        # Verify no species overlap between train/val in local CV
+        train_species = set(train_df['Species'])
+        val_species = set(val_df['Species'])
+        overlap = train_species.intersection(val_species)
+        if overlap:
+            logger.warning(f"Leakage detected: Species overlap in local CV: {overlap}")
+        
+        # Upsample the Train set to balance species representation
         train_df = upsample_minority_classes(train_df, 'Species', logger)
         
         # Datasets
         train_ds = BiomassDataset(train_df, transform=train_transform, species_to_id=metadata['species_to_id'])
-        val_ds = BiomassDataset(inner_val_df, transform=val_transform, species_to_id=metadata['species_to_id'])
-        holdout_ds = BiomassDataset(df_holdout, transform=val_transform, species_to_id=metadata['species_to_id'])
-        
-        # Log Stats
-        log_dataset_stats(inner_val_df, logger, f"FOLD {fold} INNER VAL STATS (Stratified)")
-        log_dataset_stats(df_holdout, logger, f"FOLD {fold} OUTER HOLDOUT STATS (Groups)")
+        val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=metadata['species_to_id'])
         
         # Loaders
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, drop_last=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
-        holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False)
         
         model = BiomassUnifiedModel(backbone_name=BACKBONE, num_species=len(species_list)).to(DEVICE)
         initialize_weights(model)
         
         if FREEZE_BACKBONE:
-            logger.info(f"Freezing backbone (Fraction: {BACKBONE_FREEZE_FRACTION})")
             model.freeze_backbone(freeze_fraction=BACKBONE_FREEZE_FRACTION)
         
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
@@ -284,15 +306,16 @@ def run_training():
         criterion_species = nn.CrossEntropyLoss(label_smoothing=0.1)
         criterion_month = nn.HuberLoss(delta=1.0) 
         
-        steps_per_epoch = len(train_loader)
         scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer, 
             max_lr=LEARNING_RATE,
             epochs=EPOCHS,
-            steps_per_epoch=steps_per_epoch
+            steps_per_epoch=len(train_loader)
         )
         
-        best_r2 = -float('inf')
+        best_val_r2 = -float('inf')
+        best_independent_r2 = -float('inf')
+        
         history = {
             'train_loss': [], 'val_loss': [], 'val_r2': [], 'holdout_r2': [],
             'loss_biomass': [], 'loss_aux': [], 'loss_species': [], 'loss_month': [],
@@ -306,17 +329,16 @@ def run_training():
                 DEVICE, scheduler
             )
             
-            # 1. Validation on Stratified Inner Set (Optimization Target)
+            # 1. Validation on CV Set (Optimization Target)
             val_metrics = validate(
                 model, val_loader, 
                 criterion_biomass, criterion_aux, criterion_species, criterion_month,
                 DEVICE
             )
             
-            # 2. Validation on Outer Holdout Set (Strict Monitoring)
-            # We don't save based on this, but we log it to see if we are overfitting the stratification
-            holdout_metrics = validate(
-                model, holdout_loader,
+            # 2. Evaluation on Independent Temporal Holdout
+            ind_metrics = validate(
+                model, independent_loader,
                 criterion_biomass, criterion_aux, criterion_species, criterion_month,
                 DEVICE
             )
@@ -327,36 +349,41 @@ def run_training():
             history['loss_aux'].append(train_metrics['loss_aux'])
             history['loss_species'].append(train_metrics['loss_species'])
             history['loss_month'].append(train_metrics['loss_month'])
-            
+
             history['val_loss'].append(val_metrics['loss'])
-            history['val_r2'].append(val_metrics['r2'])
-            history['holdout_r2'].append(holdout_metrics['r2']) # Track strict performance
-            
             history['val_loss_biomass'].append(val_metrics['loss_biomass'])
             history['val_loss_aux'].append(val_metrics['loss_aux'])
             history['val_loss_species'].append(val_metrics['loss_species'])
             history['val_loss_month'].append(val_metrics['loss_month'])
+
+            history['val_r2'].append(val_metrics['r2'])
+            history['holdout_r2'].append(ind_metrics['r2'])
             
-            # detailed logging of each component loss per epoch
+            # Logging
             logger.info(
                 f"Epoch [{epoch+1}/{EPOCHS}] "
-                f"Train Loss: {train_metrics['loss']:.4f} (Bio: {train_metrics['loss_biomass']:.4f}, Aux: {train_metrics['loss_aux']:.4f}, Sp: {train_metrics['loss_species']:.4f}, Mo: {train_metrics['loss_month']:.4f}) | "
-                f"Val Loss: {val_metrics['loss']:.4f} (Bio: {val_metrics['loss_biomass']:.4f}, Aux: {val_metrics['loss_aux']:.4f}, Sp: {val_metrics['loss_species']:.4f}, Mo: {val_metrics['loss_month']:.4f}) | "
-                f"Val R2: {val_metrics['r2']:.4f} | "
-                f"Holdout R2: {holdout_metrics['r2']:.4f}"
+                f"Train L: {train_metrics['loss']:.4f} (Bio: {train_metrics['loss_biomass']:.4f}, Aux: {train_metrics['loss_aux']:.4f}, Sp: {train_metrics['loss_species']:.4f}, Mo: {train_metrics['loss_month']:.4f}) | "
+                f"Val L: {val_metrics['loss']:.4f} (Bio: {val_metrics['loss_biomass']:.4f}, Aux: {val_metrics['loss_aux']:.4f}, Sp: {val_metrics['loss_species']:.4f}, Mo: {val_metrics['loss_month']:.4f}) | "
+                f"Val R2: {val_metrics['r2']:.3f} | "
+                f"IND-TEST R2: {ind_metrics['r2']:.3f}"
             )
             
-            
-            # Save based on Inner Stratified R2 (Optimization Goal)
-            holdout_r2 = holdout_metrics['r2']
-            if holdout_r2 > best_r2:
-                best_r2 = holdout_r2
-                logger.info(f"New Best R2: Stratified: {val_metrics['r2']:.4f} - Holdout: {holdout_metrics['r2']:.4f} ")
+            # Save based on Local CV R2
+            if val_metrics['r2'] > best_val_r2:
+                best_val_r2 = val_metrics['r2']
+                best_independent_r2 = ind_metrics['r2']
+                logger.info(f"  → New Best Val R2: {best_val_r2:.4f} (Ind-Test: {best_independent_r2:.4f})")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold}.pth"))
             
             plot_training_history(history, fold, session_dir)
                 
-        fold_results.append(best_r2)            
+        fold_results.append(best_val_r2)
+        independent_holdout_results.append(best_independent_r2)
+        
+    logger.info(f"\nFinal Summary:")
+    logger.info(f"Mean Val R2 (CV): {np.mean(fold_results):.4f} (+/- {np.std(fold_results):.4f})")
+    logger.info(f"Mean Ind-Test R2: {np.mean(independent_holdout_results):.4f} (+/- {np.std(independent_holdout_results):.4f})")
+            
         
     logger.info(f"\nFinal Resume: Mean R2 across folds: {np.mean(fold_results):.4f} (+/- {np.std(fold_results):.4f})")
 

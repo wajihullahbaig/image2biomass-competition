@@ -142,7 +142,7 @@ def initialize_weights(model):
 # ====================== CONFIGURATION ======================
 TEST_CSV_PATH = './test.csv'
 TEST_IMG_DIR = './test'
-MODEL_DIR = './logs/F3_071_EN_B3_Unified_Trainer_20251225_002636'  # Change this to the desired model folder
+MODEL_DIR = './logs/F2_071_EN_B3_Unified_Trainer_20251225_002636'  # Change this to the desired model folder
 METADATA_PATH = os.path.join(MODEL_DIR, 'metadata.json')
 
 BATCH_SIZE = 32
@@ -285,7 +285,7 @@ def run_inference():
             })
     
     submission_df = pd.DataFrame(submission_rows)
-    submission_df.to_csv('../submission.csv', index=False)
+    submission_df.to_csv('submission.csv', index=False)
     
     print("="*70 + "\n✅ SUBMISSION CREATED: submission.csv\n" + "="*70)
     print(submission_df.head())

@@ -441,13 +441,14 @@ def upsample_minority_classes(df, target_col, logger):
     return new_df
 
 
-def check_group_leakage(train_df, holdout_df):
-    train_groups = set(train_df['group'])
-    holdout_groups = set(holdout_df['group'])
+def check_group_leakage(train_df, holdout_df, group_col, logger):
+    train_groups = set(train_df[group_col])
+    holdout_groups = set(holdout_df[group_col])
     overlap = train_groups & holdout_groups
 
-    print(f"Group overlap count: {len(overlap)}")
+    logger.info(f"Group overlap count: {len(overlap)}")
     if len(overlap) > 0:
-        print("❌ LEAKAGE DETECTED")
+        logger.info("❌ LEAKAGE DETECTED")
+        logger.info(f"Overlapping groups: {overlap}")
     else:
-        print("✅ No group leakage")
+        logger.info("✅ No group leakage")

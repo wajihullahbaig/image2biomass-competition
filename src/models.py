@@ -2,133 +2,113 @@
 import torch
 import torch.nn as nn
 import timm
-from configs import BACKBONE, FUSION_DIM, IMAGE_SIZE, BACKBONE_FREEZE_FRACTION, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, MONTH_FEAT_WEIGHT, BIOMASS_FEAT_WEIGHT
+from configs import BACKBONE, FUSION_DIM, IMAGE_SIZE, BACKBONE_FREEZE_FRACTION
 
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name=BACKBONE, num_targets=5, num_aux=2, num_species=11, num_months=12, pretrained=True):
+    def __init__(self, backbone_name=BACKBONE, num_aux=2, num_species=11, pretrained=True):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
         self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0)
         
-        # Get backbone output dimension
         with torch.no_grad():
             dummy_input = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE)
             self.backbone_dim = self.backbone(dummy_input).shape[1]
             
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 256),
-            nn.LayerNorm(256),
+            nn.Linear(self.backbone_dim, 128),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, num_aux)
+            nn.Linear(128, num_aux)
         )
         
-        # Multi-task heads 
+        # 3. Species Head
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Dropout(0.5),
             nn.Linear(64, num_species)
         )
         
-        # 4. Month Head (Cyclical Regression)
-        # Forces backbone to learn seasonal cycles (sin/cos)
+        # 4. Month Head (Cyclical)
         self.month_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 128),
-            nn.LayerNorm(128),
+            nn.Linear(self.backbone_dim, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 2)
+            nn.Linear(64, 2)
         )
         
         # 5. Biomass Head
-        fusion_dim = FUSION_DIM
+        # Inputs: Backbone + Aux(2) + Species(Probabilities) + Month(2)
+        input_dim = self.backbone_dim + num_aux + num_species + 2
         
         self.biomass_head = nn.Sequential(
-            nn.Linear(self.backbone_dim + num_aux + num_species + 2, fusion_dim),
-            nn.LayerNorm(fusion_dim),
+            nn.Linear(input_dim, FUSION_DIM),
+            nn.LayerNorm(FUSION_DIM),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(fusion_dim, 256),
+            nn.Dropout(0.3),
+            nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(256, 3),
-            nn.Softplus()
+            nn.Linear(128, 3), # Predicts Clover, Dead, Green
+            nn.Softplus()      # Enforce non-negativity
         )
 
+        self._init_biomass_head()
+
+    def _init_biomass_head(self):
+        """
+        FIX: Initialize the final regression layer to output very small values close to 0.
+        This prevents massive loss at epoch 0.
+        """
+        # Initialize the last Linear layer of biomass_head
+        last_layer = self.biomass_head[-2] 
+        nn.init.normal_(last_layer.weight, mean=0.0, std=0.001)
+        # Bias = -3.0 ensures Softplus(-3.0) is approx 0.05, close to mean biomass
+        nn.init.constant_(last_layer.bias, -3.0)
+
     def freeze_backbone(self, freeze_fraction=BACKBONE_FREEZE_FRACTION):
-        """Freezes a fraction of the backbone layers."""
         params = list(self.backbone.parameters())
         num_to_freeze = int(len(params) * freeze_fraction)
-        
         for i, param in enumerate(params):
             if i < num_to_freeze:
                 param.requires_grad = False
             else:
                 param.requires_grad = True
-        
-        if freeze_fraction > 0.9:
-            for m in self.backbone.modules():
-                if isinstance(m, nn.BatchNorm2d): m.eval()
 
     def forward(self, x):
-        # Extract features from image
-        img_feats = self.backbone(x) # (B, backbone_dim)
+        img_feats = self.backbone(x)
         
-        # Predict species (categorical logits)
+        # Heads
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
-        # Predict month (continous logits)
         month_logits = self.month_head(img_feats)
-        
-        # Predict auxiliary features (NDVI, Height)
         aux_out = self.aux_head(img_feats) 
-        #aux_out = torch.clamp(aux_out, 0.0, 10.0)
-            
-        # --- FUSION OF ALL FEATURES ---
-        combined_feats = torch.cat([
-            img_feats, 
-            aux_out, 
-            species_probs,
-            month_logits
-        ], dim=1)
         
-        # --- PHYSICS-INFORMED HEAD ---
-        # 1. Predict raw KG Components (Clover, Dead, Green)
-        # Softplus ensures non-negative mass
-        raw_components_kg = self.biomass_head(combined_feats) # (B, 3)
+        # Fusion
+        combined_feats = torch.cat([img_feats, aux_out, species_probs, month_logits], dim=1)
         
-        # 2. Extract Components 
-        raw_c = raw_components_kg[:, 0:1]
-        raw_d = raw_components_kg[:, 1:2]
-        raw_g = raw_components_kg[:, 2:3]
+        # Physics Head
+        # Output is KG.
+        raw_components = self.biomass_head(combined_feats) # (B, 3)
         
-        # 3. Reconstruct Aggregates (Linear Sum)
+        raw_c = raw_components[:, 0:1]
+        raw_d = raw_components[:, 1:2]
+        raw_g = raw_components[:, 2:3]
+        
+        # Linear aggregates
         raw_total = raw_c + raw_d + raw_g
         raw_gdm   = raw_c + raw_g
         
-        # 4. Concatenate for Loss (Order: C, D, G, Total, GDM)
-        # All in KG scale
-        biomass_out = torch.cat([
-            raw_c, 
-            raw_d, 
-            raw_g, 
-            raw_total, 
-            raw_gdm
-        ], dim=1)
+        # Stack: C, D, G, Total, GDM
+        biomass_out = torch.cat([raw_c, raw_d, raw_g, raw_total, raw_gdm], dim=1)
         
         return biomass_out, aux_out, species_logits, month_logits
 
-# Weight Initialization
 def initialize_weights(model):
+    # General init for other layers
     for m in model.modules():
         if isinstance(m, nn.Linear):
-            nn.init.kaiming_normal_(m.weight)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
+            # Skip the specific initialization we did for biomass head
+            pass 
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.weight, 1)
             nn.init.constant_(m.bias, 0)

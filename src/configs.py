@@ -17,22 +17,23 @@ BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
 # Official Weights: Clover, Dead, Green, Total, GDM
 OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
-COL_WEIGHTS_TENSOR = torch.tensor([1.0,1.0,1.0,1.0,1.0], device=DEVICE)
+COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
 # training settings
 FREEZE_BACKBONE = True
 BACKBONE_FREEZE_FRACTION = 0.75
 USE_TTA = True
 
-# Model Settings
-FUSION_DIM= 256
-AUX_FEAT_WEIGHT=1.25
-SPECIES_FEAT_WEIGHT=0.75
-MONTH_FEAT_WEIGHT=1.25
-BIOMASS_FEAT_WEIGHT=1250.0
-
-EWC_IMPORTANCE = 500
+# --- Model Settings ---
+FUSION_DIM = 256
+# Targets are small (KG scale, < 1.0). Large weights cause exploding gradients.
+BIOMASS_FEAT_WEIGHT = 100.0 
+AUX_FEAT_WEIGHT = 1.0
+SPECIES_FEAT_WEIGHT = 1.0
+MONTH_FEAT_WEIGHT = 1.0
+# --- Regularization ---
+EWC_IMPORTANCE = 1000
 EARLY_STOP_PATIENCE = 15
-ACCUMULATION_STEPS = 4
+ACCUMULATION_STEPS = 1  # Keep at 1 for stability unless OOM
 
 # return a string representation of the configuration
 def config_str():

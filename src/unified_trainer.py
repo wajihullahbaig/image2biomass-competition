@@ -214,12 +214,23 @@ def run_training():
     train_csv_path = os.path.join(holdout_dir, 'train_filtered.csv')
     test_csv_path = os.path.join(holdout_dir, 'holdout.csv')
 
-    if not os.path.exists(train_csv_path) or not os.path.exists(test_csv_path):
+    holdout_csv_path = os.path.join(holdout_dir, 'holdout.csv')
+
+    if not os.path.exists(train_csv_path) or not os.path.exists(holdout_csv_path):
         logger.error(f"Required files not found in {holdout_dir}. Run scripts/make_holdout.py first.")
         return
 
     df = pd.read_csv(train_csv_path)
-    df_independent_test = pd.read_csv(test_csv_path)
+    df_independent_test = pd.read_csv(holdout_csv_path)
+    
+    # Create Groups for Leakage Check
+    df['cv_group'] = df['State'] + "_" + df['Sampling_Date'].astype(str)
+    df_independent_test['cv_group'] = df_independent_test['State'] + "_" + df_independent_test['Sampling_Date'].astype(str)
+
+    # GLOBAL LEAKAGE CHECK: Dev Set vs. Independent Holdout
+    logger.info("--- Global Separation Check (Dev vs. Holdout) ---")
+    check_group_leakage(df, df_independent_test, group_col='cv_group', logger=logger)
+    check_group_leakage(df, df_independent_test, group_col='sample_id', logger=logger)
     
     # Ensure date parsing for both
     df['Sampling_Date'] = pd.to_datetime(df['Sampling_Date'])
@@ -265,14 +276,18 @@ def run_training():
     # Independent Loader (eval on this every epoch)
     independent_ds = BiomassDataset(df_independent_test, transform=val_transform, species_to_id=metadata['species_to_id'])
     independent_loader = DataLoader(independent_ds, batch_size=BATCH_SIZE, shuffle=False)
-
+    
     for fold, (train_idx, val_idx) in enumerate(gkf.split(df, groups=df['cv_group'])):
         logger.info(f"\n{'='*20} Fold {fold}/{N_FOLDS} (Environment-Grouped) {'='*20}")
         
         train_df = df.iloc[train_idx]
         val_df = df.iloc[val_idx]
         
-        # Verify no species overlap between train/val in local CV
+        # 4. Leakage Check (Sanity Check)
+        check_group_leakage(train_df, val_df, group_col='cv_group', logger=logger)
+        check_group_leakage(train_df, val_df, group_col='sample_id', logger=logger)
+        
+        # Verify species distribution/overlap
         train_species = set(train_df['Species'])
         val_species = set(val_df['Species'])
         overlap = train_species.intersection(val_species)
@@ -313,9 +328,10 @@ def run_training():
         best_independent_r2 = -float('inf')
         
         history = {
-            'train_loss': [], 'val_loss': [], 'val_r2': [], 'holdout_r2': [],
+            'train_loss': [], 'val_loss': [], 'ind_loss': [], 'val_r2': [], 'holdout_r2': [],
             'loss_biomass': [], 'loss_aux': [], 'loss_species': [], 'loss_month': [],
-            'val_loss_biomass': [], 'val_loss_aux': [], 'val_loss_species': [], 'val_loss_month': []
+            'val_loss_biomass': [], 'val_loss_aux': [], 'val_loss_species': [], 'val_loss_month': [],
+            'ind_loss_biomass': [], 'ind_loss_aux': [], 'ind_loss_species': [], 'ind_loss_month': []
         }
         
         for epoch in range(EPOCHS):
@@ -351,6 +367,12 @@ def run_training():
             history['val_loss_aux'].append(val_metrics['loss_aux'])
             history['val_loss_species'].append(val_metrics['loss_species'])
             history['val_loss_month'].append(val_metrics['loss_month'])
+
+            history['ind_loss'].append(ind_metrics['loss'])
+            history['ind_loss_biomass'].append(ind_metrics['loss_biomass'])
+            history['ind_loss_aux'].append(ind_metrics['loss_aux'])
+            history['ind_loss_species'].append(ind_metrics['loss_species'])
+            history['ind_loss_month'].append(ind_metrics['loss_month'])
 
             history['val_r2'].append(val_metrics['r2'])
             history['holdout_r2'].append(ind_metrics['r2'])

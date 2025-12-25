@@ -300,65 +300,82 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
 
 def plot_training_history(history, fold, session_dir):
     """
-    Plots training and validation metrics for the unified model.
-    history: dict with keys 'train_loss', 'val_loss', 'val_r2', 'loss_biomass', 'loss_aux'.
+    Plots training and validation metrics for the unified model in a detailed grid.
     """
     save_dir = os.path.join(session_dir, 'plots')
     os.makedirs(save_dir, exist_ok=True)
     
-    plt.figure(figsize=(15, 5))
+    # Increase figure size for grid
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
     
-    # --- Loss Plot ---
-    plt.subplot(1, 2, 1)
-    if 'train_loss scaled - biomass loss x(1/100)' in history:
-        plt.plot(np.array(history['train_loss']), label='Total Train Loss', linewidth=2, color='tab:blue')
-    if 'loss_biomass' in history:
-        plt.plot(np.array(history['loss_biomass']) / 100.0, label='Biomass Train Loss (x100)', linestyle='--', alpha=0.7)
-    if 'loss_aux' in history:
-        plt.plot(history['loss_aux'], label='Aux Train Loss', linestyle=':', alpha=0.7)
-    if 'loss_species' in history:
-        plt.plot(history['loss_species'], label='Species Train Loss', linestyle='-.', alpha=0.7)
-    if 'loss_month' in history:
-        plt.plot(history['loss_month'], label='Month Train Loss', linestyle='-', alpha=0.4, color='gray')
-        
+    # 1. Total Loss
+    if 'train_loss' in history:
+        axes[0].plot(history['train_loss'], label='Train Total', color='tab:blue')
     if 'val_loss' in history:
-        plt.plot(np.array(history['val_loss']), label='Total Val Loss', linewidth=2, color='tab:red')
+        axes[0].plot(history['val_loss'], label='Val CV Total', color='tab:red')
+    if 'ind_loss' in history:
+        axes[0].plot(history['ind_loss'], label='Ind Test Total', color='tab:green', linestyle=':')
+    axes[0].set_title('Total Loss')
+    axes[0].legend()
+    
+    # 2. Biomass Loss (The Primary Target)
+    if 'loss_biomass' in history:
+        axes[1].plot(history['loss_biomass'], label='Train Biomass', color='tab:blue')
     if 'val_loss_biomass' in history:
-        plt.plot(np.array(history['val_loss_biomass']) / 100.0, label='Biomass Val Loss (x100)', linestyle='--', color='tab:orange', alpha=0.7)
+        axes[1].plot(history['val_loss_biomass'], label='Val CV Biomass', color='tab:red')
+    if 'ind_loss_biomass' in history:
+        axes[1].plot(history['ind_loss_biomass'], label='Ind Test Biomass', color='tab:green', linestyle=':')
+    axes[1].set_title('Biomass Loss (Log1p Space)')
+    axes[1].legend()
+    
+    # 3. Auxiliary Loss (NDVI/Height)
+    if 'loss_aux' in history:
+        axes[2].plot(history['loss_aux'], label='Train Aux', color='tab:blue')
     if 'val_loss_aux' in history:
-        plt.plot(history['val_loss_aux'], label='Aux Val Loss', linestyle=':', color='magenta', alpha=0.7)
+        axes[2].plot(history['val_loss_aux'], label='Val CV Aux', color='tab:red')
+    if 'ind_loss_aux' in history:
+        axes[2].plot(history['ind_loss_aux'], label='Ind Test Aux', color='tab:green', linestyle=':')
+    axes[2].set_title('Auxiliary Loss (NDVI/Height)')
+    axes[2].legend()
+    
+    # 4. Species Loss (Categorical)
+    if 'loss_species' in history:
+        axes[3].plot(history['loss_species'], label='Train Species', color='tab:blue')
     if 'val_loss_species' in history:
-        plt.plot(history['val_loss_species'], label='Species Val Loss', linestyle='-.', color='tab:brown', alpha=0.7)
+        axes[3].plot(history['val_loss_species'], label='Val CV Species', color='tab:red')
+    if 'ind_loss_species' in history:
+        axes[3].plot(history['ind_loss_species'], label='Ind Test Species', color='tab:green', linestyle=':')
+    axes[3].set_title('Species Loss (CrossEntropy)')
+    axes[3].legend()
+    
+    # 5. Month Loss (Phenology)
+    if 'loss_month' in history:
+        axes[4].plot(history['loss_month'], label='Train Month', color='tab:blue')
     if 'val_loss_month' in history:
-        plt.plot(history['val_loss_month'], label='Month Val Loss', linestyle='-', alpha=0.4, color='purple')
-        
-    plt.title(f'Fold {fold} - Training Progress (Loss)')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss Value')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+        axes[4].plot(history['val_loss_month'], label='Val CV Month', color='tab:red')
+    if 'ind_loss_month' in history:
+        axes[4].plot(history['ind_loss_month'], label='Ind Test Month', color='tab:green', linestyle=':')
+    axes[4].set_title('Month Loss (Sin/Cos)')
+    axes[4].legend()
     
-    # --- R2 Plot ---
-    plt.subplot(1, 2, 2)
+    # 6. R2 Metrics (The Benchmark)
     if 'val_r2' in history:
-        plt.plot(history['val_r2'], label='Val R2 (Special)', color='green', linewidth=2)
-    
-    plt.title(f'Fold {fold} - Validation Metric (R2)')
-    plt.xlabel('Epoch')
-    plt.ylabel('R2 Score')
-    plt.legend()
+        axes[5].plot(history['val_r2'], label='CV Val R2', color='red', linewidth=2)
     if 'holdout_r2' in history:
-        plt.plot(history['holdout_r2'], label='Holdout R2 (Strict)', color='red', linewidth=2, linestyle=':')
+        axes[5].plot(history['holdout_r2'], label='Strict Ind-Test R2', color='green', linewidth=2)
+    axes[5].set_title('R2 Metrics (Higher is Better)')
+    axes[5].set_ylim(-1.5, 1.0)
+    axes[5].axhline(y=0, color='black', linestyle='-', alpha=0.2)
+    axes[5].legend()
     
-    plt.title(f'Fold {fold} - Validation Metric (R2)')
-    plt.xlabel('Epoch')
-    plt.ylabel('R2 Score')
-    plt.legend()
-    plt.ylim(-2.0, 2.0)
-    plt.grid(True, alpha=0.3)
+    for ax in axes:
+        ax.set_xlabel('Epoch')
+        ax.grid(True, alpha=0.3)
     
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f"fold_{fold}_metrics.png"))
+    plt.suptitle(f'Fold {fold} - 3-Way Model Performance (Train vs CV vs Ind)', fontsize=16)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(os.path.join(save_dir, f"fold_{fold}_detailed_metrics.png"))
     plt.close()
 
 def calculate_global_weighted_r2(y_true, y_pred, weights):

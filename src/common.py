@@ -397,24 +397,21 @@ def upsample_minority_classes(df, target_col, logger):
         logger.info(f"No classes found in '{target_col}'. Skipping upsampling.")
         return df
     
-    # Calculate median count as the target
-    median_count = int(counts.median())
+    # Calculate target threshold: boost EVERYTHING to the MAX count for perfect fairness
+    target_threshold = int(counts.max())
     
-    # Only upsample classes below median
-    minority_classes = counts[counts < median_count].index
+    # Only upsample classes below the maximum
+    minority_classes = counts[counts < target_threshold].index
     
     if len(minority_classes) == 0:
-        logger.info(f"No upsampling needed. All '{target_col}' classes are at or above median ({median_count} samples).")
+        logger.info(f"All '{target_col}' classes are already perfectly balanced at {target_threshold} samples.")
         return df
     
     # Log before upsampling
-    logger.info(f"\n--- Before Upsampling ---")
-    logger.info(f"Total Samples: {len(df)}")
-    logger.info(f"Median class count: {median_count}")
-    logger.info(f"Classes below median ({median_count}):")
-    for cls in minority_classes:
-        logger.info(f"  - {cls}: {counts[cls]} samples")
-    logger.info(f"Upsampling Regime: Boosting {len(minority_classes)} '{target_col}' classes to median ({median_count} samples).")
+    logger.info(f"\n--- Balancing to Max Count ---")
+    logger.info(f"Total Samples (Initial): {len(df)}")
+    logger.info(f"Target count (Max): {target_threshold}")
+    logger.info(f"Upsampling Regime: Boosting {len(minority_classes)} '{target_col}' classes to match the max ({target_threshold} samples).")
     
     upsampled_dfs = [df]
     total_added = 0
@@ -422,10 +419,10 @@ def upsample_minority_classes(df, target_col, logger):
     for cls in minority_classes:
         cls_df = df[df[target_col] == cls]
         current_count = len(cls_df)
-        num_to_add = median_count - current_count
+        num_to_add = target_threshold - current_count
         
         if num_to_add > 0:
-            # Sample with replacement to reach median
+            # Sample with replacement to reach threshold
             added_df = cls_df.sample(n=num_to_add, replace=True, random_state=42)
             upsampled_dfs.append(added_df)
             total_added += num_to_add

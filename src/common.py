@@ -186,10 +186,9 @@ def upsample_minority_classes(df, target_col, logger):
             dfs.append(df[df[target_col] == cls].sample(n=add, replace=True, random_state=42))
     return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
 
-# ================= FIXED PLOTTING FUNCTION =================
 def plot_training_history(history, fold, session_dir):
     """
-    Plots metrics safely. Checks if data exists before plotting to avoid empty legend warnings.
+    Plots metrics including Independent Fold components.
     """
     save_dir = os.path.join(session_dir, 'plots')
     os.makedirs(save_dir, exist_ok=True)
@@ -197,7 +196,6 @@ def plot_training_history(history, fold, session_dir):
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     axes = axes.flatten()
     
-    # Helper to plot only if data exists
     def try_plot(ax_idx, key, label, color, style='-'):
         if key in history and len(history[key]) > 0:
             axes[ax_idx].plot(history[key], label=label, color=color, linestyle=style)
@@ -214,19 +212,22 @@ def plot_training_history(history, fold, session_dir):
     try_plot(1, 'ind_loss_biomass', 'Holdout', 'tab:green', ':')
     axes[1].set_title('Biomass Loss')
 
-    # 3. Aux Loss
+    # 3. Aux Loss (ADDED IND)
     try_plot(2, 'loss_aux', 'Train', 'tab:blue')
     try_plot(2, 'val_loss_aux', 'Val', 'tab:red')
+    try_plot(2, 'ind_loss_aux', 'Holdout', 'tab:green', ':') 
     axes[2].set_title('Aux Loss')
 
-    # 4. Species Loss
+    # 4. Species Loss (ADDED IND)
     try_plot(3, 'loss_species', 'Train', 'tab:blue')
     try_plot(3, 'val_loss_species', 'Val', 'tab:red')
+    try_plot(3, 'ind_loss_species', 'Holdout', 'tab:green', ':')
     axes[3].set_title('Species Loss')
 
-    # 5. Month Loss
+    # 5. Month Loss (ADDED IND)
     try_plot(4, 'loss_month', 'Train', 'tab:blue')
     try_plot(4, 'val_loss_month', 'Val', 'tab:red')
+    try_plot(4, 'ind_loss_month', 'Holdout', 'tab:green', ':')
     axes[4].set_title('Month Loss')
 
     # 6. R2
@@ -234,11 +235,9 @@ def plot_training_history(history, fold, session_dir):
     try_plot(5, 'holdout_r2', 'Holdout R2', 'green')
     axes[5].set_title('R2 Metrics')
     axes[5].axhline(0, color='black', alpha=0.3)
-    axes[5].set_ylim(-1.5, 1.1) # Constrain view to see progress
+    axes[5].set_ylim(-1.5, 1.1)
 
-    # Final Polish
     for ax in axes:
-        # FIX: Only call legend if something was actually plotted
         if ax.get_legend_handles_labels()[0]:
             ax.legend()
         ax.grid(True, alpha=0.3)

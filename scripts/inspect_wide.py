@@ -61,7 +61,13 @@ print('\nconflict_candidates (<=2 samples & only 1 state & 1 season):', len(conf
 print(conflicts[:50])
 
 # write a small csv summary for inspection
-out = Path(__file__).resolve().parents[0] / 'wide_summary.csv'
+ROOT_DIR = Path(__file__).parent.parent
+OUTPUT_DIR = ROOT_DIR / 'wide_summary'
+OUTPUT_DIR.mkdir(exist_ok=True)
+out = OUTPUT_DIR / 'wide_summary.csv'
+# create output directory if it doesn't exist
+OUTPUT_DIR.mkdir(exist_ok=True)
+
 with open(out, 'w', newline='') as f:
     w = csv.writer(f)
     w.writerow(['Species','Count','States','Seasons','MinDate','MaxDate'])

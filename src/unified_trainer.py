@@ -281,11 +281,18 @@ def run_training():
 
             if val_m['r2'] > best_val_r2:
                 best_val_r2 = val_m['r2']
+                # log statistics for TrBio, Vabout the best model
+                logger.info(f"New Best Val R2: {best_val_r2:.4f} at Epoch {epoch+1}")
+                logger.info(
+                    f"Best Model Stats - TrBio:{train_m['bio']:.4f} | "
+                    f"VBio:{val_m['bio']:.4f} VR2:{val_m['r2']:.4f} | "
+                    f"HR2:{hold_m['r2']:.4f}"
+                )
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold{fold}.pth"))
             
             plot_training_history(history, fold, session_dir)
 
-        model.load_state_dict(torch.load(os.path.join(session_dir, f"best_fold{fold}.pth")))
+        model.load_state_dict(torch.load(os.path.join(session_dir, f"best_fold{fold}.pth"), weights_only=True))
         ewc = EWC(model, train_loader, DEVICE, importance=EWC_IMPORTANCE)
         logger.info(f"Updated EWC for Fold {fold}")
 

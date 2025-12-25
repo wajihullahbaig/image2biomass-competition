@@ -150,10 +150,16 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
-# Single fold model to load (USER REQUEST: Load Fold 0 as default)
+# Ensemble Configuration
+# Set to None to ensemble ALL folds, or a list like [0, 2, 3] to select specific folds
+FOLDS_TO_ENSEMBLE = None  # None = use all available folds
+USE_ENSEMBLE = True       # Set to False to use single fold mode
+
+# Legacy single fold mode (used when USE_ENSEMBLE=False)
 FOLD_TO_LOAD = 0
 
 print(f"Device: {DEVICE}")
+print(f"Ensemble Mode: {USE_ENSEMBLE}")
 
 # ====================== HELPER FUNCTIONS ======================
 def get_season(month):
@@ -204,6 +210,17 @@ class TestDataset(Dataset):
         return img, row['clean_id']
 
 # ====================== MAIN INFERENCE LOGIC ======================
+def load_model(fold_path, backbone_name, num_species, device):
+    """Load a single fold model."""
+    model = BiomassUnifiedModel(
+        backbone_name=backbone_name, 
+        num_species=num_species, 
+        pretrained=False
+    ).to(device)
+    model.load_state_dict(torch.load(fold_path, map_location=device, weights_only=True))
+    model.eval()
+    return model
+
 def run_inference():
     print("="*70 + "\nBIOMASS UNIFIED MODEL INFERENCE\n" + "="*70)
     
@@ -228,19 +245,40 @@ def run_inference():
     print(f"   Image Size: {image_size}")
     print(f"   Num Species: {num_species}")
     
-    # 3. LOAD MODEL
-    print(f"\n[3/5] Loading fold {FOLD_TO_LOAD} model...")
-    fold_path = os.path.join(MODEL_DIR, f'best_model_fold{FOLD_TO_LOAD}.pth')
+    # 3. DISCOVER AND LOAD MODELS
+    print(f"\n[3/5] Loading models...")
     
-    model = BiomassUnifiedModel(
-        backbone_name=backbone_name, 
-        num_species=num_species, 
-        pretrained=False
-    ).to(DEVICE)
+    # Find all available fold models
+    available_folds = []
+    for i in range(10):  # Check up to 10 folds
+        fold_path = os.path.join(MODEL_DIR, f'best_model_fold{i}.pth')
+        if os.path.exists(fold_path):
+            available_folds.append(i)
     
-    model.load_state_dict(torch.load(fold_path, map_location=DEVICE, weights_only=True))
-    model.eval()
-    print(f"   ✓ Loaded Fold {FOLD_TO_LOAD} successfully")
+    print(f"   Available folds: {available_folds}")
+    
+    if USE_ENSEMBLE:
+        # Determine which folds to use
+        if FOLDS_TO_ENSEMBLE is None:
+            folds_to_use = available_folds
+        else:
+            folds_to_use = [f for f in FOLDS_TO_ENSEMBLE if f in available_folds]
+        
+        print(f"   🔗 ENSEMBLE MODE: Using folds {folds_to_use}")
+        
+        # Load all models
+        models = []
+        for fold in folds_to_use:
+            fold_path = os.path.join(MODEL_DIR, f'best_model_fold{fold}.pth')
+            model = load_model(fold_path, backbone_name, num_species, DEVICE)
+            models.append((fold, model))
+            print(f"   ✓ Loaded Fold {fold}")
+    else:
+        # Single fold mode
+        fold_path = os.path.join(MODEL_DIR, f'best_model_fold{FOLD_TO_LOAD}.pth')
+        model = load_model(fold_path, backbone_name, num_species, DEVICE)
+        models = [(FOLD_TO_LOAD, model)]
+        print(f"   ✓ Loaded Fold {FOLD_TO_LOAD} (Single Model Mode)")
     
     # 4. RUN INFERENCE
     print(f"\n[4/5] Running inference...")
@@ -254,25 +292,46 @@ def run_inference():
         pin_memory=False
     )
     
-    all_preds = []
-    all_clean_ids = []
+    # Collect predictions from all models
+    all_model_preds = []
     
-    with torch.no_grad():
-        for img, clean_ids in tqdm(loader, desc="Inference"):
-            img = img.to(DEVICE)
-            biomass_pred, _, _, _ = model(img)
-            all_preds.append(biomass_pred.cpu().numpy())
-            all_clean_ids.extend(clean_ids)
+    for fold_idx, model in models:
+        fold_preds = []
+        all_clean_ids = []
+        
+        with torch.no_grad():
+            for img, clean_ids in tqdm(loader, desc=f"Fold {fold_idx}"):
+                img = img.to(DEVICE)
+                biomass_pred, _, _, _ = model(img)
+                fold_preds.append(biomass_pred.cpu().numpy())
+                if len(all_model_preds) == 0:  # Only collect IDs once
+                    all_clean_ids.extend(clean_ids)
+        
+        fold_preds_array = np.concatenate(fold_preds, axis=0)
+        all_model_preds.append(fold_preds_array)
+        
+        if len(all_model_preds) == 1:
+            final_clean_ids = all_clean_ids
     
-    # 5. CREATE SUBMISSION
+    # 5. ENSEMBLE PREDICTIONS (Average)
     print("\n[5/5] Creating submission file...")
+    
+    if len(all_model_preds) > 1:
+        # Stack and average across models
+        stacked_preds = np.stack(all_model_preds, axis=0)  # (n_models, n_samples, 5)
+        preds_array = np.mean(stacked_preds, axis=0)       # (n_samples, 5)
+        print(f"   📊 Ensembled {len(all_model_preds)} models (mean)")
+    else:
+        preds_array = all_model_preds[0]
+        print(f"   📊 Single model prediction")
+    
+    # Safety clip to non-negative
+    preds_array = np.maximum(preds_array, 0)
+    
     target_cols = metadata['target_cols']  # ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     
-    preds_array = np.concatenate(all_preds, axis=0)
-    preds_array = np.maximum(preds_array, 0)  # Safety clip
-    
     preds_wide = pd.DataFrame(preds_array, columns=target_cols)
-    preds_wide['clean_id'] = all_clean_ids
+    preds_wide['clean_id'] = final_clean_ids
     
     submission_rows = []
     for _, row in preds_wide.iterrows():
@@ -287,7 +346,10 @@ def run_inference():
     submission_df = pd.DataFrame(submission_rows)
     submission_df.to_csv('submission.csv', index=False)
     
-    print("="*70 + "\n✅ SUBMISSION CREATED: submission.csv\n" + "="*70)
+    print("="*70)
+    print(f"✅ SUBMISSION CREATED: submission.csv")
+    print(f"   Mode: {'Ensemble (' + str(len(models)) + ' folds)' if USE_ENSEMBLE else 'Single Fold'}")
+    print("="*70)
     print(submission_df.head())
 
 if __name__ == '__main__':

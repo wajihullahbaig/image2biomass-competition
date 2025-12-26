@@ -18,20 +18,20 @@ class BiomassUnifiedModel(nn.Module):
             
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 256),
-            nn.LayerNorm(256),
+            nn.Linear(self.backbone_dim, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, num_aux)
+            nn.Dropout(0.1),
+            nn.Linear(128, num_aux)
         )
         
         # Species Head
         self.species_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 128),
-            nn.LayerNorm(128),
+            nn.Linear(self.backbone_dim, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(128, num_species)
+            nn.Dropout(0.4),
+            nn.Linear(64, num_species)
         )
         
         # 4. Month Head (Cyclical Regression) -seasonal cycles (sin/cos)
@@ -39,7 +39,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 128),
             nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),
             nn.Linear(128, 2) # Sin, Cos
         )
         

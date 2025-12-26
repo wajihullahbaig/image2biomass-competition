@@ -268,13 +268,11 @@ def run_training():
             history['val_r2'].append(v_m['r2_display'])
             history['holdout_r2'].append(h_m['r2_display'])
 
-            # Detailed componentwise logging of losses
-            logger.info(
-                f"  [Epoch {epoch+1}/{EPOCHS}] "
-                f"Train Loss: {t_m['loss']:.4f} (Bio: {t_m['bio']:.4f}, Aux: {t_m['aux']:.4f}, Sp: {t_m['sp']:.4f}, Mo: {t_m['mo']:.4f}) | "
-                f"Val Loss: {v_m['loss']:.4f} (Bio: {v_m['bio']:.4f}, Aux: {v_m['aux']:.4f}, Sp: {v_m['sp']:.4f}, Mo: {v_m['mo']:.4f}, R2: {v_m['r2_display']:.4f}) | "
-                f"Holdout Loss: {h_m['loss']:.4f} (Bio: {h_m['bio']:.4f}, Aux: {h_m['aux']:.4f}, Sp: {h_m['sp']:.4f}, Mo: {h_m['mo']:.4f}, R2: {h_m['r2_display']:.4f})"
-            )
+            # Detailed componentwise logging of losses # train,val,hold-out, each in its own line
+            logger.info(f"  [Epoch {epoch+1}/{EPOCHS}] ")
+            logger.info(f"Train Loss: {t_m['loss']:.4f} (Bio: {t_m['bio']:.4f}, Aux: {t_m['aux']:.4f}, Sp: {t_m['sp']:.4f}, Mo: {t_m['mo']:.4f})")
+            logger.info(f"Val Loss: {v_m['loss']:.4f} (Bio: {v_m['bio']:.4f}, Aux: {v_m['aux']:.4f}, Sp: {v_m['sp']:.4f}, Mo: {v_m['mo']:.4f}, R2: {v_m['r2_display']:.4f})")
+            logger.info(f"Holdout Loss: {h_m['loss']:.4f} (Bio: {h_m['bio']:.4f}, Aux: {h_m['aux']:.4f}, Sp: {h_m['sp']:.4f}, Mo: {h_m['mo']:.4f}, R2: {h_m['r2_display']:.4f})")            
 
             # Combined Score Logic (Val + Holdout)
             # We select the model that performed best on the Combined History (Recent Past + Immediate Future)

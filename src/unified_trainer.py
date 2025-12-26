@@ -90,7 +90,7 @@ def validate(model, loader, criterion_biomass, criterion_aux, criterion_species,
         month_target = batch['month_sin_cos'].to(device)
         
         if USE_TTA:
-            biomass_pred, aux_pred, species_logits, month_logits = apply_tta(model, images, device, n_passes=5)
+            biomass_pred, aux_pred, species_logits, month_logits = apply_tta(model, images, device)
         else:
             biomass_pred, aux_pred, species_logits, month_logits = model(images)
         

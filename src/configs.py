@@ -14,8 +14,9 @@ N_FOLDS = 5
 EPOCHS = 50 
 WEIGHT_DECAY = 1e-3
 PATIENCE = 5
-INITIAL_HISTORY_WEEKS = 6 # 1.5 Months
-HOLDOUT_WEEKS = 2 # 0.5 Months
+EARLY_STOP_PATIENCE = 10
+INITIAL_HISTORY_WEEKS = 4
+HOLDOUT_WEEKS = 1
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -31,7 +32,7 @@ USE_TTA = True
 FUSION_DIM = 256
 # Targets are small (KG scale)
 BIOMASS_FEAT_WEIGHT = 1000.0 
-AUX_FEAT_WEIGHT = 0.5
+AUX_FEAT_WEIGHT = 1.5
 SPECIES_FEAT_WEIGHT = 0.1
 MONTH_FEAT_WEIGHT = 0.1
 # --- Regularization ---
@@ -48,6 +49,7 @@ def config_str():
         f"EPOCHS: {EPOCHS}",
         f"WEIGHT_DECAY: {WEIGHT_DECAY}",
         f"PATIENCE: {PATIENCE}",
+        f"EARLY_STOP_PATIENCE: {EARLY_STOP_PATIENCE}",
         f"INITIAL_HISTORY_WEEKS: {INITIAL_HISTORY_WEEKS}",
         f"HOLDOUT_WEEKS: {HOLDOUT_WEEKS}",
         f"BACKBONE: {BACKBONE}",

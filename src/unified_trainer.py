@@ -234,10 +234,10 @@ def run_training():
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=PATIENCE)
         
-        # Track best milestones for stricter saving
-        best_val_milestone = -float('inf')
-        best_hold_milestone = -float('inf')
-        
+        # Track best score (Penalized Average)
+        best_score = -float('inf')
+        early_stop_counter = 0
+
         # Metrics History
         history = {
             'train_loss': [], 'val_loss': [], 'ind_loss': [],
@@ -287,17 +287,27 @@ def run_training():
             logger.info(f"Val Loss: {v_m['loss']:.4f} (Bio: {v_m['bio']:.4f}, Aux: {v_m['aux']:.4f}, Sp: {v_m['sp']:.4f}, Mo: {v_m['mo']:.4f}, R2: {v_m['r2_display']:.4f})")
             logger.info(f"Holdout Loss: {h_m['loss']:.4f} (Bio: {h_m['bio']:.4f}, Aux: {h_m['aux']:.4f}, Sp: {h_m['sp']:.4f}, Mo: {h_m['mo']:.4f}, R2: {h_m['r2_display']:.4f})")            
 
-            # Stricter Saving Logic: Both must improve
-            # We only save if the model beats its own personal best on BOTH Validation and Holdout
-            # This ensures we don't sacrifice one for the other.
+            # Penalized Average Score
+            # Rewards high average performance, penalizes inconsistency between Val and Holdout
+            # Formula: Score = Avg(Val, Hold) - 0.5 * |Val - Hold|
             
-            if v_m['r2'] > best_val_milestone and h_m['r2'] > best_hold_milestone:
-                best_val_milestone = v_m['r2']
-                best_hold_milestone = h_m['r2']
-                logger.info(f">> New Strict Best Model! Val: {best_val_milestone:.4f}, Holdout: {best_hold_milestone:.4f}")
+            avg_r2 = (v_m['r2'] + h_m['r2']) / 2
+            consistency_penalty = 0.5 * abs(v_m['r2'] - h_m['r2'])
+            current_score = avg_r2 - consistency_penalty
+            
+            early_stop_counter += 1
+            
+            if current_score > best_score:
+                best_score = current_score
+                early_stop_counter = 0 # Reset counter
+                logger.info(f">> New Best Score: {best_score:.4f} (Avg: {avg_r2:.4f} | Pen: {consistency_penalty:.4f}) [Val: {v_m['r2']:.4f}, Hold: {h_m['r2']:.4f}]")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"))
             
             plot_training_history(history, fold_idx, session_dir)
+            
+            if early_stop_counter >= EARLY_STOP_PATIENCE:
+                logger.info(f"Early stopping triggered after {EARLY_STOP_PATIENCE} epochs of no strict improvement.")
+                break
             
         # --- EWC UPDATE ---
         # Load best weights from this step to calculate Fisher Information for the NEXT step

@@ -30,7 +30,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 64),
             nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.6),
             nn.Linear(64, num_species)
         )
         

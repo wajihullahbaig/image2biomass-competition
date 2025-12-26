@@ -30,11 +30,13 @@ USE_TTA = True
 
 # --- Model Settings ---
 FUSION_DIM = 256
-# Targets are small (KG scale)
-BIOMASS_FEAT_WEIGHT = 1000.0 
-AUX_FEAT_WEIGHT = 2.0
-SPECIES_FEAT_WEIGHT = 0.1
-MONTH_FEAT_WEIGHT = 0.1
+# Balanced Weights: Biomass is still king but Aux/Phys are loud enough to matter
+BIOMASS_FEAT_WEIGHT = 200.0 
+AUX_FEAT_WEIGHT = 5.0
+SPECIES_FEAT_WEIGHT = 1.0
+MONTH_FEAT_WEIGHT = 1.0
+PHYSICS_FEAT_WEIGHT = 10.0 # Define this properly in config
+
 # --- Regularization ---
 EWC_IMPORTANCE = 50.0
 
@@ -63,6 +65,7 @@ def config_str():
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
         f"MONTH_FEAT_WEIGHT: {MONTH_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
+        f"PHYSICS_FEAT_WEIGHT: {PHYSICS_FEAT_WEIGHT}",
         f"EWC_IMPORTANCE: {EWC_IMPORTANCE}"
     ]
     return "\n".join(config_items)

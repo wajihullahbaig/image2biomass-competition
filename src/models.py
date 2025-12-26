@@ -6,7 +6,7 @@ from configs import BACKBONE, FUSION_DIM, IMAGE_SIZE, BACKBONE_FREEZE_FRACTION
 
 
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name=BACKBONE, num_aux=2, num_species=11, pretrained=True):
+    def __init__(self, backbone_name=BACKBONE, num_aux=3, num_species=16, pretrained=True):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
@@ -16,7 +16,7 @@ class BiomassUnifiedModel(nn.Module):
             dummy_input = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE)
             self.backbone_dim = self.backbone(dummy_input).shape[1]
             
-        # 2. Auxiliary Head (NDVI, Height)
+        # 2. Auxiliary Head (NDVI, LogHeight, Interaction)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
             nn.LayerNorm(128),
@@ -43,35 +43,31 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(64, 2) # Sin, Cos
         )
         
-        
         # 5. Biomass Head
-        # Inputs: Backbone + Aux(2) + Species(Probabilities) + Month(2)
+        # Inputs: Backbone + Aux(3) + Species(Probabilities) + Month(2)
         input_dim = self.backbone_dim + num_aux + num_species + 2
                 
         self.biomass_head = nn.Sequential(
-            nn.Linear(input_dim, FUSION_DIM), # +2 for Month Sin/Cos
+            nn.Linear(input_dim, FUSION_DIM),
             nn.LayerNorm(FUSION_DIM),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(FUSION_DIM, 256),
             nn.ReLU(),
-            nn.Linear(256, 3), # OUTPUT: [Clover, Dead, Green] ONLY
-            nn.Softplus() # Ensures positive outputs
+            nn.Linear(256, 4), # OUTPUT: [Log_Clover, Log_Dead, Log_Green, Log_Total]
+            nn.Softplus() # Ensures log-targets >= 0 (since 1+Mass >= 1)
         )
 
         self._init_biomass_head()
         
-
     def _init_biomass_head(self):
         """
-        FIX: Initialize the final regression layer to output very small values close to 0.
-        This prevents massive loss at epoch 0.
+        Init regression to output small positive values.
         """
-        # Initialize the last Linear layer of biomass_head
         last_layer = self.biomass_head[-2] 
         nn.init.normal_(last_layer.weight, mean=0.0, std=0.001)
-        # Bias = -3.0 ensures Softplus(-3.0) is approx 0.05, close to mean biomass
-        nn.init.constant_(last_layer.bias, -3.0)
+        # Bias -1.0 gives Softplus(-1) approx 0.3, decent starting log-mass
+        nn.init.constant_(last_layer.bias, -1.0)
 
     def freeze_backbone(self, freeze_fraction=BACKBONE_FREEZE_FRACTION):
         params = list(self.backbone.parameters())
@@ -95,22 +91,30 @@ class BiomassUnifiedModel(nn.Module):
         # Fusion
         combined_feats = torch.cat([img_feats, aux_out, species_probs, month_logits], dim=1)
         
-        # Physics Head
-        # Output is KG.
-        raw_components = self.biomass_head(combined_feats) # (B, 3)
+        # Log-Space Predictions
+        log_preds = self.biomass_head(combined_feats) # (B, 4)
         
-        raw_c = raw_components[:, 0:1]
-        raw_d = raw_components[:, 1:2]
-        raw_g = raw_components[:, 2:3]
+        log_c = log_preds[:, 0:1]
+        log_d = log_preds[:, 1:2]
+        log_g = log_preds[:, 2:3]
+        log_t = log_preds[:, 3:4]
         
-        # Linear aggregates
-        raw_total = raw_c + raw_d + raw_g
-        raw_gdm   = raw_c + raw_g
+        # Derive Log(GDM) = Log(C + G) = Log( exp(LogC) + exp(LogG) )
+        # Actually since we predict Log(1+X), this is trickier.
+        # Approximation: Log(GDM) approx Logaddexp(LogC, LogG) 
+        # But strictly: (e^LogC - 1) + (e^LogG - 1) = GDM. 
+        # So Log(1+GDM) = Log(e^LogC + e^LogG - 1). 
+        # Let's use the explicit math for physics consistency.
+        
+        c = torch.expm1(log_c)
+        g = torch.expm1(log_g)
+        log_gdm = torch.log1p(c + g + 1e-6)
         
         # Stack: C, D, G, Total, GDM
-        biomass_out = torch.cat([raw_c, raw_d, raw_g, raw_total, raw_gdm], dim=1)
+        biomass_out = torch.cat([log_c, log_d, log_g, log_t, log_gdm], dim=1)
         
         return biomass_out, aux_out, species_logits, month_logits
+
 
 def initialize_weights(model):
     # General init for other layers

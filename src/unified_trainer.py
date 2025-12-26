@@ -16,7 +16,7 @@ sys.path.append(str(ROOT_DIR))
 
 from configs import *
 from common import (
-    check_group_leakage, load_data, setup_logging, set_seed, get_image_data_transforms_v1,
+    check_group_leakage, load_data, setup_logging, set_seed, get_image_data_transforms_v2,
     calculate_global_weighted_r2, enforce_physical_constraints,
     plot_training_history, apply_tta, upsample_minority_classes, EWC
 )
@@ -156,7 +156,7 @@ def run_training():
     criterion_sp = nn.CrossEntropyLoss(label_smoothing=0.1)
     criterion_mo = nn.HuberLoss(delta=1.0)
 
-    train_tf, val_tf = get_image_data_transforms_v1()
+    train_tf, val_tf = get_image_data_transforms_v2()
     ewc = None
     
     # 4. WALK FORWARD LOOP

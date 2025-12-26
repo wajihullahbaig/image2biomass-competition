@@ -274,11 +274,11 @@ def run_training():
 
         history = {
             'train_loss': [], 'val_loss': [], 'ind_loss': [],
-            'loss_biomass': [], 'ind_loss_biomass': [], 'val_loss_biomass': [],
-            'loss_aux': [], 'ind_loss_aux': [], 'val_loss_aux': [],
-            'loss_species': [], 'ind_loss_species': [], 'val_loss_species': [],
-            'loss_month': [], 'ind_loss_month': [], 'val_loss_month': [],
-            'loss_physics': [], 'ind_loss_physics': [], 'val_loss_physics': [],
+            'train_bio': [], 'val_bio': [], 'ind_bio': [],
+            'train_aux': [], 'val_aux': [], 'ind_aux': [],
+            'train_sp': [], 'val_sp': [], 'ind_sp': [],
+            'train_mo': [], 'val_mo': [], 'ind_mo': [],
+            'train_phy': [], 'val_phy': [], 'ind_phy': [],
             'val_r2': [], 'holdout_r2': []
         }
 
@@ -295,36 +295,33 @@ def run_training():
             
             scheduler.step(current_score) # Step on Custom Score
             
-            # --- Store Metrics ---
-            # Total Losses
-            history['train_loss'].append(t_m['loss'])
-            history['val_loss'].append(v_m['loss'])
-            history['ind_loss'].append(h_m['loss'])
+            # --- Store Metrics with Defensive Float Casting ---
+            history['train_loss'].append(float(t_m['loss']))
+            history['val_loss'].append(float(v_m['loss']))
+            history['ind_loss'].append(float(h_m['loss']))
             
-            # Component Losses - Train
-            history['loss_biomass'].append(t_m['bio'])
-            history['loss_aux'].append(t_m['aux'])
-            history['loss_species'].append(t_m['sp'])
-            history['loss_month'].append(t_m['mo'])
-            history['loss_physics'].append(t_m['phy'])
+            history['train_bio'].append(float(t_m['bio']))
+            history['val_bio'].append(float(v_m['bio']))
+            history['ind_bio'].append(float(h_m['bio']))
             
-            # Component Losses - Validation
-            history['val_loss_biomass'].append(v_m['bio'])
-            history['val_loss_aux'].append(v_m['aux'])
-            history['val_loss_species'].append(v_m['sp'])
-            history['val_loss_month'].append(v_m['mo'])
-            history['val_loss_physics'].append(v_m['phy'])
+            history['train_aux'].append(float(t_m['aux']))
+            history['val_aux'].append(float(v_m['aux']))
+            history['ind_aux'].append(float(h_m['aux']))
             
-            # Component Losses - Holdout
-            history['ind_loss_biomass'].append(h_m['bio'])
-            history['ind_loss_aux'].append(h_m['aux'])
-            history['ind_loss_species'].append(h_m['sp'])
-            history['ind_loss_month'].append(h_m['mo'])
-            history['ind_loss_physics'].append(h_m['phy'])
+            history['train_sp'].append(float(t_m['sp']))
+            history['val_sp'].append(float(v_m['sp']))
+            history['ind_sp'].append(float(h_m['sp']))
             
-            # R2
-            history['val_r2'].append(v_m['r2_display'])
-            history['holdout_r2'].append(h_m['r2_display'])
+            history['train_mo'].append(float(t_m['mo']))
+            history['val_mo'].append(float(v_m['mo']))
+            history['ind_mo'].append(float(h_m['mo']))
+            
+            history['train_phy'].append(float(t_m['phy']))
+            history['val_phy'].append(float(v_m['phy']))
+            history['ind_phy'].append(float(h_m['phy']))
+            
+            history['val_r2'].append(float(v_m['r2_display']))
+            history['holdout_r2'].append(float(h_m['r2_display']))
 
             logger.info(f"[Epoch {epoch+1}]")
             logger.info(f"  Train: L={t_m['loss']:.3f} (Bio={t_m['bio']:.4f}, Aux={t_m['aux']:.4f}, Sp={t_m['sp']:.3f}, Mo={t_m['mo']:.3f}, Phy={t_m['phy']:.4f})")
@@ -335,8 +332,7 @@ def run_training():
             if current_score > best_score:
                 best_score = current_score
                 early_stop_counter = 0
-                logger.info(f"   >> New Best Score! Saving for fold {fold_idx} with score {current_score:.4f}")
-                logger.info(f" validation score: {v_m['r2']:.4f}, holdout score: {h_m['r2']:.4f}")
+                logger.info(f">> New Best Score! Saving for fold {fold_idx}")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"))
             else:
                 early_stop_counter += 1

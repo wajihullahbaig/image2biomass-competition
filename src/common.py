@@ -284,7 +284,10 @@ def plot_training_history(history, fold, session_dir):
     
     def try_plot(ax_idx, key, label, color, style='-'):
         if key in history and len(history[key]) > 0:
-            axes[ax_idx].plot(history[key], label=label, color=color, linestyle=style)
+            # Defensive conversion to float to ensure matplotlib compatibility
+            data = [float(x) for x in history[key] if x is not None]
+            if len(data) > 0:
+                axes[ax_idx].plot(data, label=label, color=color, linestyle=style)
 
     # 1. Total Loss
     try_plot(0, 'train_loss', 'Train', 'tab:blue')
@@ -293,33 +296,33 @@ def plot_training_history(history, fold, session_dir):
     axes[0].set_title('Total Loss')
 
     # 2. Biomass Loss
-    try_plot(1, 'loss_biomass', 'Train', 'tab:blue')
-    try_plot(1, 'val_loss_biomass', 'Val', 'tab:red')
-    try_plot(1, 'ind_loss_biomass', 'Holdout', 'tab:green', ':')
+    try_plot(1, 'train_bio', 'Train', 'tab:blue')
+    try_plot(1, 'val_bio', 'Val', 'tab:red')
+    try_plot(1, 'ind_bio', 'Holdout', 'tab:green', ':')
     axes[1].set_title('Biomass Loss')
 
     # 3. Aux Loss
-    try_plot(2, 'loss_aux', 'Train', 'tab:blue')
-    try_plot(2, 'val_loss_aux', 'Val', 'tab:red')
-    try_plot(2, 'ind_loss_aux', 'Holdout', 'tab:green', ':') 
+    try_plot(2, 'train_aux', 'Train', 'tab:blue')
+    try_plot(2, 'val_aux', 'Val', 'tab:red')
+    try_plot(2, 'ind_aux', 'Holdout', 'tab:green', ':') 
     axes[2].set_title('Aux Loss')
 
     # 4. Species Loss
-    try_plot(3, 'loss_species', 'Train', 'tab:blue')
-    try_plot(3, 'val_loss_species', 'Val', 'tab:red')
-    try_plot(3, 'ind_loss_species', 'Holdout', 'tab:green', ':')
+    try_plot(3, 'train_sp', 'Train', 'tab:blue')
+    try_plot(3, 'val_sp', 'Val', 'tab:red')
+    try_plot(3, 'ind_sp', 'Holdout', 'tab:green', ':')
     axes[3].set_title('Species Loss')
 
     # 5. Month Loss
-    try_plot(4, 'loss_month', 'Train', 'tab:blue')
-    try_plot(4, 'val_loss_month', 'Val', 'tab:red')
-    try_plot(4, 'ind_loss_month', 'Holdout', 'tab:green', ':')
+    try_plot(4, 'train_mo', 'Train', 'tab:blue')
+    try_plot(4, 'val_mo', 'Val', 'tab:red')
+    try_plot(4, 'ind_mo', 'Holdout', 'tab:green', ':')
     axes[4].set_title('Month Loss')
 
     # 6. Physics Loss
-    try_plot(5, 'loss_physics', 'Train', 'tab:blue')
-    try_plot(5, 'val_loss_physics', 'Val', 'tab:red')
-    try_plot(5, 'ind_loss_physics', 'Holdout', 'tab:green', ':')
+    try_plot(5, 'train_phy', 'Train', 'tab:blue')
+    try_plot(5, 'val_phy', 'Val', 'tab:red')
+    try_plot(5, 'ind_phy', 'Holdout', 'tab:green', ':')
     axes[5].set_title('Physics Loss')
 
     # 7. R2 Metrics
@@ -327,7 +330,15 @@ def plot_training_history(history, fold, session_dir):
     try_plot(6, 'holdout_r2', 'Holdout R2', 'green')
     axes[6].set_title('R2 Metrics')
     axes[6].axhline(0, color='black', alpha=0.3)
-    axes[6].set_ylim(-1.5, 1.1)
+    # Flexible ylim for R2
+    vals = []
+    if 'val_r2' in history: vals.extend(history['val_r2'])
+    if 'holdout_r2' in history: vals.extend(history['holdout_r2'])
+    if vals:
+        vmin, vmax = min(vals), max(vals)
+        axes[6].set_ylim(min(vmin - 0.1, -3.5), max(vmax + 0.1, 3.5))
+    else:
+        axes[6].set_ylim(-3.5,3.5)
 
     for ax in axes:
         if ax.get_legend_handles_labels()[0]:

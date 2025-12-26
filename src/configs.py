@@ -30,7 +30,7 @@ FUSION_DIM = 256
 # Targets are small (KG scale, < 1.0). Large weights cause exploding gradients.
 BIOMASS_FEAT_WEIGHT = 100.0 
 AUX_FEAT_WEIGHT = 1.25
-SPECIES_FEAT_WEIGHT = 1.25
+SPECIES_FEAT_WEIGHT = 0.75
 MONTH_FEAT_WEIGHT = 1.25
 # --- Regularization ---
 EWC_IMPORTANCE = 250.0

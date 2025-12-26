@@ -171,16 +171,27 @@ def run_training():
         df_history = df[df['week_period'].isin(history_weeks)].copy()
         df_holdout = df[df['week_period'] == current_holdout_week].copy()
         
-        # 6. Temporal Split of History (Train/Val)
-        # We take the LAST 20% of history as the Validation set (most recent past)
-        # The first 80% is the Training set (distant past)
-        split_point = int(len(df_history) * 0.8)
+        # 6. Temporal Stratified Split
+        # Split each species temporally (first 80% train, last 20% val) to preserve order AND stratify.
+        train_dfs = []
+        val_dfs = []
         
-        # If history is tiny (e.g. week 0 is small), ensure at least some train/val
-        if split_point < 2: split_point = len(df_history) - 1
+        for species_id in df_history['Species'].unique():
+            # Get all samples for this species, maintaining temporal order (already sorted)
+            species_df = df_history[df_history['Species'] == species_id]
+            n = len(species_df)
             
-        df_train = df_history.iloc[:split_point].copy()
-        df_val = df_history.iloc[split_point:].copy()
+            if n < 2:
+                # Too few to split, put in train
+                train_dfs.append(species_df)
+                continue
+                
+            split_idx = int(n * 0.8)
+            train_dfs.append(species_df.iloc[:split_idx])
+            val_dfs.append(species_df.iloc[split_idx:])
+            
+        df_train = pd.concat(train_dfs).sort_values('Sampling_Date') if train_dfs else pd.DataFrame(columns=df.columns)
+        df_val = pd.concat(val_dfs).sort_values('Sampling_Date') if val_dfs else pd.DataFrame(columns=df.columns)
         
         # Logging to confirm logic
         logger.info(f"  Holdout Week: {current_holdout_week} ({len(df_holdout)} samples)")

@@ -21,7 +21,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 128),
             nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.2),
             nn.Linear(128, num_aux)
         )
         
@@ -36,11 +36,11 @@ class BiomassUnifiedModel(nn.Module):
         
         # 4. Month Head (Cyclical Regression) -seasonal cycles (sin/cos)
         self.month_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 128),
-            nn.LayerNorm(128),
+            nn.Linear(self.backbone_dim, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 2) # Sin, Cos
+            nn.Dropout(0.4),
+            nn.Linear(64, 2) # Sin, Cos
         )
         
         

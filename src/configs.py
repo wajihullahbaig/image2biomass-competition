@@ -8,13 +8,13 @@ IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 IMAGE_SIZE = 384
 # Training Hyperparameters
-BATCH_SIZE = 16 
-LEARNING_RATE = 15e-5 
+BATCH_SIZE = 32 
+LEARNING_RATE = 1e-4 
 N_FOLDS = 5
-EPOCHS = 50 
+EPOCHS = 80 
 WEIGHT_DECAY = 1e-3
 PATIENCE = 5
-EARLY_STOP_PATIENCE = 10
+EARLY_STOP_PATIENCE = 20
 INITIAL_HISTORY_WEEKS = 4
 HOLDOUT_WEEKS = 1
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
@@ -25,18 +25,18 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
 # training settings
 FREEZE_BACKBONE = True
-BACKBONE_FREEZE_FRACTION = 0.75
+BACKBONE_FREEZE_FRACTION = 0.8
 USE_TTA = True
 
 # --- Model Settings ---
 FUSION_DIM = 256
 # Targets are small (KG scale)
 BIOMASS_FEAT_WEIGHT = 1000.0 
-AUX_FEAT_WEIGHT = 1.5
+AUX_FEAT_WEIGHT = 2.0
 SPECIES_FEAT_WEIGHT = 0.1
 MONTH_FEAT_WEIGHT = 0.1
 # --- Regularization ---
-EWC_IMPORTANCE = 75.0
+EWC_IMPORTANCE = 50.0
 
 # return a string representation of the configuration
 def config_str():

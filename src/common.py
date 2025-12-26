@@ -1,5 +1,4 @@
 # common.py
-# common.py
 import os
 import pandas as pd
 pd.set_option('future.no_silent_downcasting', True)
@@ -11,6 +10,7 @@ import torch
 from torch import nn
 from torchvision import transforms
 import matplotlib.pyplot as plt
+import torchvision.transforms.functional as TF
 
 from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE, BIOMASS_FEAT_WEIGHT
 
@@ -85,43 +85,90 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info(f"Data Loaded. Rows: {len(wide)}")
     return wide
     
-def get_image_data_transforms_v1()->tuple:
-    """
-    Returns the training and validation data augmentation transforms.
-    """
-    # Data Augmentation Transforms
+def get_image_data_transforms_v2():
     train_transform = transforms.Compose([
-                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomVerticalFlip(),
-                transforms.RandomRotation(15),
-                transforms.RandomAutocontrast(),
-                transforms.RandomEqualize(),
-                transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
-                transforms.RandomGrayscale(p=0.25),
-                transforms.RandomResizedCrop(size=(IMAGE_SIZE, IMAGE_SIZE), scale=(0.8, 1.0)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-            ])
+        transforms.RandomResizedCrop(
+            size=(IMAGE_SIZE, IMAGE_SIZE),
+            scale=(0.85, 1.0),
+            ratio=(0.9, 1.1)
+        ),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+
+        # Rotation with limited black corners
+        transforms.RandomRotation(
+            degrees=15,
+            interpolation=transforms.InterpolationMode.BILINEAR,
+            fill=0  # black corners allowed
+        ),
+
+        transforms.RandomAffine(
+            degrees=0,
+            translate=(0.05, 0.05),
+            scale=(0.95, 1.05),
+        ),
+
+        transforms.RandomAutocontrast(p=0.3),
+        transforms.RandomEqualize(p=0.2),
+        transforms.RandomGrayscale(p=0.2),
+
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
+    ])
 
     val_transform = transforms.Compose([
-                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-            ])
-    return train_transform, val_transform  
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
+    ])
 
-def apply_tta(model, image, device, n_passes=1):
+    return train_transform, val_transform
+
+
+def rotate_and_center_crop(x, angle):
+    """
+    x: (B, C, H, W)
+    """
+    B, C, H, W = x.shape
+
+    # rotate
+    x = TF.rotate(
+        x,
+        angle=angle,
+        interpolation=TF.InterpolationMode.BILINEAR,
+        fill=0
+    )
+
+    # crop central region (avoid corners)
+    crop_frac = 0.9
+    ch, cw = int(H * crop_frac), int(W * crop_frac)
+
+    top = (H - ch) // 2
+    left = (W - cw) // 2
+
+    x = x[:, :, top:top+ch, left:left+cw]
+
+    # resize back
+    x = torch.nn.functional.interpolate(
+        x,
+        size=(H, W),
+        mode="bilinear",
+        align_corners=False
+    )
+
+    return x
+
+def apply_tta(model, image, device):
     model.eval()
     all_biomass, all_aux, all_species, all_month = [], [], [], []
 
-    # TTA: Original, Horizontal, Vertical, Horizontal+Vertical
     transforms_list = [
-        lambda x: x,                      # original
-        lambda x: torch.flip(x, [3]),     # horizontal flip
-        lambda x: torch.flip(x, [2]),     # vertical flip
-        lambda x: torch.flip(x, [2, 3]),  # vertical + horizontal
+        lambda x: x,
+        lambda x: torch.flip(x, [3]),
+        lambda x: torch.flip(x, [2]),
+        lambda x: rotate_and_center_crop(x, 10),
+        lambda x: rotate_and_center_crop(x, -10),
     ]
 
     for t in transforms_list:
@@ -139,6 +186,8 @@ def apply_tta(model, image, device, n_passes=1):
         torch.stack(all_species).mean(0),
         torch.stack(all_month).mean(0),
     )
+
+
 
 def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=None) -> str:
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

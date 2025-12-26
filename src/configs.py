@@ -34,8 +34,6 @@ SPECIES_FEAT_WEIGHT = 1.25
 MONTH_FEAT_WEIGHT = 1.25
 # --- Regularization ---
 EWC_IMPORTANCE = 250.0
-EARLY_STOP_PATIENCE = 15
-ACCUMULATION_STEPS = 1  # Keep at 1 for stability unless OOM
 
 # return a string representation of the configuration
 def config_str():
@@ -59,8 +57,6 @@ def config_str():
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
         f"MONTH_FEAT_WEIGHT: {MONTH_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
-        f"EWC_IMPORTANCE: {EWC_IMPORTANCE}",
-        f"EARLY_STOP_PATIENCE: {EARLY_STOP_PATIENCE}",
-        f"ACCUMULATION_STEPS: {ACCUMULATION_STEPS}"
+        f"EWC_IMPORTANCE: {EWC_IMPORTANCE}"
     ]
     return "\n".join(config_items)

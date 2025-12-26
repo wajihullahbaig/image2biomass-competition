@@ -4,6 +4,7 @@ import torch.nn as nn
 import timm
 from configs import BACKBONE, FUSION_DIM, IMAGE_SIZE, BACKBONE_FREEZE_FRACTION
 
+
 class BiomassUnifiedModel(nn.Module):
     def __init__(self, backbone_name=BACKBONE, num_aux=2, num_species=11, pretrained=True):
         super(BiomassUnifiedModel, self).__init__()
@@ -17,41 +18,49 @@ class BiomassUnifiedModel(nn.Module):
             
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 128),
+            nn.Linear(self.backbone_dim, 256),
+            nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Linear(128, num_aux)
+            nn.Dropout(0.2),
+            nn.Linear(256, num_aux)
         )
         
-        # 3. Species Head
+        # Species Head
         self.species_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 64),
+            nn.Linear(self.backbone_dim, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Linear(64, num_species)
+            nn.Dropout(0.5),
+            nn.Linear(128, num_species)
         )
         
-        # 4. Month Head (Cyclical)
+        # 4. Month Head (Cyclical Regression) -seasonal cycles (sin/cos)
         self.month_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 64),
+            nn.Linear(self.backbone_dim, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Linear(64, 2)
+            nn.Dropout(0.2),
+            nn.Linear(128, 2) # Sin, Cos
         )
+        
         
         # 5. Biomass Head
         # Inputs: Backbone + Aux(2) + Species(Probabilities) + Month(2)
         input_dim = self.backbone_dim + num_aux + num_species + 2
-        
+                
         self.biomass_head = nn.Sequential(
-            nn.Linear(input_dim, FUSION_DIM),
+            nn.Linear(input_dim, FUSION_DIM), # +2 for Month Sin/Cos
             nn.LayerNorm(FUSION_DIM),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(FUSION_DIM, 128),
+            nn.Dropout(0.5),
+            nn.Linear(FUSION_DIM, 256),
             nn.ReLU(),
-            nn.Linear(128, 3), # Predicts Clover, Dead, Green
-            nn.Softplus()      # Enforce non-negativity
+            nn.Linear(256, 3), # OUTPUT: [Clover, Dead, Green] ONLY
+            nn.Softplus() # Ensures positive outputs
         )
 
         self._init_biomass_head()
+        
 
     def _init_biomass_head(self):
         """

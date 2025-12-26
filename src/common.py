@@ -239,19 +239,14 @@ def check_group_leakage(train_df, holdout_df, group_col, logger):
     overlap = set(train_df[group_col]) & set(holdout_df[group_col])
     if overlap: logger.warning(f"Leakage detected: {overlap}")
 
-def upsample_minority_classes(df, target_col, logger):
-    # log detailed summary of upsampling process
+def upsample_minority_classes(df, target_col):
     counts = df[target_col].value_counts()
-    logger.info(f"Upsampling minority classes: {counts}")
     target = int(counts.max())
-    logger.info(f"Upsampling to target count: {target}")
     dfs = [df]
     for cls, count in counts.items():
         if count < target:
             add = target - count
             dfs.append(df[df[target_col] == cls].sample(n=add, replace=True, random_state=42))
-    logger.info(f"Upsampled train split: {len(pd.concat(dfs))} samples")
-    logger.info(f"Upsampled train split classes: {pd.concat(dfs)[target_col].value_counts()}")
     return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
 
 def plot_training_history(history, fold, session_dir):

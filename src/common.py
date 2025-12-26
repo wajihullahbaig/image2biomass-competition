@@ -79,37 +79,51 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'].fillna(0))
     wide = wide.rename(columns={'clean_id': 'sample_id'})
     
-    # Scale Targets to KG
+    # Scale Targets to KG (kilogra scale)
     wide[target_cols] = wide[target_cols].astype(float) / 1000.0
     
     logger.info(f"Data Loaded. Rows: {len(wide)}")
     return wide
     
 def get_image_data_transforms_v1()->tuple:
+    """
+    Returns the training and validation data augmentation transforms.
+    """
+    # Data Augmentation Transforms
     train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.5, 1.0)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-    ])
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomVerticalFlip(),
+                transforms.RandomRotation(15),
+                transforms.RandomAutocontrast(),
+                transforms.RandomEqualize(),
+                transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+                transforms.RandomGrayscale(p=0.25),
+                transforms.RandomResizedCrop(size=(IMAGE_SIZE, IMAGE_SIZE), scale=(0.8, 1.0)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+            ])
+
     val_transform = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-    ])
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+            ])
     return train_transform, val_transform  
 
 def apply_tta(model, image, device, n_passes=1):
     model.eval()
     all_biomass, all_aux, all_species, all_month = [], [], [], []
-    
-    # Basic TTA: Original + Horizontal Flip
+
+    # TTA: Original, Horizontal, Vertical, Horizontal+Vertical
     transforms_list = [
-        lambda x: x,
-        lambda x: torch.flip(x, [3])
+        lambda x: x,                      # original
+        lambda x: torch.flip(x, [3]),     # horizontal flip
+        lambda x: torch.flip(x, [2]),     # vertical flip
+        lambda x: torch.flip(x, [2, 3]),  # vertical + horizontal
     ]
-    
+
     for t in transforms_list:
         with torch.no_grad():
             img_aug = t(image)
@@ -118,12 +132,12 @@ def apply_tta(model, image, device, n_passes=1):
             all_aux.append(a)
             all_species.append(s)
             all_month.append(m)
-            
+
     return (
         torch.stack(all_biomass).mean(0),
         torch.stack(all_aux).mean(0),
         torch.stack(all_species).mean(0),
-        torch.stack(all_month).mean(0)
+        torch.stack(all_month).mean(0),
     )
 
 def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=None) -> str:

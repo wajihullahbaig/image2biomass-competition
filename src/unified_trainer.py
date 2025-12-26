@@ -187,6 +187,7 @@ def run_training():
         logger.info(f"  History Range: {history_weeks[0]} -> {history_weeks[-1]}")
         logger.info(f"  Train Split (Earlier): {len(df_train)} samples")
         logger.info(f"  Val Split   (Recent):  {len(df_val)} samples")
+        #
         
         if len(df_train) < 2 or len(df_val) < 1 or len(df_holdout) < 1:
             logger.warning("  Skipping step due to insufficient samples.")
@@ -194,11 +195,11 @@ def run_training():
 
         # Upsample only the Training portion
         
-        logger.info(f"Before upsampling: {df_train['Species'].value_counts()}")
-        
+        logger.info(f"Before upsampling: {df_train['Species'].value_counts()}")        
         df_train = upsample_minority_classes(df_train, 'Species', logger)
         
         logger.info(f"After upsampling: {df_train['Species'].value_counts()}")
+        logger.info(f"Heldout Species: {df_holdout['Species'].value_counts()}")
 
         # Loaders
         train_loader = DataLoader(BiomassDataset(df_train, transform=train_tf), 

@@ -12,6 +12,8 @@ BATCH_SIZE = 16
 LEARNING_RATE = 15e-5 
 N_FOLDS = 5
 EPOCHS = 50 
+WEIGHT_DECAY = 1e-3
+PATIENCE = 5
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -27,9 +29,9 @@ USE_TTA = True
 FUSION_DIM = 256
 # Targets are small (KG scale, < 1.0). Large weights cause exploding gradients.
 BIOMASS_FEAT_WEIGHT = 100.0 
-AUX_FEAT_WEIGHT = 1.0
-SPECIES_FEAT_WEIGHT = 1.0
-MONTH_FEAT_WEIGHT = 1.0
+AUX_FEAT_WEIGHT = 1.25
+SPECIES_FEAT_WEIGHT = 1.25
+MONTH_FEAT_WEIGHT = 1.25
 # --- Regularization ---
 EWC_IMPORTANCE = 250.0
 EARLY_STOP_PATIENCE = 15
@@ -44,6 +46,8 @@ def config_str():
         f"LEARNING_RATE: {LEARNING_RATE}",
         f"N_FOLDS: {N_FOLDS}",
         f"EPOCHS: {EPOCHS}",
+        f"WEIGHT_DECAY: {WEIGHT_DECAY}",
+        f"PATIENCE: {PATIENCE}",
         f"BACKBONE: {BACKBONE}",
         f"TARGET_COLS: {TARGET_COLS}",
         f"OFFICIAL_WEIGHTS: {OFFICIAL_WEIGHTS}",

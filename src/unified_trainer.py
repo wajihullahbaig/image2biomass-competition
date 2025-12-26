@@ -197,15 +197,15 @@ def run_training():
 
         # Loaders
         train_loader = DataLoader(BiomassDataset(df_train, transform=train_tf), 
-                                  batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+                                  batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
         val_loader = DataLoader(BiomassDataset(df_val, transform=val_tf), 
                                 batch_size=BATCH_SIZE, shuffle=False)
         holdout_loader = DataLoader(BiomassDataset(df_holdout, transform=val_tf), 
                                     batch_size=BATCH_SIZE, shuffle=False)
 
         # Reset Optimizer for new step (but Model weights persist)
-        optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-3)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
+        optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=PATIENCE)
         
         best_r2 = -float('inf')
         
@@ -263,8 +263,8 @@ def run_training():
 
             if v_m['r2'] > best_r2:
                 best_r2 = v_m['r2']
-                # Save best state for this fold
-                torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"))
+                logger.info(f"  New Best R2: {best_r2:.4f} | Holdout R2: {h_m['r2_display']:.4f}")
+                torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"),weights_only=True)
             
             plot_training_history(history, fold_idx, session_dir)
             

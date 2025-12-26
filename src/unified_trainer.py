@@ -264,7 +264,7 @@ def run_training():
             if v_m['r2'] > best_r2:
                 best_r2 = v_m['r2']
                 logger.info(f"  New Best R2: {best_r2:.4f} | Holdout R2: {h_m['r2_display']:.4f}")
-                torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"),weights_only=True)
+                torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"))
             
             plot_training_history(history, fold_idx, session_dir)
             

@@ -229,14 +229,33 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         if logger: logger.info(f"Seed set to {seed}")
 
 def calculate_global_weighted_r2(y_true, y_pred, weights):
-    y_true, y_pred = np.array(y_true).flatten(), np.array(y_pred).flatten()
-    n_samples = len(y_true) // 5
+    """
+    Calculates the Globally Weighted Coefficient of Determination (R2).
+    Follows Competition Formula: R2 = 1 - (SS_res / SS_tot)
+    where SS_tot is calculated using the globally weighted mean.
+    """
+    y_true = np.array(y_true, dtype=float).flatten()
+    y_pred = np.array(y_pred, dtype=float).flatten()
+    weights = np.array(weights, dtype=float)
+    
+    # Repeat weights for each sample [w1, w2, w3, w4, w5, w1, w2, ...]
+    n_targets = len(weights)
+    n_samples = len(y_true) // n_targets
     w_flat = np.tile(weights, n_samples)
     
-    ss_res = np.sum(w_flat * (y_true - y_pred)**2)
-    ss_tot = np.sum(w_flat * (y_true - np.average(y_true, weights=w_flat))**2)
+    # Weighted Mean: sum(w * y) / sum(w)
+    y_weighted_mean = np.sum(y_true * w_flat) / np.sum(w_flat)
     
-    return 1 - (ss_res / (ss_tot + 1e-8))
+    # Residual Sum of Squares
+    ss_res = np.sum(w_flat * (y_true - y_pred)**2)
+    
+    # Total Sum of Squares (Weighted variance from global mean)
+    ss_tot = np.sum(w_flat * (y_true - y_weighted_mean)**2)
+    
+    if ss_tot == 0:
+        return 0.0
+        
+    return 1 - (ss_res / ss_tot)
 
 def check_group_leakage(train_df, holdout_df, group_col, logger):
     overlap = set(train_df[group_col]) & set(holdout_df[group_col])

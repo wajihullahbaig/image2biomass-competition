@@ -193,7 +193,12 @@ def run_training():
             continue
 
         # Upsample only the Training portion
+        
+        logger.info(f"Before upsampling: {df_train['Species'].value_counts()}")
+        
         df_train = upsample_minority_classes(df_train, 'Species', logger)
+        
+        logger.info(f"After upsampling: {df_train['Species'].value_counts()}")
 
         # Loaders
         train_loader = DataLoader(BiomassDataset(df_train, transform=train_tf), 
@@ -263,7 +268,7 @@ def run_training():
 
             if v_m['r2'] > best_r2:
                 best_r2 = v_m['r2']
-                logger.info(f"  New Best R2: {best_r2:.4f} | Holdout R2: {h_m['r2_display']:.4f}")
+                logger.info(f">> New Best R2: {best_r2:.4f} -vs- Holdout R2: {h_m['r2_display']:.4f}")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"))
             
             plot_training_history(history, fold_idx, session_dir)

@@ -14,6 +14,8 @@ N_FOLDS = 5
 EPOCHS = 50 
 WEIGHT_DECAY = 1e-3
 PATIENCE = 5
+INITIAL_HISTORY_WEEKS = 6 # 1.5 Months
+HOLDOUT_WEEKS = 2 # 0.5 Months
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -29,11 +31,11 @@ USE_TTA = True
 FUSION_DIM = 256
 # Targets are small (KG scale, < 1.0). Large weights cause exploding gradients.
 BIOMASS_FEAT_WEIGHT = 100.0 
-AUX_FEAT_WEIGHT = 1.25
-SPECIES_FEAT_WEIGHT = 0.75
-MONTH_FEAT_WEIGHT = 1.25
+AUX_FEAT_WEIGHT = 2.5
+SPECIES_FEAT_WEIGHT = 0.25
+MONTH_FEAT_WEIGHT = 0.25
 # --- Regularization ---
-EWC_IMPORTANCE = 250.0
+EWC_IMPORTANCE = 75.0
 
 # return a string representation of the configuration
 def config_str():
@@ -46,6 +48,8 @@ def config_str():
         f"EPOCHS: {EPOCHS}",
         f"WEIGHT_DECAY: {WEIGHT_DECAY}",
         f"PATIENCE: {PATIENCE}",
+        f"INITIAL_HISTORY_WEEKS: {INITIAL_HISTORY_WEEKS}",
+        f"HOLDOUT_WEEKS: {HOLDOUT_WEEKS}",
         f"BACKBONE: {BACKBONE}",
         f"TARGET_COLS: {TARGET_COLS}",
         f"OFFICIAL_WEIGHTS: {OFFICIAL_WEIGHTS}",

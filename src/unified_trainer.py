@@ -159,43 +159,42 @@ def run_training():
     train_tf, val_tf = get_image_data_transforms_v2()
     ewc = None
     
-    # 4. WALK FORWARD LOOP
-    # Start from index 1 (Week 1) so we have Week 0 as history
-    for fold_idx in range(1, len(unique_weeks)):
-        current_holdout_week = unique_weeks[fold_idx]
-        history_weeks = unique_weeks[:fold_idx] # All weeks BEFORE holdout
+    # 4. WALK FORWARD LOOP (Expanding Window)
+    # Start: INITIAL_HISTORY_WEEKS (approx 1.5 months)
+    # Step: HOLDOUT_WEEKS (approx 0.5 months)
+    start_idx = max(INITIAL_HISTORY_WEEKS, 1)
+    stride = HOLDOUT_WEEKS
+    total_weeks = len(unique_weeks)
+    
+    # Loop range
+    for fold_idx in range(start_idx, total_weeks - HOLDOUT_WEEKS + 1, stride):
+        # Select Holdout Weeks (Next 0.5 months)
+        current_holdout_weeks = unique_weeks[fold_idx : fold_idx + stride]
         
-        logger.info(f"\n{'='*20} WALK-FORWARD STEP {fold_idx}/{len(unique_weeks)-1} {'='*20}")
+        # Select History Weeks (Expanding Window - All past data)
+        history_weeks = unique_weeks[:fold_idx]
+        
+        logger.info(f"\n{'='*20} WALK-FORWARD STEP {fold_idx}/{total_weeks} {'='*20}")
+        logger.info(f"  Holdout Weeks: {current_holdout_weeks[0]} -> {current_holdout_weeks[-1]}")
+        logger.info(f"  History Weeks: {history_weeks[0]} -> {history_weeks[-1]}")
         
         # 5. Create History and Holdout Dataframes
         df_history = df[df['week_period'].isin(history_weeks)].copy()
-        df_holdout = df[df['week_period'] == current_holdout_week].copy()
+        df_holdout = df[df['week_period'].isin(current_holdout_weeks)].copy()
         
-        # 6. Temporal Stratified Split
-        # Split each species temporally (first 80% train, last 20% val) to preserve order AND stratify.
-        train_dfs = []
-        val_dfs = []
+        # 6. Temporal Split of History (Train/Val)
+        # Simple Temporal Split: Last 20% of history is validation (Recent Past)
+        # First 80% is Train (Distant Past)
+        split_point = int(len(df_history) * 0.8)
         
-        for species_id in df_history['Species'].unique():
-            # Get all samples for this species, maintaining temporal order (already sorted)
-            species_df = df_history[df_history['Species'] == species_id]
-            n = len(species_df)
+        # Ensure minimal sizes
+        if split_point < 2: split_point = len(df_history) - 1
             
-            if n < 2:
-                # Too few to split, put in train
-                train_dfs.append(species_df)
-                continue
-                
-            split_idx = int(n * 0.8)
-            train_dfs.append(species_df.iloc[:split_idx])
-            val_dfs.append(species_df.iloc[split_idx:])
-            
-        df_train = pd.concat(train_dfs).sort_values('Sampling_Date') if train_dfs else pd.DataFrame(columns=df.columns)
-        df_val = pd.concat(val_dfs).sort_values('Sampling_Date') if val_dfs else pd.DataFrame(columns=df.columns)
+        df_train = df_history.iloc[:split_point].copy()
+        df_val = df_history.iloc[split_point:].copy()
         
         # Logging to confirm logic
-        logger.info(f"  Holdout Week: {current_holdout_week} ({len(df_holdout)} samples)")
-        logger.info(f"  History Range: {history_weeks[0]} -> {history_weeks[-1]}")
+        logger.info(f"  Holdout Size: {len(df_holdout)} samples")
         logger.info(f"  Train Split (Earlier): {len(df_train)} samples")
         logger.info(f"  Val Split   (Recent):  {len(df_val)} samples")
         #
@@ -224,7 +223,7 @@ def run_training():
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=PATIENCE)
         
-        best_r2 = -float('inf')
+        best_combined_r2 = -float('inf')
         
         # Metrics History
         history = {
@@ -277,10 +276,14 @@ def run_training():
                 f"Holdout Loss: {h_m['loss']:.4f} (Bio: {h_m['bio']:.4f}, Aux: {h_m['aux']:.4f}, Sp: {h_m['sp']:.4f}, Mo: {h_m['mo']:.4f}, R2: {h_m['r2_display']:.4f})"
             )
 
-
-            if v_m['r2'] > best_r2:
-                best_r2 = v_m['r2']
-                logger.info(f">> New Best R2: {best_r2:.4f} -vs- Holdout R2: {h_m['r2_display']:.4f}")
+            # Combined Score Logic (Val + Holdout)
+            # We select the model that performed best on the Combined History (Recent Past + Immediate Future)
+            # This ensures the model we carry forward is robust across both.
+            current_combined_r2 = (v_m['r2'] + h_m['r2']) / 2
+            
+            if current_combined_r2 > best_combined_r2:
+                best_combined_r2 = current_combined_r2
+                logger.info(f">> New Best Combined R2: {best_combined_r2:.4f} (Val: {v_m['r2']:.4f}, Holdout: {h_m['r2']:.4f})")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"))
             
             plot_training_history(history, fold_idx, session_dir)

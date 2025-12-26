@@ -29,11 +29,11 @@ USE_TTA = True
 
 # --- Model Settings ---
 FUSION_DIM = 256
-# Targets are small (KG scale, < 1.0). Large weights cause exploding gradients.
-BIOMASS_FEAT_WEIGHT = 100.0 
-AUX_FEAT_WEIGHT = 2.5
-SPECIES_FEAT_WEIGHT = 0.25
-MONTH_FEAT_WEIGHT = 0.25
+# Targets are small (KG scale)
+BIOMASS_FEAT_WEIGHT = 1000.0 
+AUX_FEAT_WEIGHT = 0.5
+SPECIES_FEAT_WEIGHT = 0.1
+MONTH_FEAT_WEIGHT = 0.1
 # --- Regularization ---
 EWC_IMPORTANCE = 75.0
 

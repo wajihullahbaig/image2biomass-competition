@@ -152,9 +152,9 @@ def run_training():
     if FREEZE_BACKBONE: model.freeze_backbone(BACKBONE_FREEZE_FRACTION)
     
     criterion_bio = nn.HuberLoss(delta=0.2, reduction='none') 
-    criterion_aux = nn.HuberLoss(delta=1.0)
-    criterion_sp = nn.CrossEntropyLoss(label_smoothing=0.1)
-    criterion_mo = nn.HuberLoss(delta=1.0)
+    criterion_aux = nn.HuberLoss(delta=1.0, reduction='mean')
+    criterion_sp = nn.CrossEntropyLoss(label_smoothing=0.1, reduction='mean')
+    criterion_mo = nn.HuberLoss(delta=1.0, reduction='mean')
 
     train_tf, val_tf = get_image_data_transforms_v2()
     ewc = None

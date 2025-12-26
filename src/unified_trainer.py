@@ -234,7 +234,9 @@ def run_training():
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=PATIENCE)
         
-        best_combined_r2 = -float('inf')
+        # Track best milestones for stricter saving
+        best_val_milestone = -float('inf')
+        best_hold_milestone = -float('inf')
         
         # Metrics History
         history = {
@@ -285,14 +287,14 @@ def run_training():
             logger.info(f"Val Loss: {v_m['loss']:.4f} (Bio: {v_m['bio']:.4f}, Aux: {v_m['aux']:.4f}, Sp: {v_m['sp']:.4f}, Mo: {v_m['mo']:.4f}, R2: {v_m['r2_display']:.4f})")
             logger.info(f"Holdout Loss: {h_m['loss']:.4f} (Bio: {h_m['bio']:.4f}, Aux: {h_m['aux']:.4f}, Sp: {h_m['sp']:.4f}, Mo: {h_m['mo']:.4f}, R2: {h_m['r2_display']:.4f})")            
 
-            # Combined Score Logic (Val + Holdout)
-            # We select the model that performed best on the Combined History (Recent Past + Immediate Future)
-            # This ensures the model we carry forward is robust across both.
-            current_combined_r2 = (v_m['r2'] + h_m['r2']) / 2
+            # Stricter Saving Logic: Both must improve
+            # We only save if the model beats its own personal best on BOTH Validation and Holdout
+            # This ensures we don't sacrifice one for the other.
             
-            if current_combined_r2 > best_combined_r2:
-                best_combined_r2 = current_combined_r2
-                logger.info(f">> New Best Combined R2: {best_combined_r2:.4f} (Val: {v_m['r2']:.4f}, Holdout: {h_m['r2']:.4f})")
+            if v_m['r2'] > best_val_milestone and h_m['r2'] > best_hold_milestone:
+                best_val_milestone = v_m['r2']
+                best_hold_milestone = h_m['r2']
+                logger.info(f">> New Strict Best Model! Val: {best_val_milestone:.4f}, Holdout: {best_hold_milestone:.4f}")
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_fold_{fold_idx}.pth"))
             
             plot_training_history(history, fold_idx, session_dir)

@@ -206,13 +206,72 @@ def check_group_leakage(train_df, holdout_df, group_col, logger):
     overlap = set(train_df[group_col]) & set(holdout_df[group_col])
     if overlap: logger.warning(f"Leakage detected: {overlap}")
 
-def upsample_minority_classes(df, target_col):
+def upsample_minority_classes(df, target_col, date_col='Sampling_Date'):
+    """
+    Upsamples minority classes to match the count of the majority class.
+    Strategy: "Temporal Neighbor Upsampling"
+    1. Identify 'gaps' or valid neighbors at D-1 and D+1 for existing samples.
+    2. Prioritize filling the quota with these temporal clones (modifying date).
+    3. If quota not met, fill remainder with standard random duplication.
+    """
     counts = df[target_col].value_counts()
     target = int(counts.max())
     dfs = [df]
+    
     for cls, count in counts.items():
         if count < target:
-            add = target - count
-            dfs.append(df[df[target_col] == cls].sample(n=add, replace=True, random_state=42))
+            n_needed = target - count
+            cls_mask = df[target_col] == cls
+            cls_df = df[cls_mask].copy()
+            
+            # Existing dates for this class (set for fast lookup)
+            existing_dates = set(cls_df[date_col].dt.date)
+            
+            candidates = []
+            
+            # Identify valid temporal neighbors
+            for _, row in cls_df.iterrows():
+                # D-1 Candidate
+                d_minus = row[date_col] - pd.Timedelta(days=1)
+                if d_minus.date() not in existing_dates:
+                    new_row = row.copy()
+                    new_row[date_col] = d_minus
+                    # We keep sample_id same, or could modify it. 
+                    # Keeping it implies 'same image, slightly different time context'
+                    candidates.append(new_row)
+                    
+                # D+1 Candidate
+                d_plus = row[date_col] + pd.Timedelta(days=1)
+                if d_plus.date() not in existing_dates:
+                    new_row = row.copy()
+                    new_row[date_col] = d_plus
+                    candidates.append(new_row)
+            
+            # Convert candidates to DataFrame
+            if candidates:
+                cand_df = pd.DataFrame(candidates)
+            else:
+                cand_df = pd.DataFrame()
+            
+            # Fill Logic
+            if len(cand_df) > 0:
+                if len(cand_df) >= n_needed:
+                    # Enough temporal neighbors to fill quota
+                    sampled = cand_df.sample(n=n_needed, replace=False, random_state=42)
+                    dfs.append(sampled)
+                else:
+                    # Take all temporal neighbors
+                    dfs.append(cand_df)
+                    remaining = n_needed - len(cand_df)
+                    
+                    # Fill remainder with standard duplication
+                    if remaining > 0:
+                        filled = cls_df.sample(n=remaining, replace=True, random_state=42)
+                        dfs.append(filled)
+            else:
+                # No temporal candidates possible, fallback to full duplication
+                filled = cls_df.sample(n=n_needed, replace=True, random_state=42)
+                dfs.append(filled)
+
     return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
 

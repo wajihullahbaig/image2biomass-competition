@@ -14,38 +14,6 @@ import torchvision.transforms.functional as TF
 
 from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE, BIOMASS_FEAT_WEIGHT
 
-class EWC:
-    def __init__(self, model, dataloader, device, importance=1000):
-        self.model = model
-        self.device = device
-        self.importance = importance
-        self.params = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
-        self.fisher = self._compute_fisher(dataloader)
-    
-    def _compute_fisher(self, dataloader):
-        fisher = {n: torch.zeros_like(p) for n, p in self.model.named_parameters() if p.requires_grad}
-        self.model.eval()
-        for batch in dataloader:
-            self.model.zero_grad()
-            images = batch['image'].to(self.device)
-            targets = batch['targets'].to(self.device)
-            biomass_pred, _, _, _ = self.model(images)
-            loss = nn.functional.huber_loss(biomass_pred, torch.log1p(targets)) * BIOMASS_FEAT_WEIGHT
-            loss.backward()
-            for n, p in self.model.named_parameters():
-                if p.requires_grad and p.grad is not None:
-                    fisher[n] += p.grad.data.clone().pow(2)
-        for n in fisher:
-            fisher[n] /= len(dataloader)
-        return fisher
-    
-    def penalty(self, model):
-        loss = 0
-        for n, p in model.named_parameters():
-            if p.requires_grad and n in self.fisher:
-                loss += (self.fisher[n] * (p - self.params[n]).pow(2)).sum()
-        return self.importance * loss
-
 def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info("Loading and Pivoting Data...")
     if not os.path.exists('train.csv'):
@@ -336,9 +304,9 @@ def plot_training_history(history, fold, session_dir):
     if 'holdout_r2' in history: vals.extend(history['holdout_r2'])
     if vals:
         vmin, vmax = min(vals), max(vals)
-        axes[6].set_ylim(min(vmin - 0.1, -3.5), max(vmax + 0.1, 3.5))
+        axes[6].set_ylim(min(vmin - 0.1, -1.5), max(vmax + 0.1, 1.5))
     else:
-        axes[6].set_ylim(-3.5,3.5)
+        axes[6].set_ylim(-1.5,1.5)
 
     for ax in axes:
         if ax.get_legend_handles_labels()[0]:
@@ -348,3 +316,45 @@ def plot_training_history(history, fold, session_dir):
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"fold_{fold}_metrics.png"))
     plt.close()
+
+
+def add_australian_season(df: pd.DataFrame, date_column: str = 'Sampling_Date') -> pd.DataFrame:
+    """
+    Adds an 'aus_season' column to the DataFrame with Australian meteorological seasons.
+    
+    Parameters:
+        df (pd.DataFrame): Input DataFrame
+        date_column (str): Name of the column containing dates (must be datetime or parseable)
+    
+    Returns:
+        pd.DataFrame: Original DataFrame with new 'aus_season' column
+    
+    Raises:
+        KeyError: If date_column not found
+        TypeError: If dates cannot be converted
+    """
+    if date_column not in df.columns:
+        raise KeyError(f"Column '{date_column}' not found in DataFrame.")
+    
+    # Ensure the column is datetime
+    dates = pd.to_datetime(df[date_column])
+    
+    # Extract month
+    month = dates.dt.month
+    
+    # Map months to Australian seasons
+    season_map = {
+        12: 'Summer', 1: 'Summer', 2: 'Summer',
+        3: 'Autumn',  4: 'Autumn', 5: 'Autumn',
+        6: 'Winter',  7: 'Winter', 8: 'Winter',
+        9: 'Spring', 10: 'Spring', 11: 'Spring'
+    }
+    
+    df = df.copy()  # Avoid modifying original if not desired
+    df['season'] = month.map(season_map)
+    
+    # Optional: make it categorical with logical order
+    season_order = ['Summer', 'Autumn', 'Winter', 'Spring']
+    df['season'] = pd.Categorical(df['season'], categories=season_order, ordered=True)
+    
+    return df

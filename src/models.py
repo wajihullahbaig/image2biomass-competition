@@ -1,4 +1,4 @@
-# models.py
+# models.py - FIXED VERSION
 import torch
 import torch.nn as nn
 import timm
@@ -55,19 +55,31 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(FUSION_DIM, 256),
             nn.ReLU(),
             nn.Linear(256, 4), # OUTPUT: [Log_Clover, Log_Dead, Log_Green, Log_Total]
-            nn.Softplus() # Ensures log-targets >= 0 (since 1+Mass >= 1)
+            # NO SOFTPLUS - we'll use raw outputs and rely on loss to keep them positive
         )
 
         self._init_biomass_head()
         
     def _init_biomass_head(self):
         """
-        Init regression to output small positive values.
+        CRITICAL FIX: Initialize for TINY targets (mean ~0.01 kg)
+        
+        Target mean: 0.01 kg
+        Log1p(0.01) = 0.00995 ≈ 0.01
+        
+        We want initial predictions around log(1+0.01) ≈ 0.01
         """
-        last_layer = self.biomass_head[-2] 
-        nn.init.normal_(last_layer.weight, mean=0.0, std=0.001)
-        # Bias -1.0 gives Softplus(-1) approx 0.3, decent starting log-mass
-        nn.init.constant_(last_layer.bias, -1.0)
+        last_layer = self.biomass_head[-1]  # The Linear layer (removed Softplus)
+        
+        # Very small weights to start with tiny predictions
+        nn.init.normal_(last_layer.weight, mean=0.0, std=0.0001)
+        
+        # CRITICAL: Bias for tiny targets
+        # We want log1p(0.01) ≈ 0.01 as initial output
+        # Set bias to -4.0 gives raw output around -4.0
+        # But we need to think in terms of the scale...
+        # Actually, let's set bias to predict log1p(0.02) ≈ 0.0198
+        nn.init.constant_(last_layer.bias, -4.0)  # Start very small
 
     def freeze_backbone(self, freeze_fraction=BACKBONE_FREEZE_FRACTION):
         params = list(self.backbone.parameters())
@@ -91,24 +103,24 @@ class BiomassUnifiedModel(nn.Module):
         # Fusion
         combined_feats = torch.cat([img_feats, aux_out, species_probs, month_logits], dim=1)
         
-        # Log-Space Predictions
-        log_preds = self.biomass_head(combined_feats) # (B, 4)
+        # Log-Space Predictions (raw outputs, no activation)
+        log_preds_raw = self.biomass_head(combined_feats) # (B, 4)
+        
+        # Apply Softplus to ensure positive values (log1p output must be >= 0)
+        # Softplus(x) = log(1 + exp(x))
+        # For x=-4: Softplus(-4) ≈ 0.018
+        log_preds = nn.functional.softplus(log_preds_raw)
         
         log_c = log_preds[:, 0:1]
         log_d = log_preds[:, 1:2]
         log_g = log_preds[:, 2:3]
         log_t = log_preds[:, 3:4]
         
-        # Derive Log(GDM) = Log(C + G) = Log( exp(LogC) + exp(LogG) )
-        # Actually since we predict Log(1+X), this is trickier.
-        # Approximation: Log(GDM) approx Logaddexp(LogC, LogG) 
-        # But strictly: (e^LogC - 1) + (e^LogG - 1) = GDM. 
-        # So Log(1+GDM) = Log(e^LogC + e^LogG - 1). 
-        # Let's use the explicit math for physics consistency.
-        
+        # Derive Log(GDM) = Log(1 + C + G)
+        # Where C and G are in linear KG space
         c = torch.expm1(log_c)
         g = torch.expm1(log_g)
-        log_gdm = torch.log1p(c + g + 1e-6)
+        log_gdm = torch.log1p(c + g + 1e-8)
         
         # Stack: C, D, G, Total, GDM
         biomass_out = torch.cat([log_c, log_d, log_g, log_t, log_gdm], dim=1)

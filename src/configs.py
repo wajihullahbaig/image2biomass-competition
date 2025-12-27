@@ -9,13 +9,13 @@ IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 IMAGE_SIZE = 384
 # Training Hyperparameters
 BATCH_SIZE = 32 
-LEARNING_RATE = 1e-4 
+LEARNING_RATE = 3e-4 
 N_FOLDS = 5
-EPOCHS = 40 
+EPOCHS = 80 
 WEIGHT_DECAY = 1e-3
 PATIENCE = 5
 EARLY_STOP_PATIENCE = 20
-INITIAL_HISTORY_WEEKS = 4
+INITIAL_HISTORY_WEEKS = 5
 HOLDOUT_WEEKS = 1
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
@@ -25,7 +25,7 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
 # training settings
 FREEZE_BACKBONE = True
-BACKBONE_FREEZE_FRACTION = 0.8
+BACKBONE_FREEZE_FRACTION = 0.5
 USE_TTA = True
 
 # --- Model Settings ---
@@ -33,12 +33,11 @@ FUSION_DIM = 256
 # Balanced Weights: Biomass is still king but Aux/Phys are loud enough to matter
 BIOMASS_FEAT_WEIGHT = 200.0 
 AUX_FEAT_WEIGHT = 5.0
-SPECIES_FEAT_WEIGHT = 1.0
-MONTH_FEAT_WEIGHT = 1.0
-PHYSICS_FEAT_WEIGHT = 10.0 # Define this properly in config
+SPECIES_FEAT_WEIGHT = 0.1
+MONTH_FEAT_WEIGHT = 0.1
+PHYSICS_FEAT_WEIGHT = 15.0 # Define this properly in config
 
 # --- Regularization ---
-EWC_IMPORTANCE = 50.0
 
 # return a string representation of the configuration
 def config_str():
@@ -65,7 +64,6 @@ def config_str():
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
         f"MONTH_FEAT_WEIGHT: {MONTH_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
-        f"PHYSICS_FEAT_WEIGHT: {PHYSICS_FEAT_WEIGHT}",
-        f"EWC_IMPORTANCE: {EWC_IMPORTANCE}"
+        f"PHYSICS_FEAT_WEIGHT: {PHYSICS_FEAT_WEIGHT}"
     ]
     return "\n".join(config_items)

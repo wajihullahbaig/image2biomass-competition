@@ -21,9 +21,13 @@ from configs import (
     OFFICIAL_WEIGHTS
 )
 from common import (
-    load_data, get_image_data_transforms_v2, setup_logging, 
-    set_seed, calculate_global_weighted_r2, plot_training_history,
+    load_data, get_image_data_transforms_v2, 
+    set_seed, calculate_global_weighted_r2,
     upsample_minority_classes
+)
+from log_and_plots import (
+    setup_logging, plot_training_history, 
+    log_fold_details, log_upsample_stats
 )
 from dataset import BiomassDataset
 from models import BiomassUnifiedModel
@@ -202,33 +206,7 @@ def validate(model, loader, criterion_huber, criterion_ce, device):
     
     return metrics
 
-def log_fold_details(logger, train_df, val_df):
-    def get_stats(df):
-        if len(df) == 0: return "EMPTY", "EMPTY", "EMPTY"
-        dates = f"{df['Sampling_Date'].min().date()} -> {df['Sampling_Date'].max().date()}"
-        states = sorted(df['State'].unique().tolist())
-        species = df['Species'].value_counts().to_dict()
-        return dates, states, species
 
-    t_dates, t_states, t_species = get_stats(train_df)
-    v_dates, v_states, v_species = get_stats(val_df)
-    
-    msg = f"""
-    \n    ----------------------------------------------------------------
-    FOLD DETAILS
-    ----------------------------------------------------------------
-    [TRAIN] (n={len(train_df)})
-      Dates:   {t_dates}
-      States:  {t_states}
-      Species: {t_species}
-    ----------------------------------------------------------------
-    [VALIDATION] (n={len(val_df)})
-      Dates:   {v_dates}
-      States:  {v_states}
-      Species: {v_species}
-    ----------------------------------------------------------------
-    """
-    logger.info(msg)
 
 def main(args):
     # Setup
@@ -282,10 +260,15 @@ def main(args):
 
         # Upsampling (Train Only)
         logger.info(f"Train size before upsample: {len(train_df)}")
+        train_df_before = train_df.copy() # Capture for logging
+        
         train_df = upsample_minority_classes(train_df, 'Species')
+        
         # CRITICAL: Re-sort by Date to honor temporal order after upsampling
         train_df = train_df.sort_values('Sampling_Date').reset_index(drop=True)
         logger.info(f"Train size after upsample: {len(train_df)}")
+        
+        log_upsample_stats(logger, train_df_before, train_df)
         
         # Datasets
         train_ds = BiomassDataset(train_df, transform=train_transform)

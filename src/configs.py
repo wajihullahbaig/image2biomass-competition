@@ -14,8 +14,6 @@ N_FOLDS = 5
 EPOCHS = 80 
 WEIGHT_DECAY = 1e-3
 EARLY_STOP_PATIENCE = 20
-INITIAL_HISTORY_WEEKS = 5
-HOLDOUT_WEEKS = 1
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -48,10 +46,7 @@ def config_str():
         f"N_FOLDS: {N_FOLDS}",
         f"EPOCHS: {EPOCHS}",
         f"WEIGHT_DECAY: {WEIGHT_DECAY}",
-        f"PATIENCE: {PATIENCE}",
-        f"EARLY_STOP_PATIENCE: {EARLY_STOP_PATIENCE}",
-        f"INITIAL_HISTORY_WEEKS: {INITIAL_HISTORY_WEEKS}",
-        f"HOLDOUT_WEEKS: {HOLDOUT_WEEKS}",
+        f"EARLY_STOP_PATIENCE: {EARLY_STOP_PATIENCE}",  
         f"BACKBONE: {BACKBONE}",
         f"TARGET_COLS: {TARGET_COLS}",
         f"OFFICIAL_WEIGHTS: {OFFICIAL_WEIGHTS}",

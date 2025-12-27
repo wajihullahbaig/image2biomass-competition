@@ -16,7 +16,7 @@ from collections import defaultdict
 import configs
 from configs import (
     DEVICE, BATCH_SIZE, EPOCHS, LEARNING_RATE, WEIGHT_DECAY,
-    PATIENCE, EARLY_STOP_PATIENCE, N_FOLDS,
+    EARLY_STOP_PATIENCE, N_FOLDS,
     BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, MONTH_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
     OFFICIAL_WEIGHTS
 )
@@ -301,7 +301,7 @@ def main(args):
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         
         # Scheduler (CosineAnnealingWarmRestarts)
-        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=25, T_mult=2)
         
         criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
         criterion_ce = nn.CrossEntropyLoss()
@@ -344,7 +344,7 @@ def main(args):
             else:
                 patience_counter += 1
                 
-            if patience_counter >= PATIENCE:
+            if patience_counter >= EARLY_STOP_PATIENCE:
                 logger.info("Early Stopping Triggered")
                 break
                 

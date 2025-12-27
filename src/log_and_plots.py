@@ -79,6 +79,11 @@ def plot_training_history(history, fold, session_dir):
             ax.legend()
         ax.grid(True, alpha=0.3)
     
+    # 8. Learning Rate (Index 7)
+    try_plot(7, 'lr', 'Learning Rate', 'tab:purple')
+    axes[7].set_title('Learning Rate')
+    axes[7].set_yscale('log') # Log scale is often better for LR
+    
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"fold_{fold}_metrics.png"))
     plt.close()

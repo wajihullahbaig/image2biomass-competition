@@ -269,6 +269,9 @@ def main(args):
         logger.info(f"Train size after upsample: {len(train_df)}")
         
         log_upsample_stats(logger, train_df_before, train_df)
+
+        # Log Details - updated one
+        log_fold_details(logger, train_df, val_df)
         
         # Datasets
         train_ds = BiomassDataset(train_df, transform=train_transform)

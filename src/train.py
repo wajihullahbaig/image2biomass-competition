@@ -363,9 +363,8 @@ def main(args):
             if args.dry_run and epoch >= 1:
                 break
                 
-        # Plot
-        plot_training_history(history, fold+1, session_dir)
-        
+            plot_training_history(history, fold+1, session_dir)
+            
         if args.dry_run:
             break
 

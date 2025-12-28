@@ -114,7 +114,7 @@ def get_inference_transforms(h=IMAGE_HEIGHT, w=IMAGE_WIDTH):
 # Adjust these paths as needed for your local environment
 TEST_CSV_PATH = './test.csv'  # Local path assumption
 TEST_IMG_DIR = './test/' # Local path assumption
-MODEL_DIR = './logs/ts_split_train_20251228_004840' # User must point this to the correct session
+MODEL_DIR = './logs/ts_split_train_20251228_182529' # User must point this to the correct session
 BATCH_SIZE = 32
 
 # Interactive override if these don't exist

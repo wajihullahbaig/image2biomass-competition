@@ -8,12 +8,12 @@ IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 IMAGE_SIZE = 384
 # Training Hyperparameters
-BATCH_SIZE = 16 
+BATCH_SIZE = 32 
 LEARNING_RATE = 2e-4 
-N_FOLDS = 5
+N_FOLDS = 4
 EPOCHS = 80 
 WEIGHT_DECAY = 1e-3
-EARLY_STOP_PATIENCE = 20
+EARLY_STOP_PATIENCE = 30
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -30,8 +30,8 @@ FUSION_DIM = 256
 # Balanced Weights: Biomass is still king but Aux/Phys are loud enough to matter
 BIOMASS_FEAT_WEIGHT = 200.0 
 AUX_FEAT_WEIGHT = 5.0
-SPECIES_FEAT_WEIGHT = 0.1
-MONTH_FEAT_WEIGHT = 0.1
+SPECIES_FEAT_WEIGHT = 0.01
+MONTH_FEAT_WEIGHT = 0.01
 PHYSICS_FEAT_WEIGHT = 15.0 # Define this properly in config
 
 # --- Regularization ---

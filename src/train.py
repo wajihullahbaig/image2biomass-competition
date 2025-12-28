@@ -8,11 +8,12 @@ from torch import nn
 from torch.utils.data import DataLoader
 from sklearn.model_selection import TimeSeriesSplit
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
 import json
+import math
 
 # Local Imports
 import configs
@@ -210,7 +211,6 @@ def validate(model, loader, criterion_huber, criterion_ce, device):
 
 
 
-
 def save_metadata(session_dir, species_mapping, target_cols):
     metadata = {
         'species_list': list(species_mapping.keys()),
@@ -311,8 +311,8 @@ def main(args):
         
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         
-        # CosineAnnealingWarmRestarts: Hits peaks at 0, 20, 60 (T_0=20, T_mult=2)
-        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=20, T_mult=2, eta_min=1e-6)
+        # ReduceLROnPlateau: Decays LR when val_loss stops improving
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.25, patience=5, verbose=True)
         
         criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
         criterion_ce = nn.CrossEntropyLoss()
@@ -329,8 +329,8 @@ def main(args):
             # Val
             val_metrics = validate(model, val_loader, criterion_huber, criterion_ce, DEVICE)
             
-            # Step Scheduler
-            scheduler.step()
+            # Step Scheduler (based on val_loss)
+            scheduler.step(val_metrics['val_loss'])
             
             # Logging
             log_msg = f"Ep {epoch} | T_Loss: {train_metrics['train_loss']:.4f} | V_Loss: {val_metrics['val_loss']:.4f} | V_R2: {val_metrics['val_r2']:.4f}"

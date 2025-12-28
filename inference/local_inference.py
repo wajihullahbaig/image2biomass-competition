@@ -13,7 +13,8 @@ from torchvision import transforms
 
 # ====================== INLINED CONFIG & MODEL ======================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-IMAGE_SIZE = 384
+IMAGE_HEIGHT = 224
+IMAGE_WIDTH = 512
 FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -25,11 +26,14 @@ class BiomassUnifiedModel(nn.Module):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
-        self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0)
+        self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0, global_pool='')
         
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE)
-            self.backbone_dim = self.backbone(dummy_input).shape[1]
+            dummy_input = torch.randn(1, 3, IMAGE_HEIGHT, IMAGE_WIDTH)
+            feats = self.backbone(dummy_input)
+            self.backbone_dim = feats.shape[1]
+            
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
             
         # 2. Auxiliary Head (NDVI, LogHeight, Interaction)
         self.aux_head = nn.Sequential(
@@ -71,7 +75,9 @@ class BiomassUnifiedModel(nn.Module):
         )
 
     def forward(self, x):
-        img_feats = self.backbone(x)
+        feat_map = self.backbone(x)
+        img_feats = self.global_pool(feat_map).flatten(1)
+        
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         month_logits = self.month_head(img_feats)
@@ -97,9 +103,9 @@ class BiomassUnifiedModel(nn.Module):
         
         return biomass_out, aux_out, species_logits, month_logits
 
-def get_inference_transforms():
+def get_inference_transforms(h=IMAGE_HEIGHT, w=IMAGE_WIDTH):
     return transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.Resize((h, w)),
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
     ])
@@ -136,7 +142,7 @@ class TestDataset(Dataset):
             img = Image.open(img_path).convert('RGB')
         except FileNotFoundError:
             print(f"Warning: Image not found: {img_path}")
-            img = Image.new('RGB', (IMAGE_SIZE, IMAGE_SIZE))
+            img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT)) # Fallback
         
         if self.transform:
             img = self.transform(img)
@@ -215,7 +221,9 @@ def run_inference():
     # 4. RUN INFERENCE
     print(f"\n[4/5] Running inference...")
     
-    val_transform = get_inference_transforms()
+    img_h = metadata.get('image_height', IMAGE_HEIGHT)
+    img_w = metadata.get('image_width', IMAGE_WIDTH)
+    val_transform = get_inference_transforms(h=img_h, w=img_w)
     
     ds = TestDataset(df_wide, TEST_IMG_DIR, transform=val_transform)
     loader = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)

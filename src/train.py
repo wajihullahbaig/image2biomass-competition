@@ -216,7 +216,8 @@ def save_metadata(session_dir, species_mapping, target_cols):
         'species_list': list(species_mapping.keys()),
         'target_cols': target_cols,
         'backbone': configs.BACKBONE,
-        'image_size': configs.IMAGE_SIZE,
+        'image_height': configs.IMAGE_HEIGHT,
+        'image_width': configs.IMAGE_WIDTH,
         'num_species': len(species_mapping),
         'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }

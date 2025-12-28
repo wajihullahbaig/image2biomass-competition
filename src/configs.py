@@ -6,7 +6,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Prerocessing
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
-IMAGE_SIZE = 384
+# We use 224x512 to respect the ~2.33 aspect ratio of the 70cm x 30cm quadrats.
+# This prevents "squashing" the grass which destroys density features.
+IMAGE_HEIGHT = 224
+IMAGE_WIDTH = 512
 # Training Hyperparameters
 BATCH_SIZE = 32 
 LEARNING_RATE = 1e-4 
@@ -40,7 +43,8 @@ PHYSICS_FEAT_WEIGHT = 15.0 # Define this properly in config
 def config_str():
     config_items = [
         f"DEVICE: {DEVICE}",
-        f"IMAGE_SIZE: {IMAGE_SIZE}",
+        f"IMAGE_HEIGHT: {IMAGE_HEIGHT}",
+        f"IMAGE_WIDTH: {IMAGE_WIDTH}",
         f"BATCH_SIZE: {BATCH_SIZE}",
         f"LEARNING_RATE: {LEARNING_RATE}",
         f"N_FOLDS: {N_FOLDS}",

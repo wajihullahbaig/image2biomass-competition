@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import timm
-from configs import BACKBONE, FUSION_DIM, IMAGE_SIZE, BACKBONE_FREEZE_FRACTION
+from configs import BACKBONE, FUSION_DIM, BACKBONE_FREEZE_FRACTION, IMAGE_HEIGHT, IMAGE_WIDTH
 
 
 class BiomassUnifiedModel(nn.Module):
@@ -10,11 +10,14 @@ class BiomassUnifiedModel(nn.Module):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
-        self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0)
+        self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0, global_pool='')
         
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE)
-            self.backbone_dim = self.backbone(dummy_input).shape[1]
+            dummy_input = torch.randn(1, 3, IMAGE_HEIGHT, IMAGE_WIDTH)
+            feats = self.backbone(dummy_input)
+            self.backbone_dim = feats.shape[1]
+            
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
             
         # 2. Auxiliary Head (NDVI, LogHeight, Interaction)
         self.aux_head = nn.Sequential(
@@ -91,7 +94,8 @@ class BiomassUnifiedModel(nn.Module):
                 param.requires_grad = True
 
     def forward(self, x):
-        img_feats = self.backbone(x)
+        feat_map = self.backbone(x) # (B, C, H_feat, W_feat)
+        img_feats = self.global_pool(feat_map).flatten(1) # (B, C)
         
         # Heads
         species_logits = self.species_head(img_feats)

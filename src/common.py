@@ -12,7 +12,7 @@ from torchvision import transforms
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 
-from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGE_SIZE, BIOMASS_FEAT_WEIGHT
+from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, BIOMASS_FEAT_WEIGHT, IMAGE_HEIGHT, IMAGE_WIDTH
 
 def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info("Loading and Pivoting Data...")
@@ -59,9 +59,9 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
 def get_image_data_transforms_v2():
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(
-            size=(IMAGE_SIZE, IMAGE_SIZE),
+            size=(IMAGE_HEIGHT, IMAGE_WIDTH),
             scale=(0.85, 1.0),
-            ratio=(0.9, 1.1)
+            ratio=(1.7, 2.3) # Matches 512/224 approx 2.28
         ),
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
@@ -89,7 +89,7 @@ def get_image_data_transforms_v2():
     ])
 
     val_transform = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
     ])

@@ -313,7 +313,7 @@ def main(args):
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         # ReduceLROnPlateau: More aggressive now (patience 2, threshold 1e-2)
         # mode='min' monitors val_loss. factor=0.25 slashes LR.
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.15, patience=5, threshold=1e-2)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.05, patience=5, threshold=1e-2)
         
         criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
         criterion_ce = nn.CrossEntropyLoss()

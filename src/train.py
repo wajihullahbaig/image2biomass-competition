@@ -21,7 +21,7 @@ from configs import (
     DEVICE, BATCH_SIZE, EPOCHS, LEARNING_RATE, WEIGHT_DECAY,
     EARLY_STOP_PATIENCE, N_FOLDS,
     BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, MONTH_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
-    OFFICIAL_WEIGHTS
+    OFFICIAL_WEIGHTS, config_str
 )
 from common import (
     load_data, get_image_data_transforms_v2, 
@@ -230,7 +230,7 @@ def main(args):
     session_dir = setup_logging(file_name_part="ts_split_train")
     logger = logging.getLogger("System Logger")
     set_seed(42, logger)
-    
+    logger.info(config_str())
     # Load Data
     df = load_data(logger)
     

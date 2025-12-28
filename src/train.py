@@ -310,9 +310,9 @@ def main(args):
         model = BiomassUnifiedModel(num_species=len(species_list)).to(DEVICE)
         
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-        
-        # ReduceLROnPlateau: Decays LR when val_loss stops improving
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.25, patience=5, verbose=True)
+        # ReduceLROnPlateau: More aggressive now (patience 2, threshold 1e-2)
+        # mode='min' monitors val_loss. factor=0.25 slashes LR.
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.25, patience=2, threshold=1e-2)
         
         criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
         criterion_ce = nn.CrossEntropyLoss()

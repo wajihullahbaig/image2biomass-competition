@@ -129,15 +129,12 @@ class TestDataset(Dataset):
     
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        # Handle both flat directory or nested structure if needed
-        # Assuming flat for now based on training script style
         img_name = os.path.basename(row['image_path'])
         img_path = os.path.join(self.img_dir, img_name)
         
         try:
             img = Image.open(img_path).convert('RGB')
         except FileNotFoundError:
-            # Fallback or error
             print(f"Warning: Image not found: {img_path}")
             img = Image.new('RGB', (IMAGE_SIZE, IMAGE_SIZE))
         
@@ -146,10 +143,9 @@ class TestDataset(Dataset):
         
         return img, row['clean_id']
 
-def load_model(fold_path, device):
-    """Load a single fold model using the Unified Architecture."""
-    model = BiomassUnifiedModel().to(device)
-    # Weights_only=True is safer
+def load_model(fold_path, device, num_species):
+    """Load a single fold model with correct num_species."""
+    model = BiomassUnifiedModel(num_species=num_species).to(device)
     state_dict = torch.load(fold_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
@@ -177,8 +173,23 @@ def run_inference():
              
     print(f"   Test Images: {len(df_wide)}")
     
-    # 2. DISCOVER MODELS
-    print(f"\n[2/5] Discovering models in {MODEL_DIR}...")
+    # 2. LOAD METADATA
+    metadata_path = os.path.join(MODEL_DIR, 'metadata.json')
+    if os.path.exists(metadata_path):
+        print(f"\n[2/5] Loading metadata from {metadata_path}...")
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        num_species = metadata.get('num_species', 15)
+        species_list = metadata.get('species_list', [])
+        species_to_id = {s: i for i, s in enumerate(species_list)}
+        print(f"   Detected {num_species} species classes.")
+    else:
+        print(f"\n[2/5] WARNING: metadata.json not found in {MODEL_DIR}. Using defaults.")
+        num_species = 15
+        species_to_id = {}
+
+    # 3. DISCOVER MODELS
+    print(f"\n[3/5] Discovering models in {MODEL_DIR}...")
     models = []
     # Look for best_model_foldX.pth or best_model_overall.pth
     # Priority: if overall exists, maybe just use that? Or ensemble folds if available.
@@ -201,8 +212,8 @@ def run_inference():
          
     print(f"   Found {len(found_folds)} model checkpoints.")
 
-    # 3. RUN INFERENCE & PRE-PROCESSING
-    print(f"\n[3/5] Running inference...")
+    # 4. RUN INFERENCE
+    print(f"\n[4/5] Running inference...")
     
     val_transform = get_inference_transforms()
     
@@ -218,7 +229,7 @@ def run_inference():
     
     for i, model_path in enumerate(found_folds):
         print(f"   -> Processing {os.path.basename(model_path)}...")
-        model = load_model(model_path, DEVICE)
+        model = load_model(model_path, DEVICE, num_species)
         
         fold_preds = []
         
@@ -242,8 +253,8 @@ def run_inference():
                     
         ensemble_preds_kg.append(np.concatenate(fold_preds, axis=0))
         
-    # 4. ENSEMBLE (Average in Linear KG Space)
-    print("\n[4/5] Averaging predictions...")
+    # 5. ENSEMBLE (Average in Linear KG Space)
+    print("\n[5/5] Averaging and post-processing...")
     avg_preds_kg = np.mean(ensemble_preds_kg, axis=0) # (N, 5)
     
     # 5. POST-PROCESSING (Kg -> Grams)

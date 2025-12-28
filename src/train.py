@@ -8,7 +8,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from sklearn.model_selection import TimeSeriesSplit
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -311,8 +311,8 @@ def main(args):
         
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         
-        # Smooth Cosine Annealing (No restarts to avoid "jerks" in loss)
-        scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
+        # CosineAnnealingWarmRestarts: Hits peaks at 0, 20, 60 (T_0=20, T_mult=2)
+        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=20, T_mult=2, eta_min=1e-6)
         
         criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
         criterion_ce = nn.CrossEntropyLoss()

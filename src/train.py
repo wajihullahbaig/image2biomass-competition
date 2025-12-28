@@ -8,8 +8,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 from sklearn.model_selection import TimeSeriesSplit
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
+from datetime import datetime
 from collections import defaultdict
 import json
 
@@ -250,6 +251,7 @@ def main(args):
     tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
     best_overall_r2 = -float('inf')
+    train_transform, val_transform = get_image_data_transforms_v2()
     
     for fold, (train_idx, val_idx) in enumerate(tscv.split(df)):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
@@ -309,8 +311,8 @@ def main(args):
         
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         
-        # Scheduler (CosineAnnealingWarmRestarts)
-        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=25, T_mult=2)
+        # Smooth Cosine Annealing (No restarts to avoid "jerks" in loss)
+        scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
         
         criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
         criterion_ce = nn.CrossEntropyLoss()

@@ -8,9 +8,12 @@ from torch import nn
 from torch.utils.data import DataLoader
 from sklearn.model_selection import TimeSeriesSplit
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
+from datetime import datetime
 from collections import defaultdict
+import json
+
 
 # Local Imports
 import configs
@@ -208,6 +211,20 @@ def validate(model, loader, criterion_huber, criterion_ce, device):
 
 
 
+
+def save_metadata(session_dir, species_mapping, target_cols):
+    metadata = {
+        'species_list': list(species_mapping.keys()),
+        'target_cols': target_cols,
+        'backbone': configs.BACKBONE,
+        'image_size': configs.IMAGE_SIZE,
+        'num_species': len(species_mapping),
+        'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(os.path.join(session_dir, 'metadata.json'), 'w') as f:
+        json.dump(metadata, f, indent=4)
+    return metadata
+
 def main(args):
     # Setup
     session_dir = setup_logging(file_name_part="ts_split_train_single_model")
@@ -220,9 +237,17 @@ def main(args):
     # Sort by Date for TimeSeriesSplit
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
     
-    # Transforms
-    train_transform, val_transform = get_image_data_transforms_v2()
     
+    # Global Species Mapping (Ensures consistency across folds)
+    species_list = sorted(df['Species'].unique().tolist())
+    species_to_id = {s: i for i, s in enumerate(species_list)}
+    logger.info(f"Global Species Mapping Created: {len(species_list)} species found.")
+    
+    # Save Metadata
+    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    metadata = save_metadata(session_dir, species_to_id, target_cols)
+    logger.info(f"Metadata saved to {session_dir}/metadata.json")
+
     # K-Folder
     tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
@@ -230,7 +255,8 @@ def main(args):
     
     # Model
     model = BiomassUnifiedModel().to(DEVICE)
-        
+    train_transform, val_transform = get_image_data_transforms_v2()
+    
     for fold, (train_idx, val_idx) in enumerate(tscv.split(df)):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
         
@@ -277,8 +303,8 @@ def main(args):
         log_fold_details(logger, train_df, val_df)
         
         # Datasets
-        train_ds = BiomassDataset(train_df, transform=train_transform)
-        val_ds = BiomassDataset(val_df, transform=val_transform)
+        train_ds = BiomassDataset(train_df, transform=train_transform, species_to_id=species_to_id)
+        val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=species_to_id)
         
         # Shuffle=False to respect temporal order (Curriculum Learning / Streaming)
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
@@ -286,8 +312,8 @@ def main(args):
                 
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         
-        # Scheduler (CosineAnnealingWarmRestarts)
-        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=25, T_mult=2)
+        # Smooth Cosine Annealing (No restarts to avoid "jerks" in loss)
+        scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
         
         criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
         criterion_ce = nn.CrossEntropyLoss()

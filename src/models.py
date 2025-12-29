@@ -2,7 +2,10 @@
 import torch
 import torch.nn as nn
 import timm
-from configs import BACKBONE, FUSION_DIM, BACKBONE_FREEZE_FRACTION, IMAGE_HEIGHT, IMAGE_WIDTH
+from configs import (
+    BACKBONE, FUSION_DIM, BACKBONE_FREEZE_FRACTION, 
+    IMAGE_HEIGHT, IMAGE_WIDTH, FREEZE_BACKBONE
+)
 
 
 class BiomassUnifiedModel(nn.Module):
@@ -18,6 +21,20 @@ class BiomassUnifiedModel(nn.Module):
             self.backbone_dim = feats.shape[1]
             
         self.global_pool = nn.AdaptiveAvgPool2d(1)
+        
+        # --- NEW: Backbone Freezing Logic ---
+        if FREEZE_BACKBONE:
+            # Count total parameters
+            all_params = list(self.backbone.parameters())
+            num_params = len(all_params)
+            # Freeze fraction (e.g. 0.5 freezes first 50% of layers/params)
+            freeze_until = int(num_params * BACKBONE_FREEZE_FRACTION)
+            
+            for i, p in enumerate(all_params):
+                if i < freeze_until:
+                    p.requires_grad = False
+                else:
+                    p.requires_grad = True
             
         # 2. Auxiliary Head (NDVI, LogHeight, Interaction)
         self.aux_head = nn.Sequential(
@@ -65,24 +82,27 @@ class BiomassUnifiedModel(nn.Module):
         
     def _init_biomass_head(self):
         """
-        CRITICAL FIX: Initialize for TINY targets (mean ~0.01 kg)
+        GRAM-SCALE WARM START:
+        Our targets are Log1p(Grams). For a typical 50-60g sample:
+        - Clover/Dead/Green might be ~15-20g each (Log1p(18) ≈ 2.9)
+        - Total is ~55g (Log1p(55) ≈ 4.0)
         
-        Target mean: 0.01 kg
-        Log1p(0.01) = 0.00995 ≈ 0.01
-        
-        We want initial predictions around log(1+0.01) ≈ 0.01
+        Starting with biases at 0.0 results in -1.8 R2.
+        Starting with biases near the mean jump-starts learning.
         """
-        last_layer = self.biomass_head[-1]  # The Linear layer (removed Softplus)
+        last_layer = self.biomass_head[-1]  # The final Linear(256, 4) layer
         
-        # Very small weights to start with tiny predictions
-        nn.init.normal_(last_layer.weight, mean=0.0, std=0.0001)
+        # Identity-ish initialization for weights (don't wash out features)
+        nn.init.xavier_uniform_(last_layer.weight)
         
-        # CRITICAL: Bias for tiny targets
-        # We want log1p(0.01) ≈ 0.01 as initial output
-        # Set bias to -4.0 gives raw output around -4.0
-        # But we need to think in terms of the scale...
-        # Actually, let's set bias to predict log1p(0.02) ≈ 0.0198
-        nn.init.constant_(last_layer.bias, -4.0)  # Start very small
+        # Warm-Start Biases (Log-space)
+        # [Log_C, Log_D, Log_G, Log_Total]
+        with torch.no_grad():
+            last_layer.bias.fill_(0) # Reset
+            last_layer.bias[0] = 3.0 # ~20g
+            last_layer.bias[1] = 2.0 # ~7g (Dead is usually lower)
+            last_layer.bias[2] = 3.0 # ~20g
+            last_layer.bias[3] = 4.0 # ~54g (Total)
 
     def freeze_backbone(self, freeze_fraction=BACKBONE_FREEZE_FRACTION):
         params = list(self.backbone.parameters())

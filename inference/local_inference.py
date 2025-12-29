@@ -114,7 +114,7 @@ def get_inference_transforms(h=IMAGE_HEIGHT, w=IMAGE_WIDTH):
 # Adjust these paths as needed for your local environment
 TEST_CSV_PATH = './test.csv'  # Local path assumption
 TEST_IMG_DIR = './test/' # Local path assumption
-MODEL_DIR = './logs/ts_split_train_20251228_182529' # User must point this to the correct session
+MODEL_DIR = './logs/ts_split_train_20251229_143129' # User must point this to the correct session
 BATCH_SIZE = 32
 
 # Interactive override if these don't exist
@@ -229,10 +229,10 @@ def run_inference():
     loader = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
     
     # We will accumulate predictions: (N_Samples, 5_Targets)
-    # Targets order in models.py Output: [Clover, Dead, Green, Total, GDM]
-    # NOTE: Output is Log-Space (log1p(Kg)).
+    # Targets order: [Clover, Dead, Green, Total, GDM]
+    # NOTE: Output is Log-Space (log1p(Grams)).
     
-    ensemble_preds_kg = []
+    ensemble_preds_g = []
     final_clean_ids = []
     
     for i, model_path in enumerate(found_folds):
@@ -246,36 +246,24 @@ def run_inference():
                 imgs = imgs.to(DEVICE)
                 
                 # Forward
-                # biomass_out channels: 0:C, 1:D, 2:G, 3:T, 4:GDM
                 biomass_out, _, _, _ = model(imgs)
                 
-                # Convert Log-Space -> Linear KG
-                # Model predicts log1p(x_kg)
-                pred_kg = torch.expm1(biomass_out)
+                # Convert Log-Space -> Linear Grams
+                # Model predicts log1p(x_grams)
+                pred_g = torch.expm1(biomass_out)
                 
-                fold_preds.append(pred_kg.cpu().numpy())
+                fold_preds.append(pred_g.cpu().numpy())
                 
-                # Capture IDs only during the first model's pass
                 if i == 0:
                     final_clean_ids.extend(ids)
                     
-        ensemble_preds_kg.append(np.concatenate(fold_preds, axis=0))
+        ensemble_preds_g.append(np.concatenate(fold_preds, axis=0))
         
-    # 5. ENSEMBLE (Average in Linear KG Space)
+    # 5. ENSEMBLE (Average in Linear Space)
     print("\n[5/5] Averaging and post-processing...")
-    avg_preds_kg = np.mean(ensemble_preds_kg, axis=0) # (N, 5)
+    avg_preds_g = np.mean(ensemble_preds_g, axis=0) # (N, 5)
     
-    # 5. POST-PROCESSING (Kg -> Grams)
-    # Competition expects Grams. 
-    # Our model was trained on Kg/1000? No wait.
-    # common.load_data: wide[target_cols] = wide[target_cols] / 1000.0
-    # So training inputs were KG.
-    # So model output expm1 is KG.
-    # So we must multiply by 1000 to get Grams.
-    
-    avg_preds_g = avg_preds_kg * 1000.0
-    
-    # Clip negative
+    # Clip negative and handle final scale
     avg_preds_g = np.maximum(avg_preds_g, 0)
     
     # 6. EXPORT

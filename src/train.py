@@ -35,7 +35,7 @@ from log_and_plots import (
 from dataset import BiomassDataset, CORE_SPECIES, MosaicDataset
 from models import BiomassUnifiedModel
 
-def train_one_epoch(model, loader, optimizer, criterion_huber, criterion_ce, device, epoch):
+def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, device, epoch):
     model.train()
     
     # Trackers
@@ -52,9 +52,9 @@ def train_one_epoch(model, loader, optimizer, criterion_huber, criterion_ce, dev
     for batch in pbar:
         # Move to device
         images = batch['image'].to(device)
-        # targets are in KG scale. We need Log1p(target) for training
-        targets_kg = batch['targets'].to(device)
-        targets_log = torch.log1p(targets_kg) 
+        # targets are in Grams scale. We need Log1p(target) for training
+        targets_g = batch['targets'].to(device)
+        targets_log = torch.log1p(targets_g) 
         
         aux_feats = batch['aux_feats'].to(device)
         species_ids = batch['species_id'].to(device)
@@ -70,35 +70,31 @@ def train_one_epoch(model, loader, optimizer, criterion_huber, criterion_ce, dev
             # --- 1. Biomass Loss (Huber in Log Space) ---
             # Preds are already Log Space (Softplus output)
             # Match columns: [Clover, Dead, Green, Total, GDM]
-            loss_bio = criterion_huber(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
+            loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
             
             # --- 2. Aux Loss (NDVI, LogHeight, Interaction) ---
-            loss_aux = criterion_huber(aux_out, aux_feats) * AUX_FEAT_WEIGHT
+            loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
             
             # --- 3. Species Loss (CrossEntropy) ---
             loss_sp = criterion_ce(species_logits, species_ids) * SPECIES_FEAT_WEIGHT
             
-            # --- 4. Month Loss (Huber on Sin/Cos) ---
-            loss_mo = criterion_huber(month_logits, month_sincos) * MONTH_FEAT_WEIGHT
+            # --- 4. Month Loss (Huber/MSE on Sin/Cos) ---
+            loss_mo = criterion_reg(month_logits, month_sincos) * MONTH_FEAT_WEIGHT
             
-            # --- 5. Physics Consistency Loss ---
-            # Reconstruct Total/GDM from components in Linear Space and compare
-            # biomass_out indices: 0:C, 1:D, 2:G, 3:Total, 4:GDM
-            pred_c = torch.expm1(biomass_out[:, 0])
-            pred_d = torch.expm1(biomass_out[:, 1])
-            pred_g = torch.expm1(biomass_out[:, 2])
+            # --- 5. Physics Consistency Loss (Log-Space Enforced) ---
+            # Correct math: log1p(A+B+C) != log1p(A)+log1p(B)+log1p(C)
+            # We must sum in linear space, then move back to log to compare scales
+            pred_c_lin = torch.expm1(biomass_out[:, 0])
+            pred_d_lin = torch.expm1(biomass_out[:, 1])
+            pred_g_lin = torch.expm1(biomass_out[:, 2])
             
-            # Derived
-            derived_total = pred_c + pred_d + pred_g
-            derived_gdm = pred_c + pred_g
+            # Derived Log Values
+            derived_total_log = torch.log1p(pred_c_lin + pred_d_lin + pred_g_lin + 1e-8)
+            derived_gdm_log = torch.log1p(pred_c_lin + pred_g_lin + 1e-8)
             
-            # Model's direct predictions
-            pred_total = torch.expm1(biomass_out[:, 3])
-            pred_gdm = torch.expm1(biomass_out[:, 4])
-            
-            # Loss: Consistency between Derived and Predicted
-            loss_phy_total = nn.functional.huber_loss(pred_total, derived_total)
-            loss_phy_gdm = nn.functional.huber_loss(pred_gdm, derived_gdm)
+            # Model's direct predictions are already log1p (Softplus output)
+            loss_phy_total = criterion_reg(biomass_out[:, 3], derived_total_log)
+            loss_phy_gdm = criterion_reg(biomass_out[:, 4], derived_gdm_log)
             
             loss_phy = (loss_phy_total + loss_phy_gdm) * PHYSICS_FEAT_WEIGHT
 
@@ -132,7 +128,7 @@ def train_one_epoch(model, loader, optimizer, criterion_huber, criterion_ce, dev
     }
 
 @torch.no_grad()
-def validate(model, loader, criterion_huber, criterion_ce, device):
+def validate(model, loader, criterion_reg, criterion_ce, device):
     model.eval()
     
     total_loss_sum = 0
@@ -143,12 +139,12 @@ def validate(model, loader, criterion_huber, criterion_ce, device):
     phy_loss_sum = 0
     
     all_preds_log = []
-    all_targets_kg = []
+    all_targets_g = []
     
     for batch in loader:
         images = batch['image'].to(device)
-        targets_kg = batch['targets'].to(device) # Raw KG
-        targets_log = torch.log1p(targets_kg) 
+        targets_g = batch['targets'].to(device) # Raw Grams
+        targets_log = torch.log1p(targets_g) 
         
         aux_feats = batch['aux_feats'].to(device)
         species_ids = batch['species_id'].to(device)
@@ -157,22 +153,22 @@ def validate(model, loader, criterion_huber, criterion_ce, device):
         # Forward
         biomass_out, aux_out, species_logits, month_logits = model(images)
         
-        # Losses
-        loss_bio = criterion_huber(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
-        loss_aux = criterion_huber(aux_out, aux_feats) * AUX_FEAT_WEIGHT
+        # Losses (Weights from configs)
+        loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
+        loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
         loss_sp = criterion_ce(species_logits, species_ids) * SPECIES_FEAT_WEIGHT
-        loss_mo = criterion_huber(month_logits, month_sincos) * MONTH_FEAT_WEIGHT
+        loss_mo = criterion_reg(month_logits, month_sincos) * MONTH_FEAT_WEIGHT
         
-        # Physics Loss
-        pred_c = torch.expm1(biomass_out[:, 0])
-        pred_d = torch.expm1(biomass_out[:, 1])
-        pred_g = torch.expm1(biomass_out[:, 2])
-        derived_total = pred_c + pred_d + pred_g
-        derived_gdm = pred_c + pred_g
-        pred_total = torch.expm1(biomass_out[:, 3])
-        pred_gdm = torch.expm1(biomass_out[:, 4])
-        loss_phy = (nn.functional.huber_loss(pred_total, derived_total) + \
-                    nn.functional.huber_loss(pred_gdm, derived_gdm)) * PHYSICS_FEAT_WEIGHT
+        # Physics Loss (Log-Space Enforced)
+        pred_c_lin = torch.expm1(biomass_out[:, 0])
+        pred_d_lin = torch.expm1(biomass_out[:, 1])
+        pred_g_lin = torch.expm1(biomass_out[:, 2])
+        
+        derived_total_log = torch.log1p(pred_c_lin + pred_d_lin + pred_g_lin + 1e-8)
+        derived_gdm_log = torch.log1p(pred_c_lin + pred_g_lin + 1e-8)
+        
+        loss_phy = (criterion_reg(biomass_out[:, 3], derived_total_log) + \
+                    criterion_reg(biomass_out[:, 4], derived_gdm_log)) * PHYSICS_FEAT_WEIGHT
 
         total_loss = loss_bio + loss_aux + loss_sp + loss_mo + loss_phy
         
@@ -186,7 +182,7 @@ def validate(model, loader, criterion_huber, criterion_ce, device):
         phy_loss_sum += loss_phy.item() * B
         
         all_preds_log.append(biomass_out.cpu())
-        all_targets_kg.append(targets_kg.cpu())
+        all_targets_g.append(targets_g.cpu())
         
     N = len(loader.dataset)
     metrics = {
@@ -200,11 +196,11 @@ def validate(model, loader, criterion_huber, criterion_ce, device):
     
     # Calculate R2
     preds_log = torch.cat(all_preds_log).numpy()
-    preds_kg = np.expm1(preds_log) # Convert back to linear KG for R2 calculation
-    targets_kg = torch.cat(all_targets_kg).numpy()
+    preds_linear = np.expm1(preds_log) # Convert back to linear for R2 (Grams)
+    targets_linear = torch.cat(all_targets_g).numpy()
     
-    # R2 on KG scale
-    r2_score = calculate_global_weighted_r2(targets_kg, preds_kg, OFFICIAL_WEIGHTS)
+    # R2 on Linear scale
+    r2_score = calculate_global_weighted_r2(targets_linear, preds_linear, OFFICIAL_WEIGHTS)
     metrics['val_r2'] = r2_score
     
     return metrics
@@ -323,9 +319,9 @@ def main(args):
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         # ReduceLROnPlateau: More aggressive now (patience 2, threshold 1e-2)
         # mode='min' monitors val_loss. factor=0.25 slashes LR.
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.05, patience=10, threshold=1e-2)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.05, patience=5, threshold=1e-2)
         
-        criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
+        criterion_reg = nn.MSELoss() # Alignment with R2 metric
         criterion_ce = nn.CrossEntropyLoss()
         
         # History
@@ -335,10 +331,10 @@ def main(args):
         
         for epoch in range(EPOCHS):
             # Train
-            train_metrics = train_one_epoch(model, train_loader, optimizer, criterion_huber, criterion_ce, DEVICE, epoch)
+            train_metrics = train_one_epoch(model, train_loader, optimizer, criterion_reg, criterion_ce, DEVICE, epoch)
             
             # Val
-            val_metrics = validate(model, val_loader, criterion_huber, criterion_ce, DEVICE)
+            val_metrics = validate(model, val_loader, criterion_reg, criterion_ce, DEVICE)
             
             # Step Scheduler (based on val_loss)
             scheduler.step(val_metrics['val_loss'])

@@ -50,8 +50,9 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     
     wide = wide.rename(columns={'clean_id': 'sample_id'})
     
-    # Scale Targets to KG (kilogra scale)
-    wide[target_cols] = wide[target_cols].astype(float) / 1000.0
+    # Scale Targets: Use Raw Grams for training (range ~0-250)
+    # Log1p of ~60g is ~4.1, which is much better for gradients than Log1p(0.06)
+    wide[target_cols] = wide[target_cols].astype(float)
     
     logger.info(f"Data Loaded. Rows: {len(wide)}")
     return wide

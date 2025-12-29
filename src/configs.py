@@ -12,11 +12,11 @@ IMAGE_HEIGHT = 224
 IMAGE_WIDTH = 512
 # Training Hyperparameters
 BATCH_SIZE = 32 
-LEARNING_RATE = 1e-4 
+LEARNING_RATE = 2e-4 
 N_FOLDS = 4
-EPOCHS = 100 
-WEIGHT_DECAY = 1e-3
-EARLY_STOP_PATIENCE = 20
+EPOCHS = 50 
+WEIGHT_DECAY = 1e-2
+EARLY_STOP_PATIENCE = 15
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -25,17 +25,17 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
 # training settings
 FREEZE_BACKBONE = True
-BACKBONE_FREEZE_FRACTION = 0.5
+BACKBONE_FREEZE_FRACTION = 0.3 
 USE_TTA = True
 
 # --- Model Settings ---
 FUSION_DIM = 256
-# Balanced Weights: Biomass is still king but Aux/Phys are loud enough to matter
-BIOMASS_FEAT_WEIGHT = 200.0 
-AUX_FEAT_WEIGHT = 5.0
-SPECIES_FEAT_WEIGHT = 0.01
-MONTH_FEAT_WEIGHT = 0.01
-PHYSICS_FEAT_WEIGHT = 15.0 # Define this properly in config
+# Balanced Weights: Scaling optimized for Gram-scale Log-space
+BIOMASS_FEAT_WEIGHT = 100.0 
+AUX_FEAT_WEIGHT = 10.0
+SPECIES_FEAT_WEIGHT = 5.0
+MONTH_FEAT_WEIGHT = 1.0
+PHYSICS_FEAT_WEIGHT = 10.0 
 
 # --- Regularization ---
 

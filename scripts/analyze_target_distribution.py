@@ -39,12 +39,10 @@ def analyze_distributions(output_dir='time_analysis'):
         logger.error("Could not find train.csv. Make sure you run this script from the project root.")
         return
 
-    # Convert back to Grams for "Raw" view if desired, or keep as KG. 
     # User asked for "raw targets". Usually that means grams.
-    # load_data divides by 1000. Let's multiply back for plotting to match "Raw" user mental model.
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     df_plot = df.copy()
-    df_plot[target_cols] = df_plot[target_cols] * 1000.0
+    df_plot[target_cols] = df_plot[target_cols] 
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)

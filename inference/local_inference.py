@@ -52,18 +52,10 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.6),
             nn.Linear(64, num_species)
         )
+                
         
-        # 4. Month Head (Sin/Cos)
-        self.month_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(0.4),
-            nn.Linear(64, 2)
-        )
-        
-        # 5. Biomass Head
-        input_dim = self.backbone_dim + num_aux + num_species + 2
+        # 4. Biomass Head
+        input_dim = self.backbone_dim + num_aux + num_species
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
             nn.LayerNorm(FUSION_DIM),
@@ -80,10 +72,9 @@ class BiomassUnifiedModel(nn.Module):
         
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
-        month_logits = self.month_head(img_feats)
         aux_out = self.aux_head(img_feats) 
             
-        combined_feats = torch.cat([img_feats, aux_out, species_probs, month_logits], dim=1)
+        combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         
         # Log-Space Predictions
         log_preds_raw = self.biomass_head(combined_feats)
@@ -101,7 +92,7 @@ class BiomassUnifiedModel(nn.Module):
         
         biomass_out = torch.cat([log_c, log_d, log_g, log_t, log_gdm], dim=1)
         
-        return biomass_out, aux_out, species_logits, month_logits
+        return biomass_out, aux_out, species_logits
 
 def get_inference_transforms(h=IMAGE_HEIGHT, w=IMAGE_WIDTH):
     return transforms.Compose([
@@ -142,10 +133,12 @@ class TestDataset(Dataset):
             img = Image.open(img_path).convert('RGB')
         except FileNotFoundError:
             print(f"Warning: Image not found: {img_path}")
-            img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT)) # Fallback
+            raise FileNotFoundError(f"Image not found: {img_path}")
         
         if self.transform:
             img = self.transform(img)
+        else:
+            raise ValueError("No transform provided. Please provide a transform.")
         
         return img, row['clean_id']
 

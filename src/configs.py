@@ -14,9 +14,9 @@ IMAGE_WIDTH = 512
 BATCH_SIZE = 32 
 LEARNING_RATE = 1e-4 
 N_FOLDS = 4
-EPOCHS = 60 
+EPOCHS = 100 
 WEIGHT_DECAY = 1e-3
-EARLY_STOP_PATIENCE = 30
+EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']

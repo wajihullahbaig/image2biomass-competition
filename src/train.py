@@ -32,7 +32,7 @@ from log_and_plots import (
     setup_logging, plot_training_history, 
     log_fold_details, log_upsample_stats
 )
-from dataset import BiomassDataset
+from dataset import BiomassDataset, CORE_SPECIES, MosaicDataset
 from models import BiomassUnifiedModel
 
 def train_one_epoch(model, loader, optimizer, criterion_huber, criterion_ce, device, epoch):
@@ -211,14 +211,14 @@ def validate(model, loader, criterion_huber, criterion_ce, device):
 
 
 
-def save_metadata(session_dir, species_mapping, target_cols):
+def save_metadata(session_dir, species_list, target_cols):
     metadata = {
-        'species_list': list(species_mapping.keys()),
+        'species_list': species_list,
         'target_cols': target_cols,
         'backbone': configs.BACKBONE,
         'image_height': configs.IMAGE_HEIGHT,
         'image_width': configs.IMAGE_WIDTH,
-        'num_species': len(species_mapping),
+        'num_species': len(species_list),
         'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     with open(os.path.join(session_dir, 'metadata.json'), 'w') as f:
@@ -238,17 +238,19 @@ def main(args):
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
     
     
-    # Global Species Mapping (Ensures consistency across folds)
-    species_list = sorted(df['Species'].unique().tolist())
-    species_to_id = {s: i for i, s in enumerate(species_list)}
-    logger.info(f"Global Species Mapping Created: {len(species_list)} species found.")
+    # Global Species Mapping (Using Semantic Base Species)
+    species_list = CORE_SPECIES
+    logger.info(f"Using Semantic Base Species mapping: {len(species_list)} core species.")
     
     # Save Metadata
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-    metadata = save_metadata(session_dir, species_to_id, target_cols)
+    metadata = save_metadata(session_dir, species_list, target_cols)
     logger.info(f"Metadata saved to {session_dir}/metadata.json")
 
     # K-Folder
+    splits_dir = os.path.join(session_dir, 'splits')
+    os.makedirs(splits_dir, exist_ok=True)
+    
     tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
     best_overall_r2 = -float('inf')
@@ -299,9 +301,17 @@ def main(args):
         # Log Details - updated one
         log_fold_details(logger, train_df, val_df)
         
+        # Save Splits as CSV
+        train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
+        val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
+        logger.info(f"Splits saved to {splits_dir}/fold{fold+1}_[train/val].csv")
+        
         # Datasets
-        train_ds = BiomassDataset(train_df, transform=train_transform, species_to_id=species_to_id)
-        val_ds = BiomassDataset(val_df, transform=val_transform, species_to_id=species_to_id)
+        train_ds = BiomassDataset(train_df, transform=train_transform)
+        # Apply Mosaic Augmentation to Training Set
+        train_ds = MosaicDataset(train_ds, prob=0.5) 
+        
+        val_ds = BiomassDataset(val_df, transform=val_transform)
         
         # Shuffle=False to respect temporal order (Curriculum Learning / Streaming)
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
@@ -313,7 +323,7 @@ def main(args):
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         # ReduceLROnPlateau: More aggressive now (patience 2, threshold 1e-2)
         # mode='min' monitors val_loss. factor=0.25 slashes LR.
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.05, patience=5, threshold=1e-2)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.05, patience=10, threshold=1e-2)
         
         criterion_huber = nn.HuberLoss() # Default delta=1.0 is fine for log-space
         criterion_ce = nn.CrossEntropyLoss()

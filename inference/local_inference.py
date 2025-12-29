@@ -22,7 +22,7 @@ BATCH_SIZE = 32
 OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
 
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name='timm/tf_efficientnet_b3.ns_jft_in1k', num_aux=3, num_species=16, pretrained=False):
+    def __init__(self, backbone_name='timm/tf_efficientnet_b3.ns_jft_in1k', num_aux=3, num_species=14, pretrained=False):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone

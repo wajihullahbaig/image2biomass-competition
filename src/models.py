@@ -6,7 +6,7 @@ from configs import BACKBONE, FUSION_DIM, BACKBONE_FREEZE_FRACTION, IMAGE_HEIGHT
 
 
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name=BACKBONE, num_aux=3, num_species=16, pretrained=True):
+    def __init__(self, backbone_name=BACKBONE, num_aux=3, num_species=14, pretrained=True):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone

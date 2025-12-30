@@ -46,9 +46,9 @@ def get_taxonomy_targets(species_vec):
     """
     # Sum probabilities of constituent species for each group
     # shape: (Batch, 1) for each group
-    legume_prob = species_vec[:, TAXONOMY_IDXS['Legume']].sum(dim=1, keepdim=True)
-    grass_prob  = species_vec[:, TAXONOMY_IDXS['Grass']].sum(dim=1, keepdim=True)
-    weed_prob   = species_vec[:, TAXONOMY_IDXS['Weed']].sum(dim=1, keepdim=True)
+    legume_prob = species_vec[:, TAXONOMY_IDXS['legume']].sum(dim=1, keepdim=True)
+    grass_prob  = species_vec[:, TAXONOMY_IDXS['grass']].sum(dim=1, keepdim=True)
+    weed_prob   = species_vec[:, TAXONOMY_IDXS['weed']].sum(dim=1, keepdim=True)
     
     # shape: (Batch, 3)
     return torch.cat([legume_prob, grass_prob, weed_prob], dim=1)

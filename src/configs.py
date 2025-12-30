@@ -38,17 +38,17 @@ PHYSICS_FEAT_WEIGHT = 10.0
 
 # ====================== TAXONOMY & SPECIES ======================
 CORE_SPECIES = [
-    'Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa',  # 0-3
-    'Ryegrass', 'Phalaris', 'Fescue', 'Lucerne',                    # 4-7
-    'Barleygrass', 'Silvergrass', 'Speargrass', 'Bromegrass',       # 8-11
-    'Capeweed', 'Crumbweed'                                         # 12-13
+    'clover', 'whiteclover', 'subcloverdalkeith', 'subcloverlosa',  # 0-3
+    'ryegrass', 'phalaris', 'fescue', 'lucerne',                    # 4-7
+    'barleygrass', 'silvergrass', 'speargrass', 'bromegrass',       # 8-11
+    'capeweed', 'crumbweed'                                         # 12-13
 ]
 
 # Define Groups by Name (Safer than indices)
 GROUP_DEFINITIONS = {
-    'Legume': ['Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa', 'Lucerne'],
-    'Grass':  ['Ryegrass', 'Phalaris', 'Fescue', 'Barleygrass', 'Silvergrass', 'Speargrass', 'Bromegrass'],
-    'Weed':   ['Capeweed', 'Crumbweed']
+    'legume': ['clover', 'whiteclover', 'subcloverdalkeith', 'subcloverlosa', 'lucerne'],
+    'grass':  ['ryegrass', 'phalaris', 'fescue', 'barleygrass', 'silvergrass', 'speargrass', 'bromegrass'],
+    'weed':   ['capeweed', 'crumbweed']
 }
 
 # Dynamically Generate Indices Dictionary

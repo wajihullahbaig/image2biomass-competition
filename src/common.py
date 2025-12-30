@@ -267,8 +267,9 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     wide[target_cols] = wide[target_cols].astype(float)
 
     logger.info("Performing global species breakup...")
-    
+
     # Initialize columns for each core species
+    wide['Species'] = wide['Species'].str.strip().lower()
     for sp in CORE_SPECIES:
         wide[f'Species_{sp}'] = 0.0
 

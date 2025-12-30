@@ -39,3 +39,5 @@ pinn_models/
 plots/
 
 old_src/
+
+analysis_results/

@@ -133,7 +133,7 @@ def rotate_and_center_crop(x, angle):
 
 def apply_tta(model, image, device):
     model.eval()
-    all_biomass, all_aux, all_species, all_month = [], [], [], []
+    all_biomass, all_aux, all_species = [], [], []
 
     transforms_list = [
         lambda x: x,
@@ -146,17 +146,16 @@ def apply_tta(model, image, device):
     for t in transforms_list:
         with torch.no_grad():
             img_aug = t(image)
-            b, a, s, m = model(img_aug)
+            b, a, s = model(img_aug)
             all_biomass.append(b)
             all_aux.append(a)
-            all_species.append(s)
-            all_month.append(m)
+            all_species.append(s)            
 
     return (
         torch.stack(all_biomass).mean(0),
         torch.stack(all_aux).mean(0),
         torch.stack(all_species).mean(0),
-        torch.stack(all_month).mean(0),
+            
     )
 
 
@@ -275,4 +274,3 @@ def upsample_minority_classes(df, target_col, date_col='Sampling_Date'):
                 dfs.append(filled)
 
     return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
-

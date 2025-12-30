@@ -54,18 +54,9 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(64, num_species)
         )
         
-        # 4. Month Head (Cyclical Regression) -seasonal cycles (sin/cos)
-        self.month_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(0.4),
-            nn.Linear(64, 2) # Sin, Cos
-        )
-        
-        # 5. Biomass Head
-        # Inputs: Backbone + Aux(3) + Species(Probabilities) + Month(2)
-        input_dim = self.backbone_dim + num_aux + num_species + 2
+        # 4. Biomass Head
+        # Inputs: Backbone + Aux(3) + Species(Probabilities)
+        input_dim = self.backbone_dim + num_aux + num_species
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
@@ -119,13 +110,11 @@ class BiomassUnifiedModel(nn.Module):
         
         # Heads
         species_logits = self.species_head(img_feats)
-        species_probs = torch.softmax(species_logits, dim=1)
-        
-        month_logits = self.month_head(img_feats)
+        species_probs = torch.softmax(species_logits, dim=1)        
         aux_out = self.aux_head(img_feats) 
         
         # Fusion
-        combined_feats = torch.cat([img_feats, aux_out, species_probs, month_logits], dim=1)
+        combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         
         # Log-Space Predictions (raw outputs, no activation)
         log_preds_raw = self.biomass_head(combined_feats) # (B, 4)
@@ -149,7 +138,7 @@ class BiomassUnifiedModel(nn.Module):
         # Stack: C, D, G, Total, GDM
         biomass_out = torch.cat([log_c, log_d, log_g, log_t, log_gdm], dim=1)
         
-        return biomass_out, aux_out, species_logits, month_logits
+        return biomass_out, aux_out, species_logits
 
 
 def initialize_weights(model):

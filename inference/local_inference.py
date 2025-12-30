@@ -13,29 +13,30 @@ from torchvision import transforms
 
 # ====================== INLINED CONFIG & MODEL ======================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-IMAGE_HEIGHT = 224
-IMAGE_WIDTH = 512
+# These defaults are fallback; metadata.json takes precedence
+DEFAULT_HEIGHT = 224
+DEFAULT_WIDTH = 512
 FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 32
-OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
 
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name='timm/tf_efficientnet_b3.ns_jft_in1k', num_aux=3, num_species=14, pretrained=False):
+    def __init__(self, backbone_name, num_aux=3, num_species=14, pretrained=False):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
         self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0, global_pool='')
         
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, IMAGE_HEIGHT, IMAGE_WIDTH)
+            # Use a generic size to determine feature dim; exact input size doesn't change channel count
+            dummy_input = torch.randn(1, 3, DEFAULT_HEIGHT, DEFAULT_WIDTH) 
             feats = self.backbone(dummy_input)
             self.backbone_dim = feats.shape[1]
             
         self.global_pool = nn.AdaptiveAvgPool2d(1)
             
-        # 2. Auxiliary Head (NDVI, LogHeight, Interaction)
+        # 2. Auxiliary Head
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
             nn.LayerNorm(128),
@@ -44,7 +45,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(128, num_aux)
         )
         
-        # Species Head
+        # 3. Species Head
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
             nn.LayerNorm(64),
@@ -53,7 +54,6 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(64, num_species)
         )
                 
-        
         # 4. Biomass Head
         input_dim = self.backbone_dim + num_aux + num_species
         self.biomass_head = nn.Sequential(
@@ -94,7 +94,7 @@ class BiomassUnifiedModel(nn.Module):
         
         return biomass_out, aux_out, species_logits
 
-def get_inference_transforms(h=IMAGE_HEIGHT, w=IMAGE_WIDTH):
+def get_inference_transforms(h, w):
     return transforms.Compose([
         transforms.Resize((h, w)),
         transforms.ToTensor(),
@@ -102,17 +102,13 @@ def get_inference_transforms(h=IMAGE_HEIGHT, w=IMAGE_WIDTH):
     ])
 
 # ====================== CONFIGURATION ======================
-# Adjust these paths as needed for your local environment
-TEST_CSV_PATH = './test.csv'  # Local path assumption
-TEST_IMG_DIR = './test/' # Local path assumption
-MODEL_DIR = './logs/ts_split_train_20251229_143129' # User must point this to the correct session
-BATCH_SIZE = 32
+TEST_CSV_PATH = './test.csv'  
+TEST_IMG_DIR = './test/' 
+# UPDATE THIS PATH TO YOUR SESSION FOLDER
+MODEL_DIR = './logs/ts_split_train_phy_20251229_235832' 
 
-# Interactive override if these don't exist
 if not os.path.exists(TEST_CSV_PATH):
-    print(f"Warning: {TEST_CSV_PATH} not found. Please ensure data is present.")
-
-print(f"Device: {DEVICE}")
+    print(f"Warning: {TEST_CSV_PATH} not found.")
 
 # ====================== TEST DATASET ======================
 class TestDataset(Dataset):
@@ -132,44 +128,44 @@ class TestDataset(Dataset):
         try:
             img = Image.open(img_path).convert('RGB')
         except FileNotFoundError:
+            # Fallback for missing images (rare)
             print(f"Warning: Image not found: {img_path}")
             raise FileNotFoundError(f"Image not found: {img_path}")
         
         if self.transform:
             img = self.transform(img)
-        else:
-            raise ValueError("No transform provided. Please provide a transform.")
         
         return img, row['clean_id']
 
-def load_model(fold_path, device, num_species):
-    """Load a single fold model with correct num_species."""
-    model = BiomassUnifiedModel(num_species=num_species).to(device)
-    state_dict = torch.load(fold_path, map_location=device, weights_only=True)
+def load_model(fold_path, device, num_species, backbone_name):
+    """Load a single fold model with correct config."""
+    model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species).to(device)
+    # weights_only=True is safer, but ensure timm version matches
+    state_dict = torch.load(fold_path, map_location=device,weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
     return model
 
 def run_inference():
-    print("="*70 + "\nBIOMASS UNIFIED MODEL INFERENCE (LOCAL)\n" + "="*70)
+    print("="*70 + "\nBIOMASS UNIFIED MODEL INFERENCE\n" + "="*70)
     
     # 1. LOAD TEST DATA
     print("\n[1/5] Loading test data...")
     if not os.path.exists(TEST_CSV_PATH):
-        raise FileNotFoundError(f"Test CSV not found: {TEST_CSV_PATH}")
-        
-    df = pd.read_csv(TEST_CSV_PATH)
-    # Convert long to wide if needed
-    if 'target_name' in df.columns:
-        print("   Detected long format, extracting unique images...")
-        df['clean_id'] = df['sample_id'].str.split('__').str[0]
-        df_wide = df[['clean_id', 'image_path']].drop_duplicates().reset_index(drop=True)
+        print("Test CSV not found. Creating dummy for dry run...")
+        # Create dummy df for testing script logic if file missing
+        df_wide = pd.DataFrame({'sample_id': ['test_1'], 'image_path': ['test_1.jpg'], 'clean_id': ['test_1']})
     else:
-        # Assume wide or simple list
-        df_wide = df
-        if 'clean_id' not in df_wide.columns and 'sample_id' in df_wide.columns:
-             df_wide['clean_id'] = df_wide['sample_id'] # Fallback
-             
+        df = pd.read_csv(TEST_CSV_PATH)
+        if 'target_name' in df.columns:
+            print("   Detected long format, extracting unique images...")
+            df['clean_id'] = df['sample_id'].str.split('__').str[0]
+            df_wide = df[['clean_id', 'image_path']].drop_duplicates().reset_index(drop=True)
+        else:
+            df_wide = df
+            if 'clean_id' not in df_wide.columns and 'sample_id' in df_wide.columns:
+                 df_wide['clean_id'] = df_wide['sample_id']
+                 
     print(f"   Test Images: {len(df_wide)}")
     
     # 2. LOAD METADATA
@@ -178,30 +174,26 @@ def run_inference():
         print(f"\n[2/5] Loading metadata from {metadata_path}...")
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
-        num_species = metadata.get('num_species', 15)
-        species_list = metadata.get('species_list', [])
-        species_to_id = {s: i for i, s in enumerate(species_list)}
-        print(f"   Detected {num_species} species classes.")
+        num_species = metadata.get('num_species')
+        backbone_name = metadata.get('backbone')
+        img_h = metadata.get('image_height', DEFAULT_HEIGHT)
+        img_w = metadata.get('image_width', DEFAULT_WIDTH)
+        print(f"   Config: Backbone={backbone_name}, Species={num_species}, H={img_h}, W={img_w}")
     else:
         print(f"\n[2/5] WARNING: metadata.json not found in {MODEL_DIR}. Using defaults.")
-        num_species = 15
-        species_to_id = {}
+        raise FileNotFoundError(f"metadata.json not found in {MODEL_DIR}")
 
     # 3. DISCOVER MODELS
     print(f"\n[3/5] Discovering models in {MODEL_DIR}...")
-    models = []
-    # Look for best_model_foldX.pth or best_model_overall.pth
-    # Priority: if overall exists, maybe just use that? Or ensemble folds if available.
-    # Standard practice: Ensemble all folds found.
-    
     found_folds = []
+    # Check for fold models
     for f in range(10):
-        p = os.path.join(MODEL_DIR, f"best_model_fold{f+1}.pth") # train.py saves as fold+1
+        p = os.path.join(MODEL_DIR, f"best_model_fold{f+1}.pth")
         if os.path.exists(p):
             found_folds.append(p)
             
+    # If no folds, check for overall best
     if not found_folds:
-        # Try overall
         p = os.path.join(MODEL_DIR, "best_model_overall.pth")
         if os.path.exists(p):
             found_folds.append(p)
@@ -214,23 +206,17 @@ def run_inference():
     # 4. RUN INFERENCE
     print(f"\n[4/5] Running inference...")
     
-    img_h = metadata.get('image_height', IMAGE_HEIGHT)
-    img_w = metadata.get('image_width', IMAGE_WIDTH)
     val_transform = get_inference_transforms(h=img_h, w=img_w)
     
     ds = TestDataset(df_wide, TEST_IMG_DIR, transform=val_transform)
     loader = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
     
-    # We will accumulate predictions: (N_Samples, 5_Targets)
-    # Targets order: [Clover, Dead, Green, Total, GDM]
-    # NOTE: Output is Log-Space (log1p(Grams)).
-    
     ensemble_preds_g = []
     final_clean_ids = []
     
     for i, model_path in enumerate(found_folds):
-        print(f"   -> Processing {os.path.basename(model_path)}...")
-        model = load_model(model_path, DEVICE, num_species)
+        print(f"   -> Processing model {i+1}/{len(found_folds)}: {os.path.basename(model_path)}")
+        model = load_model(model_path, DEVICE, num_species, backbone_name)
         
         fold_preds = []
         
@@ -238,11 +224,11 @@ def run_inference():
             for imgs, ids in tqdm(loader, leave=False):
                 imgs = imgs.to(DEVICE)
                 
-                # Forward
-                biomass_out, _, _, _ = model(imgs)
+                # FIXED: Unpack 3 values, not 4
+                biomass_out, _, _ = model(imgs)
                 
                 # Convert Log-Space -> Linear Grams
-                # Model predicts log1p(x_grams)
+                # Model output is log1p(grams)
                 pred_g = torch.expm1(biomass_out)
                 
                 fold_preds.append(pred_g.cpu().numpy())
@@ -256,18 +242,16 @@ def run_inference():
     print("\n[5/5] Averaging and post-processing...")
     avg_preds_g = np.mean(ensemble_preds_g, axis=0) # (N, 5)
     
-    # Clip negative and handle final scale
+    # Clip negative values (just in case)
     avg_preds_g = np.maximum(avg_preds_g, 0)
     
     # 6. EXPORT
-    print("\n[5/5] Saving submission...")
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     
-    # Create final df
     final_df = pd.DataFrame(avg_preds_g, columns=target_cols)
     final_df['clean_id'] = final_clean_ids
     
-    # Melanize to long format (sample_id, target)
+    # Convert to Submission Format (Long)
     submission_rows = []
     for _, row in final_df.iterrows():
         cid = row['clean_id']
@@ -278,9 +262,8 @@ def run_inference():
     sub_df = pd.DataFrame(submission_rows)
     out_file = 'submission.csv'
     sub_df.to_csv(out_file, index=False)
-    print(f"   Saved to {out_file}")
+    print(f"   Saved {len(sub_df)} rows to {out_file}")
     print(sub_df.head())
 
 if __name__ == '__main__':
-    
-    run_inference()
+    run_inference() 

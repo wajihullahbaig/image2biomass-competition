@@ -12,11 +12,11 @@ IMAGE_HEIGHT = 224
 IMAGE_WIDTH = 512
 # Training Hyperparameters
 BATCH_SIZE = 32 
-LEARNING_RATE = 2e-4 
+LEARNING_RATE = 3e-4 
 N_FOLDS = 4
 EPOCHS = 50 
 WEIGHT_DECAY = 1e-2
-EARLY_STOP_PATIENCE = 15
+EARLY_STOP_PATIENCE = 10
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -34,10 +34,7 @@ FUSION_DIM = 256
 BIOMASS_FEAT_WEIGHT = 100.0 
 AUX_FEAT_WEIGHT = 10.0
 SPECIES_FEAT_WEIGHT = 5.0
-MONTH_FEAT_WEIGHT = 1.0
 PHYSICS_FEAT_WEIGHT = 10.0 
-
-# --- Regularization ---
 
 # return a string representation of the configuration
 def config_str():
@@ -60,7 +57,6 @@ def config_str():
         f"FUSION_DIM: {FUSION_DIM}",
         f"AUX_FEAT_WEIGHT: {AUX_FEAT_WEIGHT}",
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
-        f"MONTH_FEAT_WEIGHT: {MONTH_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
         f"PHYSICS_FEAT_WEIGHT: {PHYSICS_FEAT_WEIGHT}"
     ]

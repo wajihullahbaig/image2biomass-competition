@@ -47,88 +47,41 @@ def plot_training_history(history, fold, session_dir):
     try_plot(3, 'ind_sp', 'Holdout', 'tab:green', ':')
     axes[3].set_title('Species Loss')
 
-    # 5. Month Loss
-    try_plot(4, 'train_mo', 'Train', 'tab:blue')
-    try_plot(4, 'val_mo', 'Val', 'tab:red')
-    try_plot(4, 'ind_mo', 'Holdout', 'tab:green', ':')
-    axes[4].set_title('Month Loss')
+    # 5. Physics Loss
+    try_plot(4, 'train_phy', 'Train', 'tab:blue')
+    try_plot(4, 'val_phy', 'Val', 'tab:red')
+    try_plot(4, 'ind_phy', 'Holdout', 'tab:green', ':')
+    axes[4].set_title('Physics Loss')
 
-    # 6. Physics Loss
-    try_plot(5, 'train_phy', 'Train', 'tab:blue')
-    try_plot(5, 'val_phy', 'Val', 'tab:red')
-    try_plot(5, 'ind_phy', 'Holdout', 'tab:green', ':')
-    axes[5].set_title('Physics Loss')
-
-    # 7. R2 Metrics
-    try_plot(6, 'val_r2', 'Val R2', 'red')
-    try_plot(6, 'holdout_r2', 'Holdout R2', 'green')
-    axes[6].set_title('R2 Metrics')
-    axes[6].axhline(0, color='black', alpha=0.3)
+    # 6. R2 Metrics
+    try_plot(5, 'val_r2', 'Val R2', 'red')
+    try_plot(5, 'holdout_r2', 'Holdout R2', 'green')
+    axes[5].set_title('R2 Metrics')
+    axes[5].axhline(0, color='black', alpha=0.3)
     # Flexible ylim for R2
     vals = []
     if 'val_r2' in history: vals.extend(history['val_r2'])
     if 'holdout_r2' in history: vals.extend(history['holdout_r2'])
     if vals:
         vmin, vmax = min(vals), max(vals)
-        axes[6].set_ylim(min(vmin - 0.1, -1.5), max(vmax + 0.1, 1.5))
+        axes[5].set_ylim(min(vmin - 0.1, -1.5), max(vmax + 0.1, 1.5))
     else:
-        axes[6].set_ylim(-1.5,1.5)
+        axes[5].set_ylim(-1.5,1.5)
 
     for ax in axes:
         if ax.get_legend_handles_labels()[0]:
             ax.legend()
         ax.grid(True, alpha=0.3)
     
-    # 8. Learning Rate (Index 7)
-    try_plot(7, 'lr', 'Learning Rate', 'tab:purple')
-    axes[7].set_title('Learning Rate')
-    axes[7].set_yscale('log') # Log scale is often better for LR
+    # 7. Learning Rate (Index 6)
+    try_plot(6, 'lr', 'Learning Rate', 'tab:purple')
+    axes[6].set_title('Learning Rate')
+    axes[6].set_yscale('log') # Log scale is often better for LR
     
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"fold_{fold}_metrics.png"))
     plt.close()
 
-
-def add_australian_season(df: pd.DataFrame, date_column: str = 'Sampling_Date') -> pd.DataFrame:
-    """
-    Adds an 'aus_season' column to the DataFrame with Australian meteorological seasons.
-    
-    Parameters:
-        df (pd.DataFrame): Input DataFrame
-        date_column (str): Name of the column containing dates (must be datetime or parseable)
-    
-    Returns:
-        pd.DataFrame: Original DataFrame with new 'aus_season' column
-    
-    Raises:
-        KeyError: If date_column not found
-        TypeError: If dates cannot be converted
-    """
-    if date_column not in df.columns:
-        raise KeyError(f"Column '{date_column}' not found in DataFrame.")
-    
-    # Ensure the column is datetime
-    dates = pd.to_datetime(df[date_column])
-    
-    # Extract month
-    month = dates.dt.month
-    
-    # Map months to Australian seasons
-    season_map = {
-        12: 'Summer', 1: 'Summer', 2: 'Summer',
-        3: 'Autumn',  4: 'Autumn', 5: 'Autumn',
-        6: 'Winter',  7: 'Winter', 8: 'Winter',
-        9: 'Spring', 10: 'Spring', 11: 'Spring'
-    }
-    
-    df = df.copy()  # Avoid modifying original if not desired
-    df['season'] = month.map(season_map)
-    
-    # Optional: make it categorical with logical order
-    season_order = ['Summer', 'Autumn', 'Winter', 'Spring']
-    df['season'] = pd.Categorical(df['season'], categories=season_order, ordered=True)
-    
-    return df
     
 def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=None) -> str:
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

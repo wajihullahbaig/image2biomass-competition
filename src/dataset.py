@@ -102,7 +102,8 @@ class BiomassDataset(Dataset):
         try:
             image = Image.open(img_path).convert('RGB')
         except Exception as e:
-            image = Image.new('RGB', (224, 224), (0, 0, 0)) # Fallback
+            print(f"Warning: Image not found: {img_path}")
+            raise FileNotFoundError(f"Image not found: {img_path}")
             
         # Apply transforms
         # self.transform should include RandomResizedCrop(scale=(0.5, 1.0)) for training!
@@ -110,13 +111,8 @@ class BiomassDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         else:
-            # Basic fallback
-            to_tensor = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-            image = to_tensor(image)
+            print("No transform provided. Using default transform.")
+            raise ValueError("No transform provided. Please provide a transform.")
             
         if self.is_test:
             return {
@@ -134,27 +130,12 @@ class BiomassDataset(Dataset):
         
         # Species Soft-Label Vector
         species_vec = parse_species_to_soft_labels(row['Species'], self.core_species)
-        
-        # Cyclical Month Encoding for Phenology Regularization
-        try:
-            if hasattr(row['Sampling_Date'], 'month'):
-                m = row['Sampling_Date'].month
-            else:
-                m = pd.to_datetime(str(row['Sampling_Date'])).month
-            
-            # Convert to radians (1-12 range)
-            month_rad = 2.0 * np.pi * (m - 1) / 12.0
-            month_sin = np.sin(month_rad)
-            month_cos = np.cos(month_rad)
-        except:
-            month_sin, month_cos = 0.0, 1.0 # Default to Jan (rad 0)
-            
+                
         return {
             'image': image,
             'targets': targets,
             'aux_feats': aux_feats,
             'species_id': species_vec, # Now a probability vector
-            'month_sin_cos': torch.tensor([month_sin, month_cos], dtype=torch.float32),
             'sample_id': row['sample_id'],
             'is_mosaic': False
         }
@@ -203,7 +184,6 @@ class MosaicDataset(Dataset):
         targets_list = []
         aux_list = []
         species_list = []
-        month_list = []
         
         sample_id = samples[0]['sample_id'] # Use primary sample ID
 
@@ -221,8 +201,7 @@ class MosaicDataset(Dataset):
             targets_list.append(sample['targets'])
             aux_list.append(sample['aux_feats'])
             species_list.append(sample['species_id'])
-            month_list.append(sample['month_sin_cos'])
-
+            
         # Average Continuous Targets
         mean_targets = torch.stack(targets_list).mean(dim=0)
         mean_aux = torch.stack(aux_list).mean(dim=0)
@@ -230,16 +209,11 @@ class MosaicDataset(Dataset):
         # Average Soft Species labels
         mean_species = torch.stack(species_list).mean(dim=0)
         
-        # Average Month (Geometric)
-        mean_month = torch.stack(month_list).mean(dim=0)
-        mean_month = mean_month / (mean_month.norm() + 1e-8)
-        
         return {
             'image': mosaic_img,
             'targets': mean_targets,
             'aux_feats': mean_aux, 
             'species_id': mean_species,
-            'month_sin_cos': mean_month,
             'sample_id': sample_id,
             'is_mosaic': True
         }

@@ -16,7 +16,7 @@ LEARNING_RATE = 3e-4
 N_FOLDS = 4
 EPOCHS = 50 
 WEIGHT_DECAY = 1e-2
-EARLY_STOP_PATIENCE = 10
+EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -35,6 +35,29 @@ BIOMASS_FEAT_WEIGHT = 100.0
 AUX_FEAT_WEIGHT = 10.0
 SPECIES_FEAT_WEIGHT = 5.0
 PHYSICS_FEAT_WEIGHT = 10.0 
+
+# ====================== TAXONOMY & SPECIES ======================
+CORE_SPECIES = [
+    'Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa',  # 0-3
+    'Ryegrass', 'Phalaris', 'Fescue', 'Lucerne',                    # 4-7
+    'Barleygrass', 'Silvergrass', 'Speargrass', 'Bromegrass',       # 8-11
+    'Capeweed', 'Crumbweed'                                         # 12-13
+]
+
+# Define Groups by Name (Safer than indices)
+GROUP_DEFINITIONS = {
+    'Legume': ['Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa', 'Lucerne'],
+    'Grass':  ['Ryegrass', 'Phalaris', 'Fescue', 'Barleygrass', 'Silvergrass', 'Speargrass', 'Bromegrass'],
+    'Weed':   ['Capeweed', 'Crumbweed']
+}
+
+# Dynamically Generate Indices Dictionary
+# Structure: {'Legume': [0, 1, 2, 3, 7], 'Grass': [...], 'Weed': [...]}
+TAXONOMY_IDXS = {
+    group: [i for i, species in enumerate(CORE_SPECIES) if species in names]
+    for group, names in GROUP_DEFINITIONS.items()
+}
+
 
 # return a string representation of the configuration
 def config_str():

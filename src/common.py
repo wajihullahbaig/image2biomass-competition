@@ -14,8 +14,10 @@ from torchvision import transforms
 # Local Imports
 from configs import (
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, 
-    IMAGE_HEIGHT, IMAGE_WIDTH
+    IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES,GROUP_DEFINITIONS
 )
+
+
 
 # -----------------------------------------------------------------------------
 # 1. MATH & GEOMETRY HELPERS (The Core of the Strategy)
@@ -220,13 +222,13 @@ def apply_tta(model, image, device):
     return avg_bio_log, avg_aux, avg_species
 
 # -----------------------------------------------------------------------------
-# 5. DATA LOADING & PREP
+# 5. DATA LOADING & PREP (UPDATED)
 # -----------------------------------------------------------------------------
-
 def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info("Loading and Pivoting Data...")
     if not os.path.exists('train.csv'):
         raise FileNotFoundError("train.csv not found in current directory")
+    
         
     df = pd.read_csv('train.csv')
     df['clean_id'] = df['sample_id'].astype(str).apply(lambda x: x.split('__')[0])
@@ -257,20 +259,66 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     # Feature Engineering (Auxiliary Inputs)
     wide['Height_Ave_cm'] = pd.to_numeric(wide['Height_Ave_cm'], errors='coerce').fillna(0)
     wide['Pre_GSHH_NDVI'] = pd.to_numeric(wide['Pre_GSHH_NDVI'], errors='coerce').fillna(0)
-    
-    # Log Height often correlates better with Log Biomass
     wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'])
-    
-    # Interaction Term (Volume Proxy)
     wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
     
     wide = wide.rename(columns={'clean_id': 'sample_id'})
     
-    # Targets stay in Raw Grams here.
-    # Conversion to Log1p happens inside the Dataset/Training loop.
     wide[target_cols] = wide[target_cols].astype(float)
+
+    logger.info("Performing global species breakup...")
     
-    logger.info(f"Data Loaded. Rows: {len(wide)}")
+    # Initialize columns for each core species
+    for sp in CORE_SPECIES:
+        wide[f'Species_{sp}'] = 0.0
+
+    # Parsing Logic
+    def parse_species_string(s):
+        vec = np.zeros(len(CORE_SPECIES))
+        if not isinstance(s, str):
+            return vec
+        
+        s_lower = s.lower().replace(' ', '')
+        
+        # Mapping specific cases
+        # Note: 'clover' in string matches 'Clover', 'WhiteClover' etc. logic below handles exact/substring
+        parts = s_lower.split('_')
+        
+        found_indices = set()
+        
+        for p in parts:
+            # Check against core species
+            for idx, core in enumerate(CORE_SPECIES):
+                c_lower = core.lower()
+                # Check for match. 
+                # p="ryegrass" matches c="ryegrass"
+                # p="whiteclover" matches c="whiteclover"
+                # p="clover" matches c="clover"
+                if c_lower == p or (p in c_lower and len(p) > 3) or (c_lower in p and len(c_lower) > 3):
+                    found_indices.add(idx)
+        
+        if found_indices:
+            # Distribute probability uniformly among found species
+            prob = 1.0 / len(found_indices)
+            for idx in found_indices:
+                vec[idx] = prob
+        else:
+            # Fallback for "Mixed" or unknown -> Uniform across all
+            vec[:] = 1.0 / len(CORE_SPECIES)
+            
+        return vec
+
+    # Apply to dataframe
+    # We iterate to assign to new columns
+    species_vectors = wide['Species'].apply(parse_species_string)
+    
+    # Stack vectors into a matrix and assign to columns
+    species_matrix = np.stack(species_vectors.values)
+    for i, sp in enumerate(CORE_SPECIES):
+        wide[f'Species_{sp}'] = species_matrix[:, i]
+        
+    logger.info(f"Data Loaded and Parsed. Rows: {len(wide)}")
+    wide.to_csv('wide.csv', index=False)
     return wide
 
 def upsample_minority_classes(df, target_col, date_col='Sampling_Date'):
@@ -346,3 +394,95 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         if logger: logger.info(f"Seed set to {seed}")
+
+
+# -----------------------------------------------------------------------------
+# 7. FUNCTIONAL GROUP LOGIC (Step 2)
+# -----------------------------------------------------------------------------
+
+def assign_functional_groups(df):
+    """
+    Classifies samples based on config definitions.
+    """
+    # Use definitions from configs.py
+    col_legumes = [f'Species_{x}' for x in GROUP_DEFINITIONS['Legume'] if f'Species_{x}' in df.columns]
+    col_grasses = [f'Species_{x}' for x in GROUP_DEFINITIONS['Grass']  if f'Species_{x}' in df.columns]
+    col_weeds   = [f'Species_{x}' for x in GROUP_DEFINITIONS['Weed']   if f'Species_{x}' in df.columns]
+
+    s_legume = df[col_legumes].sum(axis=1)
+    s_grass  = df[col_grasses].sum(axis=1)
+    s_weed   = df[col_weeds].sum(axis=1)
+
+    groups = []
+    for l, g, w in zip(s_legume, s_grass, s_weed):
+        if l >= g and l >= w: groups.append('Legume')
+        elif w > g: groups.append('Weed')
+        else: groups.append('Grass')
+            
+    df['FunctionalGroup'] = groups
+    return df
+
+
+def upsample_minority_classes(df, target_col='FunctionalGroup', date_col='Sampling_Date'):
+    """
+    Upsampling Strategy:
+    1. Assigns Functional Groups (Grass/Legume/Weed).
+    2. Upsamples based on these groups (fixing the 'Fold 1 Missing Clover' issue by upsampling Lucerne).
+    3. Uses 'Temporal Neighbors' (D-1, D+1) to create variety instead of exact duplicates.
+    """
+    # 1. Assign Groups if not present (or if target_col is 'FunctionalGroup')
+    if target_col == 'FunctionalGroup':
+        df = assign_functional_groups(df)
+        
+    # 2. Calculate Targets
+    counts = df[target_col].value_counts()
+    target_count = int(counts.max())
+    
+    dfs = [df]
+    
+    # 3. Iterate Minority Classes
+    for cls, count in counts.items():
+        if count < target_count:
+            n_needed = target_count - count
+            
+            # Get minority data
+            cls_mask = df[target_col] == cls
+            cls_df = df[cls_mask].copy()
+            
+            # --- Temporal Neighbor Search ---
+            existing_dates = set(cls_df[date_col].dt.date)
+            candidates = []
+            
+            for _, row in cls_df.iterrows():
+                # Look for D-1 and D+1
+                for offset in [-1, 1]:
+                    d_new = row[date_col] + pd.Timedelta(days=offset)
+                    # Only add if this specific date isn't already in the training set for this class
+                    # (Prevents data leakage if we actually had data that day, though rare here)
+                    if d_new.date() not in existing_dates:
+                        new_row = row.copy()
+                        new_row[date_col] = d_new
+                        # We keep the same Image ID. 
+                        # Rationale: "This image COULD have been taken yesterday."
+                        candidates.append(new_row)
+            
+            # --- Selection Logic ---
+            cand_df = pd.DataFrame(candidates) if candidates else pd.DataFrame()
+            
+            if len(cand_df) > 0:
+                if len(cand_df) >= n_needed:
+                    # We have enough temporal neighbors to fill the gap completely!
+                    dfs.append(cand_df.sample(n=n_needed, replace=False, random_state=42))
+                else:
+                    # Use all temporal neighbors
+                    dfs.append(cand_df)
+                    # Fill remainder with standard duplicates
+                    rem = n_needed - len(cand_df)
+                    if rem > 0:
+                        dfs.append(cls_df.sample(n=rem, replace=True, random_state=42))
+            else:
+                # No temporal neighbors found, fallback to standard duplication
+                dfs.append(cls_df.sample(n=n_needed, replace=True, random_state=42))
+
+    # 4. Shuffle and Return
+    return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)

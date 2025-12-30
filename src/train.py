@@ -24,7 +24,7 @@ from configs import (
     OFFICIAL_WEIGHTS, config_str
 )
 from common import (
-    load_data, get_image_data_transforms_v2, 
+    load_data, get_image_data_transforms, 
     set_seed, calculate_global_weighted_r2,
     upsample_minority_classes
 )
@@ -43,7 +43,6 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
     bio_loss_sum = 0
     aux_loss_sum = 0
     sp_loss_sum = 0
-    mo_loss_sum = 0
     phy_loss_sum = 0
     
     scaler = torch.amp.GradScaler('cuda')
@@ -52,14 +51,12 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
     for batch in pbar:
         # Move to device
         images = batch['image'].to(device)
-        # targets are in Grams scale. We need Log1p(target) for training
-        targets_g = batch['targets'].to(device)
-        targets_log = torch.log1p(targets_g) 
+        targets_g = batch['targets'].to(device) # Raw Grams
+        targets_log = torch.log1p(targets_g)    # Log1p targets
         
         aux_feats = batch['aux_feats'].to(device)
         species_ids = batch['species_id'].to(device)
 
-        
         optimizer.zero_grad()
         
         with torch.amp.autocast('cuda'):
@@ -67,34 +64,32 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
             # biomass_out: [Log_C, Log_D, Log_G, Log_T, Log_GDM]
             biomass_out, aux_out, species_logits = model(images)
             
-            # --- 1. Biomass Loss (Huber in Log Space) ---
-            # Preds are already Log Space (Softplus output)
-            # Match columns: [Clover, Dead, Green, Total, GDM]
+            # --- 1. Biomass Loss (Direct Supervision) ---
+            # Compares Model Output vs Ground Truth in Log Space
+            # Note: This implicitly supervises C and G twice (once directly, once via GDM target)
             loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
             
-            # --- 2. Aux Loss (NDVI, LogHeight, Interaction) ---
+            # --- 2. Aux Loss ---
             loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
             
-            # --- 3. Species Loss (CrossEntropy) ---
+            # --- 3. Species Loss ---
             loss_sp = criterion_ce(species_logits, species_ids) * SPECIES_FEAT_WEIGHT
             
+            # --- 4. Physics Consistency Loss ---
+            # We only need to check Total. 
+            # GDM is already structurally enforced in the model's forward pass (GDM = C + G).
             
-            # --- 5. Physics Consistency Loss (Log-Space Enforced) ---
-            # Correct math: log1p(A+B+C) != log1p(A)+log1p(B)+log1p(C)
-            # We must sum in linear space, then move back to log to compare scales
+            # Convert Log predictions back to Linear to sum them correctly
             pred_c_lin = torch.expm1(biomass_out[:, 0])
             pred_d_lin = torch.expm1(biomass_out[:, 1])
             pred_g_lin = torch.expm1(biomass_out[:, 2])
             
-            # Derived Log Values
+            # Calculate what Total SHOULD be based on components
             derived_total_log = torch.log1p(pred_c_lin + pred_d_lin + pred_g_lin + 1e-8)
-            derived_gdm_log = torch.log1p(pred_c_lin + pred_g_lin + 1e-8)
             
-            # Model's direct predictions are already log1p (Softplus output)
-            loss_phy_total = criterion_reg(biomass_out[:, 3], derived_total_log)
-            loss_phy_gdm = criterion_reg(biomass_out[:, 4], derived_gdm_log)
-            
-            loss_phy = (loss_phy_total + loss_phy_gdm) * PHYSICS_FEAT_WEIGHT
+            # Penalize difference between "Predicted Total" and "Sum of Components"
+            # Compare in Log Space so magnitude matches loss_bio
+            loss_phy = criterion_reg(biomass_out[:, 3], derived_total_log) * PHYSICS_FEAT_WEIGHT
 
             # --- Total Loss ---
             total_loss = loss_bio + loss_aux + loss_sp + loss_phy
@@ -122,7 +117,6 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
         'train_sp': sp_loss_sum / N,
         'train_phy': phy_loss_sum / N
     }
-
 @torch.no_grad()
 def validate(model, loader, criterion_reg, criterion_ce, device):
     model.eval()
@@ -138,7 +132,7 @@ def validate(model, loader, criterion_reg, criterion_ce, device):
     
     for batch in loader:
         images = batch['image'].to(device)
-        targets_g = batch['targets'].to(device) # Raw Grams
+        targets_g = batch['targets'].to(device)
         targets_log = torch.log1p(targets_g) 
         
         aux_feats = batch['aux_feats'].to(device)
@@ -147,21 +141,19 @@ def validate(model, loader, criterion_reg, criterion_ce, device):
         # Forward
         biomass_out, aux_out, species_logits = model(images)
         
-        # Losses (Weights from configs)
+        # Losses
         loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
         loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
         loss_sp = criterion_ce(species_logits, species_ids) * SPECIES_FEAT_WEIGHT
         
-        # Physics Loss (Log-Space Enforced)
+        # Physics Loss (Total Only)
         pred_c_lin = torch.expm1(biomass_out[:, 0])
         pred_d_lin = torch.expm1(biomass_out[:, 1])
         pred_g_lin = torch.expm1(biomass_out[:, 2])
         
         derived_total_log = torch.log1p(pred_c_lin + pred_d_lin + pred_g_lin + 1e-8)
-        derived_gdm_log = torch.log1p(pred_c_lin + pred_g_lin + 1e-8)
         
-        loss_phy = (criterion_reg(biomass_out[:, 3], derived_total_log) + \
-                    criterion_reg(biomass_out[:, 4], derived_gdm_log)) * PHYSICS_FEAT_WEIGHT
+        loss_phy = criterion_reg(biomass_out[:, 3], derived_total_log) * PHYSICS_FEAT_WEIGHT
 
         total_loss = loss_bio + loss_aux + loss_sp + loss_phy
         
@@ -185,17 +177,15 @@ def validate(model, loader, criterion_reg, criterion_ce, device):
         'val_phy': phy_loss_sum / N
     }
     
-    # Calculate R2
+    # Calculate R2 (Linear Scale)
     preds_log = torch.cat(all_preds_log).numpy()
-    preds_linear = np.expm1(preds_log) # Convert back to linear for R2 (Grams)
+    preds_linear = np.expm1(preds_log) # Convert Log output back to Grams
     targets_linear = torch.cat(all_targets_g).numpy()
     
-    # R2 on Linear scale
     r2_score = calculate_global_weighted_r2(targets_linear, preds_linear, OFFICIAL_WEIGHTS)
     metrics['val_r2'] = r2_score
     
     return metrics
-
 
 
 def save_metadata(session_dir, species_list, target_cols):
@@ -241,7 +231,7 @@ def main(args):
     tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
     best_overall_r2 = -float('inf')
-    train_transform, val_transform = get_image_data_transforms_v2()
+    train_transform, val_transform = get_image_data_transforms()
     
     for fold, (train_idx, val_idx) in enumerate(tscv.split(df)):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
@@ -307,7 +297,7 @@ def main(args):
         # Model
         model = BiomassUnifiedModel(num_species=len(species_list)).to(DEVICE)        
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.85, patience=5, threshold=1e-2)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.85, patience=5, threshold=1e-3, min_lr=1e-6)
         
         criterion_reg = nn.MSELoss() 
         criterion_ce = nn.CrossEntropyLoss()

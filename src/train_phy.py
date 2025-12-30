@@ -231,7 +231,7 @@ def main(args):
     tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
     best_overall_r2 = -float('inf')
-    train_transform, val_transform = get_image_data_transforms_v2()
+    train_transform, val_transform = get_image_data_transforms()
     
     for fold, (train_idx, val_idx) in enumerate(tscv.split(df)):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from torch import nn
 from torch.utils.data import DataLoader
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import StratifiedKFold
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
@@ -61,30 +61,30 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
     metrics = defaultdict(float)
     scaler = torch.amp.GradScaler('cuda')
     
+    # Containers for R2 calculation
+    all_preds_log = []
+    all_targets_g = []
+    
     pbar = tqdm(loader, desc=f"Train Ep {epoch}", leave=False)
     for batch in pbar:
-        # Move to Device
         images = batch['image'].to(device)
-        targets_log = torch.log1p(batch['targets'].to(device))
+        targets_g = batch['targets'].to(device)
+        targets_log = torch.log1p(targets_g)
         aux_feats = batch['aux_feats'].to(device)
         species_vec = batch['species_id'].to(device)
         
-        # Taxonomy Targets
         taxonomy_targets = get_taxonomy_targets(species_vec)
 
         optimizer.zero_grad()
         
         with torch.amp.autocast('cuda'):
-            # Forward
             biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
             
-            # Losses
             loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
             loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
             loss_sp = criterion_ce(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
-            loss_tax = criterion_ce(taxonomy_logits, taxonomy_targets) * SPECIES_FEAT_WEIGHT # Scaled same as Species
+            loss_tax = criterion_ce(taxonomy_logits, taxonomy_targets) * SPECIES_FEAT_WEIGHT
             
-            # Physics
             pred_c = torch.expm1(biomass_out[:, 0])
             pred_d = torch.expm1(biomass_out[:, 1])
             pred_g = torch.expm1(biomass_out[:, 2])
@@ -102,13 +102,27 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
         metrics['train_bio'] += loss_bio.item() * B
         metrics['train_aux'] += loss_aux.item() * B
         metrics['train_sp']  += loss_sp.item() * B
-        metrics['train_tax'] += loss_tax.item() * B  # <-- Logging Key Match
+        metrics['train_tax'] += loss_tax.item() * B  
         metrics['train_phy'] += loss_phy.item() * B
+        
+        # Store for R2 (Detach to save memory)
+        all_preds_log.append(biomass_out.detach().cpu())
+        all_targets_g.append(targets_g.detach().cpu())
         
         pbar.set_postfix({'L': total_loss.item()})
         
     N = len(loader.dataset)
-    return {k: v / N for k, v in metrics.items()}
+    # Average Losses
+    final_metrics = {k: v / N for k, v in metrics.items()}
+    
+    # Calculate Train R2
+    preds_log = torch.cat(all_preds_log).numpy()
+    preds_linear = np.expm1(preds_log)
+    targets_linear = torch.cat(all_targets_g).numpy()
+    
+    final_metrics['train_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, OFFICIAL_WEIGHTS)
+    
+    return final_metrics
 
 @torch.no_grad()
 def validate(model, loader, criterion_reg, criterion_ce, device):
@@ -151,10 +165,8 @@ def validate(model, loader, criterion_reg, criterion_ce, device):
         all_targets_g.append(targets_g.cpu())
         
     N = len(loader.dataset)
-    # Average metrics
     final_metrics = {k: v / N for k, v in metrics.items()}
     
-    # R2
     preds_log = torch.cat(all_preds_log).numpy()
     preds_linear = np.expm1(preds_log)
     targets_linear = torch.cat(all_targets_g).numpy()
@@ -198,12 +210,15 @@ def main():
     splits_dir = os.path.join(session_dir, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
     
-    tscv = TimeSeriesSplit(n_splits=N_FOLDS)
+     # STRATIFIED SPLIT
+    # Ensures every fold sees every State + FunctionalGroup combination
+    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    split_key = df['StratifyKey'] # Generated in common.py
     
     best_overall_r2 = -float('inf')
     train_transform, val_transform = get_image_data_transforms()
     
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(df)):
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df, split_key)):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
         
         # Split
@@ -211,29 +226,29 @@ def main():
         val_df = df.iloc[val_idx].copy()
         
         # Temporal Check
-        max_train_date = train_df['Sampling_Date'].max()
+        # max_train_date = train_df['Sampling_Date'].max()
         
-        # STRICT TEMPORAL SEPARATION
-        original_val_len = len(val_df)
-        val_df = val_df[val_df['Sampling_Date'] > max_train_date].reset_index(drop=True)
-        dropped_count = original_val_len - len(val_df)
+        # # STRICT TEMPORAL SEPARATION
+        # original_val_len = len(val_df)
+        # val_df = val_df[val_df['Sampling_Date'] > max_train_date].reset_index(drop=True)
+        # dropped_count = original_val_len - len(val_df)
         
-        if dropped_count > 0:
-            logger.warning(f"Dropped {dropped_count} validation samples to enforce strict temporal order")
+        # if dropped_count > 0:
+        #     logger.warning(f"Dropped {dropped_count} validation samples to enforce strict temporal order")
             
-        if len(val_df) == 0:
-            logger.warning("Validation set empty! Skipping fold.")
-            continue
+        # if len(val_df) == 0:
+        #     logger.warning("Validation set empty! Skipping fold.")
+        #     continue
             
         # Log Pre-Upsample Details
         log_fold_details(logger, train_df, val_df)
 
-        # 2. Upsampling (Step 2: Functional Group + Temporal Neighbors)
+        # Upsampling (Step 2: Functional Group + Temporal Neighbors)
         logger.info(f"Train size before upsample: {len(train_df)}")
-        train_df_before = train_df.copy()
-        
-        # Upsample based on 'FunctionalGroup' (Legume/Grass/Weed) to fix Fold 1 class imbalance
+
+        # We still use FunctionalGroup upsampling to balance Legume/Grass
         train_df = upsample_minority_classes(train_df, target_col='FunctionalGroup')
+        logger.info(f"Train size after upsample: {len(train_df)}")
         
         # CRITICAL: Re-sort by Date to honor temporal order
         train_df = train_df.sort_values('Sampling_Date').reset_index(drop=True)
@@ -243,20 +258,20 @@ def main():
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
         val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
         
-        # 3. Datasets (Step 3: Mixup)
+        # Datasets (Mixup)
         # Base Dataset (reads pre-calculated probability columns)
-        train_ds_base = BiomassDataset(train_df, transform=train_transform)
-        
+        train_ds_base = BiomassDataset(train_df, transform=train_transform)        
         # Mixup Wrapper: The "Texture Solver" for composite species
-        train_ds = MixupDataset(train_ds_base, prob=0.5, alpha=0.4)
-        
+        train_ds = MixupDataset(train_ds_base, prob=0.5, alpha=0.4)        
         val_ds = BiomassDataset(val_df, transform=val_transform)
         
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
-        # 4. Model 
-        model = BiomassUnifiedModel(num_species=len(species_list)).to(DEVICE)        
+        # Check num_aux logic just in case
+        dummy_ds = BiomassDataset(train_df[:1], transform=train_transform)
+        n_aux = dummy_ds[0]['aux_feats'].shape[0] # Should be 3 (NDVI, H, Int)        
+        model = BiomassUnifiedModel(num_species=len(species_list), num_aux=n_aux).to(DEVICE)       
         
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.85, patience=5, threshold=1e-3, min_lr=1e-5)
@@ -277,8 +292,8 @@ def main():
             scheduler.step(val_metrics['val_loss'])
             
             # Logging
-            # We have all the following and learning rate, we can log            
-            log_msg = (f"Ep {epoch} | T_Loss: {train_metrics['train_loss']:.2f} | "
+            # --- (Shows both T_R2 and V_R2) ---
+            log_msg = (f"Ep {epoch} | T_Loss: {train_metrics['train_loss']:.2f} | T_R2: {train_metrics['train_r2']:.4f} | "
                        f"V_Loss: {val_metrics['val_loss']:.2f} | V_R2: {val_metrics['val_r2']:.4f} | "
                        f"LR: {scheduler.get_last_lr()[0]:.1e}")
             logger.info(log_msg)

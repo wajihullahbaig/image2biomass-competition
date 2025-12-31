@@ -14,7 +14,7 @@ from torchvision import transforms
 # Local Imports
 from configs import (
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, 
-    IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES,GROUP_DEFINITIONS
+    IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES,GROUP_DEFINITIONS, N_FOLDS
 )
 
 
@@ -222,7 +222,39 @@ def apply_tta(model, image, device):
     return avg_bio_log, avg_aux, avg_species
 
 # -----------------------------------------------------------------------------
-# 5. DATA LOADING & PREP (UPDATED)
+# 5. STRATIFICATION LOGIC (Composite Key)
+# -----------------------------------------------------------------------------
+
+def create_stratify_key(df):
+    """
+    Creates a composite key to ensure every fold gets a fair distribution of
+    Geographies (State) and Biology (FunctionalGroup).
+    
+    Crucial because State is temporally disjoint (NSW=Jan, WA=Sept).
+    Random Stratified split is the ONLY way to ensure Fold 1 sees WA soil.
+    """
+    # 1. Ensure Functional Group exists
+    if 'FunctionalGroup' not in df.columns:
+        df = assign_functional_groups(df)
+        
+    # 2. Composite Key: State + Group
+    # e.g., "NSW_Legume", "WA_Grass", "Vic_Weed"
+    df['StratifyKey'] = df['State'].astype(str) + "_" + df['FunctionalGroup'].astype(str)
+    
+    # 3. Handle Rare Combinations
+    # If a combo appears < N_FOLDS, StratifiedKFold will crash.
+    # We map them to just 'State' or just 'Group' to allow splitting.
+    counts = df['StratifyKey'].value_counts()
+    rare_keys = counts[counts < N_FOLDS].index # Assuming 4 or 5 folds
+    
+    # Fallback for rare items: Just use FunctionalGroup (Biology is more important than State for mass)
+    df.loc[df['StratifyKey'].isin(rare_keys), 'StratifyKey'] = df['FunctionalGroup'].astype(str)
+    
+    return df
+
+
+# -----------------------------------------------------------------------------
+# 6. DATA LOADING & PREP (UPDATED)
 # -----------------------------------------------------------------------------
 def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info("Loading and Pivoting Data...")
@@ -269,7 +301,7 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info("Performing global species breakup...")
 
     # Initialize columns for each core species
-    wide['Species'] = wide['Species'].str.strip().lower()
+    wide['Species'] = wide['Species'].str.lower()
     for sp in CORE_SPECIES:
         wide[f'Species_{sp}'] = 0.0
 
@@ -317,12 +349,18 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     species_matrix = np.stack(species_vectors.values)
     for i, sp in enumerate(CORE_SPECIES):
         wide[f'Species_{sp}'] = species_matrix[:, i]
+
+    wide = assign_functional_groups(wide)
+    wide = create_stratify_key(wide)
         
     logger.info(f"Data Loaded and Parsed. Rows: {len(wide)}")
     wide.to_csv('wide.csv', index=False)
     return wide
 
-def upsample_minority_classes(df, target_col, date_col='Sampling_Date'):
+# -----------------------------------------------------------------------------
+# 7. UPSAMPLING LOGIC (Temporal Neighbor)
+# -----------------------------------------------------------------------------
+def upsample_minority_classes(df, target_col= None, date_col='Sampling_Date'):
     """
     Temporal Neighbor Upsampling.
     Tries to find samples from D-1 or D+1 to fill the class quota before
@@ -365,7 +403,7 @@ def upsample_minority_classes(df, target_col, date_col='Sampling_Date'):
     return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
 
 # -----------------------------------------------------------------------------
-# 6. METRICS & UTILS
+# 8. METRICS & UTILS
 # -----------------------------------------------------------------------------
 
 def calculate_global_weighted_r2(y_true, y_pred, weights):
@@ -389,6 +427,9 @@ def calculate_global_weighted_r2(y_true, y_pred, weights):
     if ss_tot == 0: return 0.0
     return 1 - (ss_res / ss_tot)
 
+# -----------------------------------------------------------------------------
+# 9. SEED SETTING
+# -----------------------------------------------------------------------------
 def set_seed(seed: Optional[int] = 42, logger=None) -> None:
     if seed is not None:
         np.random.seed(seed)
@@ -398,7 +439,7 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
 
 
 # -----------------------------------------------------------------------------
-# 7. FUNCTIONAL GROUP LOGIC (Step 2)
+# 10. FUNCTIONAL GROUP LOGIC 
 # -----------------------------------------------------------------------------
 
 def assign_functional_groups(df):
@@ -406,9 +447,9 @@ def assign_functional_groups(df):
     Classifies samples based on config definitions.
     """
     # Use definitions from configs.py
-    col_legumes = [f'Species_{x}' for x in GROUP_DEFINITIONS['Legume'] if f'Species_{x}' in df.columns]
-    col_grasses = [f'Species_{x}' for x in GROUP_DEFINITIONS['Grass']  if f'Species_{x}' in df.columns]
-    col_weeds   = [f'Species_{x}' for x in GROUP_DEFINITIONS['Weed']   if f'Species_{x}' in df.columns]
+    col_legumes = [f'Species_{x}' for x in GROUP_DEFINITIONS['legume'] if f'Species_{x}' in df.columns]
+    col_grasses = [f'Species_{x}' for x in GROUP_DEFINITIONS['grass']  if f'Species_{x}' in df.columns]
+    col_weeds   = [f'Species_{x}' for x in GROUP_DEFINITIONS['weed']   if f'Species_{x}' in df.columns]
 
     s_legume = df[col_legumes].sum(axis=1)
     s_grass  = df[col_grasses].sum(axis=1)
@@ -416,14 +457,16 @@ def assign_functional_groups(df):
 
     groups = []
     for l, g, w in zip(s_legume, s_grass, s_weed):
-        if l >= g and l >= w: groups.append('Legume')
-        elif w > g: groups.append('Weed')
-        else: groups.append('Grass')
-            
+        if l >= g and l >= w: groups.append('legume')
+        elif w > g: groups.append('weed')
+        else: groups.append('grass')
+
     df['FunctionalGroup'] = groups
     return df
 
-
+# -----------------------------------------------------------------------------
+# 10. FUNCTIONAL GROUP UPSAMPLING LOGIC
+# -----------------------------------------------------------------------------
 def upsample_minority_classes(df, target_col='FunctionalGroup', date_col='Sampling_Date'):
     """
     Upsampling Strategy:

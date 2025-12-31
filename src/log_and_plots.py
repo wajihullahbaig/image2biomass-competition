@@ -7,20 +7,14 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 def plot_training_history(history, fold, session_dir):
-    """
-    Plots metrics including component-wise losses for Train/Val.
-    Updated to include Taxonomy Loss.
-    """
     save_dir = os.path.join(session_dir, 'plots')
     os.makedirs(save_dir, exist_ok=True)
     
-    # 2x4 Grid to accommodate 8 plots (Bio, Aux, Sp, Phy, Tax, Total, R2, LR)
-    fig, axes = plt.subplots(3, 3, figsize=(24, 10))
+    fig, axes = plt.subplots(2, 4, figsize=(24, 10))
     axes = axes.flatten()
     
     def try_plot(ax_idx, key, label, color, style='-'):
         if key in history and len(history[key]) > 0:
-            # Defensive conversion to float to ensure matplotlib compatibility
             data = [float(x) for x in history[key] if x is not None]
             if len(data) > 0:
                 axes[ax_idx].plot(data, label=label, color=color, linestyle=style)
@@ -44,35 +38,37 @@ def plot_training_history(history, fold, session_dir):
     try_plot(3, 'train_sp', 'Train', 'tab:blue')
     try_plot(3, 'val_sp', 'Val', 'tab:red')
     axes[3].set_title('Species Loss')
-   
-    # 5. Taxonomy Loss (NEW)
-    try_plot(5, 'train_tax', 'Train', 'tab:blue')
-    try_plot(5, 'val_tax', 'Val', 'tab:red')
-    axes[5].set_title('Taxonomy Loss')
 
-    # 6. Physics Loss
-    try_plot(6, 'train_phy', 'Train', 'tab:blue')
-    try_plot(6, 'val_phy', 'Val', 'tab:red')
-    axes[6].set_title('Physics Loss')
+    # 5. Physics Loss
+    try_plot(4, 'train_phy', 'Train', 'tab:blue')
+    try_plot(4, 'val_phy', 'Val', 'tab:red')
+    axes[4].set_title('Physics Loss')
 
-    # 7. R2 Metrics
-    try_plot(7, 'val_r2', 'Val R2', 'red')
-    axes[7].set_title('R2 Metrics')
-    axes[7].axhline(0, color='black', alpha=0.3)
+    # 6. R2 Metrics (UPDATED)
+    try_plot(5, 'train_r2', 'Train R2', 'tab:blue') # Added Train R2
+    try_plot(5, 'val_r2', 'Val R2', 'tab:red')
+    axes[5].set_title('R2 Metrics')
+    axes[5].axhline(0, color='black', alpha=0.3)
     
-    # Flexible ylim for R2
     vals = []
     if 'val_r2' in history: vals.extend(history['val_r2'])
+    if 'train_r2' in history: vals.extend(history['train_r2'])
+    
     if vals:
         vmin, vmax = min(vals), max(vals)
-        axes[7].set_ylim(min(vmin - 0.1, -1.5), max(vmax + 0.1, 1.5))
+        axes[5].set_ylim(min(vmin - 0.1, -2.0), max(vmax + 0.1, 2.0))
     else:
-        axes[7].set_ylim(-1.5,1.5)
+        axes[5].set_ylim(-2.0, 2.0)
 
-    # 8. Learning Rate
-    try_plot(8, 'lr', 'Learning Rate', 'tab:purple')
-    axes[8].set_title('Learning Rate')
-    axes[8].set_yscale('log')
+    # 7. Learning Rate
+    try_plot(6, 'lr', 'Learning Rate', 'tab:purple')
+    axes[6].set_title('Learning Rate')
+    axes[6].set_yscale('log')
+
+    # 8. Taxonomy Loss
+    try_plot(7, 'train_tax', 'Train', 'tab:blue')
+    try_plot(7, 'val_tax', 'Val', 'tab:red')
+    axes[7].set_title('Taxonomy Loss')
 
     for ax in axes:
         if ax.get_legend_handles_labels()[0]:
@@ -111,7 +107,6 @@ def log_fold_details(logger, train_df, val_df):
         if len(df) == 0: return "EMPTY", "EMPTY", "EMPTY"
         dates = f"{df['Sampling_Date'].min().date()} -> {df['Sampling_Date'].max().date()}"
         states = sorted(df['State'].unique().tolist())
-        # Top 5 most common species for brevity if list is long
         sp_counts = df['Species'].value_counts()
         species_str = str(sp_counts.head(5).to_dict())
         if len(sp_counts) > 5: species_str += "..."

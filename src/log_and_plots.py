@@ -144,6 +144,7 @@ def log_upsample_stats(logger, before_df, after_df):
     all_cats = sorted(list(set(sp_before.index) | set(sp_after.index)))
     
     msg = "\n" + "="*60 + f"\nUPSAMPLING STATS ({col} Counts)\n" + "="*60
+    msg += f"\nUpsampling based on column: {col}\n" 
     msg += f"\n{'Group':<20} | {'Before':<10} | {'After':<10} | {'Added':<10}"
     msg += "\n" + "-"*60
     

@@ -19,11 +19,11 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/mixup_taxonomy_20251230_225944' # <--- UPDATE THIS
+MODEL_DIR = './logs/mixup_taxonomy_20251230_225944'
 
 # DEFAULTS
-DEFAULT_HEIGHT = 224
-DEFAULT_WIDTH = 512
+DEFAULT_HEIGHT = 320
+DEFAULT_WIDTH = 768
 FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -158,6 +158,22 @@ def rotate_crop_resize(img, angle):
         
     return img_resized
 
+def no_tta(model, image):
+    """
+    Performs inference WITHOUT test-time augmentation.
+    Returns predictions in LINEAR space (grams).
+    """
+    model.eval()
+    
+    with torch.no_grad():
+        # Forward pass - unpack 4 values, keep only biomass
+        log_bio, _, _, _ = model(image)
+        # Convert from log space to linear space (grams)
+        bio_linear = torch.expm1(log_bio)
+    
+    # Return Linear Grams directly for DataFrame
+    return bio_linear
+
 def apply_tta(model, image):
     """
     Applies 7-view TTA and averages in LINEAR space.
@@ -290,9 +306,9 @@ def run_inference():
             for imgs, ids in tqdm(loader, leave=False):
                 imgs = imgs.to(DEVICE)
                 
-                # --- APPLY GRANDMASTER TTA ---
+                
                 # Returns Linear Grams
-                preds_linear = apply_tta(model, imgs)
+                preds_linear = no_tta(model, imgs)
                 
                 fold_preds.append(preds_linear.cpu().numpy())
                 if i == 0: final_clean_ids.extend(ids)
@@ -319,6 +335,7 @@ def run_inference():
             
     sub_df = pd.DataFrame(submission_rows)
     sub_df.to_csv('submission.csv', index=False)
+    print(sub_df)
     print(f"Saved {len(sub_df)} rows to submission.csv")
 
 if __name__ == '__main__':

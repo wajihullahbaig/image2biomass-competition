@@ -364,8 +364,10 @@ def upsample_minority_classes(df, target_col= None, date_col='Sampling_Date'):
                         dfs.append(cls_df.sample(n=rem, replace=True, random_state=42))
             else:
                 dfs.append(cls_df.sample(n=n_needed, replace=True, random_state=42))
-
-    return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    dfs =pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    # sort to keep temportal order
+    dfs = dfs.sort_values(by=[date_col]).reset_index(drop=True)
+    return 
 
 # -----------------------------------------------------------------------------
 # 7. METRICS & UTILS
@@ -436,7 +438,7 @@ def upsample_minority_classes(df, target_col='FunctionalGroup', date_col='Sampli
     """
     Upsampling Strategy:
     1. Assigns Functional Groups (Grass/Legume/Weed).
-    2. Upsamples based on these groups (fixing the 'Fold 1 Missing Clover' issue by upsampling Lucerne).
+    2. Upsamples based on these groups .
     3. Uses 'Temporal Neighbors' (D-1, D+1) to create variety instead of exact duplicates.
     """
     # 1. Assign Groups if not present (or if target_col is 'FunctionalGroup')
@@ -493,12 +495,14 @@ def upsample_minority_classes(df, target_col='FunctionalGroup', date_col='Sampli
                 # No temporal neighbors found, fallback to standard duplication
                 dfs.append(cls_df.sample(n=n_needed, replace=True, random_state=42))
 
-    # 4. Shuffle and Return
-    return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    # 5 Shuffle and then sort to keep temporal order
+    dfs = pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    dfs = dfs.sort_values(by=[date_col]).reset_index(drop=True)
+    return dfs
 
 
 # -----------------------------------------------------------------------------
-# 10. SAVE BATCH IMAGES
+# 11. SAVE BATCH IMAGES
 # -----------------------------------------------------------------------------
 def save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=5):
     """

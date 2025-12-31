@@ -255,7 +255,7 @@ def main():
         # Upsampling (Step 2: Functional Group + Temporal Neighbors)
         logger.info(f"Train size before upsample: {len(train_df)}")
 
-        # We still use FunctionalGroup upsampling to balance Legume/Grass
+        # We still use FunctionalGroup upsampling to balance for functional groups
         train_df = upsample_minority_classes(train_df, target_col='FunctionalGroup')
         logger.info(f"Train size after upsample: {len(train_df)}")
         

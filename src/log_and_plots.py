@@ -109,7 +109,7 @@ def log_fold_details(logger, train_df, val_df):
         states = sorted(df['State'].unique().tolist())
         sp_counts = df['Species'].value_counts()
         species_str = str(sp_counts.head(5).to_dict())
-        if len(sp_counts) > 5: species_str += "..."
+        if len(sp_counts) > 10: species_str += "..."
         return dates, states, species_str
 
     t_dates, t_states, t_species = get_stats(train_df)

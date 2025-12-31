@@ -15,6 +15,13 @@ from torchvision.utils import save_image
 import math
 import matplotlib.pyplot as plt
 
+import random
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+torch.cuda.manual_seed_all(42)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 # ====================== CONFIGURATION ======================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -284,12 +291,15 @@ class TestDataset(Dataset):
     
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        img_path = os.path.join(self.img_dir, os.path.basename(row['image_path']))
+        # Get just the filename (e.g., ID1001187975.jpg)
+        img_filename = os.path.basename(row['image_path'])
+        img_path = os.path.join(self.img_dir, img_filename)
         
-        try:
-            img = Image.open(img_path).convert('RGB')
-        except:
-            img = Image.new('RGB', (512, 512))
+        # CRITICAL: Check if path exists
+        if not os.path.exists(img_path):
+            raise FileNotFoundError(f"Missing image: {img_path}")
+            
+        img = Image.open(img_path).convert('RGB')
         
         if self.transform:
             img = self.transform(img)

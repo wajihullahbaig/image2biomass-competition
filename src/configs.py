@@ -8,16 +8,16 @@ IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 # We use 224x512 to respect the ~2.33 aspect ratio of the 70cm x 30cm quadrats.
 # This prevents "squashing" the grass which destroys density features.
-IMAGE_HEIGHT = 224
-IMAGE_WIDTH = 512
+IMAGE_HEIGHT = 320
+IMAGE_WIDTH = 768
 # Training Hyperparameters
-BATCH_SIZE = 32 
-LEARNING_RATE = 3e-4 
+BATCH_SIZE = 16 
+LEARNING_RATE = 2e-4 
 N_FOLDS = 4
 EPOCHS = 50 
-WEIGHT_DECAY = 1e-2
+WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
-BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
+BACKBONE = 'timm/convnext_tiny.fb_in1k'  
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
 # Official Weights: Clover, Dead, Green, Total, GDM
@@ -31,10 +31,10 @@ USE_TTA = True
 # --- Model Settings ---
 FUSION_DIM = 256
 # Balanced Weights: Scaling optimized for Gram-scale Log-space
-BIOMASS_FEAT_WEIGHT = 100.0 
+BIOMASS_FEAT_WEIGHT = 80.0 
 AUX_FEAT_WEIGHT = 10.0
-SPECIES_FEAT_WEIGHT = 5.0
-PHYSICS_FEAT_WEIGHT = 10.0 
+SPECIES_FEAT_WEIGHT = 20.0
+PHYSICS_FEAT_WEIGHT = 20.0 
 
 # ====================== TAXONOMY & SPECIES ======================
 CORE_SPECIES = [

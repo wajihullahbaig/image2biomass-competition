@@ -212,11 +212,13 @@ def main():
     
      # STRATIFIED SPLIT
     # Ensures every fold sees every State + FunctionalGroup combination
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=False, random_state=None)
     split_key = df['StratifyKey'] # Generated in common.py
     
     best_overall_r2 = -float('inf')
     train_transform, val_transform = get_image_data_transforms()
+    # CRITICAL: Re-sort by Date to honor temporal order
+    df = df.sort_values('Sampling_Date').reset_index(drop=True)
     
     for fold, (train_idx, val_idx) in enumerate(skf.split(df, split_key)):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
@@ -250,8 +252,7 @@ def main():
         train_df = upsample_minority_classes(train_df, target_col='FunctionalGroup')
         logger.info(f"Train size after upsample: {len(train_df)}")
         
-        # CRITICAL: Re-sort by Date to honor temporal order
-        train_df = train_df.sort_values('Sampling_Date').reset_index(drop=True)
+        
         logger.info(f"Train size after functional-group upsample: {len(train_df)}")
         
         # Save Splits

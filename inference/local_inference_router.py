@@ -21,13 +21,17 @@ TEST_CSV_PATH = './test.csv'
 TEST_IMG_DIR = './test/' 
 MODEL_DIR = './logs/mixup_taxonomy_20251231_114427'
 
+
 # DEFAULTS
 DEFAULT_HEIGHT = 320
 DEFAULT_WIDTH = 768
 FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
-BATCH_SIZE = 32
+BATCH_SIZE = 16
+
+import matplotlib.pyplot as plt
+
 
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
@@ -160,53 +164,95 @@ def rotate_crop_resize(img, angle):
 
 def no_tta(model, image):
     """
-    Performs inference WITHOUT test-time augmentation.
-    Returns predictions in LINEAR space (grams).
+    Single pass inference with PHYSICS BARRIER.
+    Safe against exploding gradients or hallucinations.
     """
     model.eval()
     print("No TTA Inference")
+    # 1. Forward Pass
+    # log_bio: [Batch, 5]
+    # tax_logits: [Batch, 3]
+    log_bio, aux, sp, tax_logits = model(image)
     
-    with torch.no_grad():
-        # Forward pass - unpack 4 values, keep only biomass
-        log_bio, _, _, _ = model(image)
-        # Convert from log space to linear space (grams)
-        bio_linear = torch.expm1(log_bio)
+    # 2. Convert to Linear Grams
+    lin_bio = torch.expm1(log_bio)
     
-    # Return Linear Grams directly for DataFrame
-    return bio_linear
-
+    # 3. PHYSICS BARRIER 
+    # Force values to be between 0g and 3000g (3kg).
+    # This guarantees no '1e+25' errors.
+    lin_bio = torch.clamp(lin_bio, min=0.0, max=3000.0)
+    
+    # 4. Convert back to Log Space
+    # (Because your run_inference loop expects log inputs to perform the expm1 later)
+    log_bio_clamped = torch.log1p(lin_bio)
+    
+    # 5. Extract Confidence (Softmax Fix)
+    # Convert Raw Logits (e.g., 19.4) -> Probabilities (0.0 - 1.0)
+    probs = torch.softmax(tax_logits, dim=1)
+    conf, _ = torch.max(probs, dim=1)
+    
+    return log_bio_clamped, conf
+    
 def apply_tta(model, image):
     """
-    Applies 7-view TTA and averages in LINEAR space.
+    TTA with HARD PHYSICS BARRIER.
+    Prevents any single view from predicting mass > 20,000g (20kg).
     """
     model.eval()
     print("Applying TTA Inference")
-    all_biomass_linear = []
     
-    # 7 Views
+    all_biomass_linear = [] 
+    all_confidences = []
+
+    # TTA Policy: 7 Views
     transforms_list = [
-        lambda x: x,                           # Identity
-        lambda x: torch.flip(x, [3]),          # H-Flip
-        lambda x: torch.flip(x, [2]),          # V-Flip
-        lambda x: rotate_crop_resize(x, 15),   # Zoom+Rot
-        lambda x: rotate_crop_resize(x, -15),
-        lambda x: rotate_crop_resize(x, 30),
-        lambda x: rotate_crop_resize(x, -30),
+        lambda x: x,                           
+        lambda x: torch.flip(x, [3]),          
+        lambda x: torch.flip(x, [2]),          
+        lambda x: rotate_crop_resize(x, 15),   
+        lambda x: rotate_crop_resize(x, -15),  
+        lambda x: rotate_crop_resize(x, 30),   
+        lambda x: rotate_crop_resize(x, -30),  
     ]
 
     for t in transforms_list:
         with torch.no_grad():
             img_aug = t(image)
-            # Unpack 4 values, keep only biomass
-            log_bio, _, _, _ = model(img_aug)
-            # Convert to Linear Grams IMMEDIATELY
-            all_biomass_linear.append(torch.expm1(log_bio))
+            
+            # Forward Pass
+            log_bio, aux, sp, tax_logits = model(img_aug) 
+            
+            # 1. Convert to Linear Grams
+            lin_bio = torch.expm1(log_bio)
+            
+            # --- THE PHYSICS BARRIER ---
+            # Anything above 3000g (3kg) in a 70cm plot is a black hole, not grass.
+            # We clamp heavily here to stop 1e+25 from polluting the average.
+            lin_bio = torch.clamp(lin_bio, min=0.0, max=2000.0)
+            
+            all_biomass_linear.append(lin_bio)
+            
+            # 2. Extract Confidence
+            probs = torch.softmax(tax_logits, dim=1) 
+            conf, _ = torch.max(probs, dim=1) 
+            all_confidences.append(conf)
 
-    # Average in Linear Space
+    # --- AGGREGATION ---
+    
+    # 1. Average Biomass (Linear Space)
     avg_bio_linear = torch.stack(all_biomass_linear).mean(0)
     
-    # Return Linear Grams directly for DataFrame
-    return avg_bio_linear
+    # 2. Average Confidence
+    avg_confidence = torch.stack(all_confidences).mean(0)
+            
+    # Return Linear directly to avoid log/exp conversions in the loop
+    # We will log1p it only if we need to return log, but your loop expects linear now
+    # Based on your previous code, let's return LOG to match signature, 
+    # OR change the return to linear. 
+    # Let's return LOG to match your 'run_inference' expectation:
+    avg_bio_log = torch.log1p(avg_bio_linear)
+            
+    return avg_bio_log, avg_confidence
 
 # ====================== DATASET ======================
 class TestDataset(Dataset):
@@ -248,12 +294,12 @@ def load_model(fold_path, device, num_species, backbone_name):
 
 # ====================== MAIN INFERENCE ======================
 def run_inference():
-    print("="*60 + " INFERENCE\n" + "="*60)
+    print("="*60 + "\nGRANDMASTER INFERENCE (Weighted Ensemble)\n" + "="*60)
     
     # 1. LOAD TEST DATA
     if not os.path.exists(TEST_CSV_PATH):
         print("Warning: Test CSV not found. Creating dummy.")
-        df_wide = pd.DataFrame({'clean_id':['test'], 'image_path':['test.jpg']})
+        df_wide = pd.DataFrame({'clean_id':['test_1', 'test_2'], 'image_path':['t1.jpg', 't2.jpg']})
     else:
         df = pd.read_csv(TEST_CSV_PATH)
         if 'target_name' in df.columns:
@@ -277,49 +323,105 @@ def run_inference():
     backbone_name = metadata.get('backbone')
     img_h = metadata.get('image_height', DEFAULT_HEIGHT)
     img_w = metadata.get('image_width', DEFAULT_WIDTH)
-    print(f"Config: {backbone_name} | {img_w}x{img_h}")
+    print(f"Config: {backbone_name} | {img_h}x{img_w}")
 
     # 3. DISCOVER MODELS
     found_folds = []
     for f in range(10):
         p = os.path.join(MODEL_DIR, f"best_model_fold{f+1}.pth")
         if os.path.exists(p): found_folds.append(p)
-    if not found_folds:
+            
+    if not found_folds: 
         if os.path.exists(os.path.join(MODEL_DIR, "best_model_overall.pth")):
             found_folds.append(os.path.join(MODEL_DIR, "best_model_overall.pth"))
             
     if not found_folds: raise FileNotFoundError(f"No models found in {MODEL_DIR}")
     print(f"Found {len(found_folds)} checkpoints.")
 
-    # 4. RUN INFERENCE
+    # 4. RUN INFERENCE LOOP
     val_transform = get_inference_transforms(h=img_h, w=img_w)
     ds = TestDataset(df_wide, TEST_IMG_DIR, transform=val_transform)
     loader = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
     
-    ensemble_preds_g = []
+    ensemble_preds = []   # List of [N_Samples, 5]
+    ensemble_confs = []   # List of [N_Samples]
     final_clean_ids = []
     
     for i, model_path in enumerate(found_folds):
-        print(f"-> Model {i+1}: {os.path.basename(model_path)}")
+        fold_name = os.path.basename(model_path)
+        print(f"-> Processing {fold_name}...")
         model = load_model(model_path, DEVICE, num_species, backbone_name)
         
         fold_preds = []
+        fold_confs = []
+        
         with torch.no_grad():
             for imgs, ids in tqdm(loader, leave=False):
                 imgs = imgs.to(DEVICE)
                 
+                # --- APPLY TTA ---
+                # Returns Log Preds and Confidence Score
+                log_pred, conf = no_tta(model, imgs)
                 
-                # Returns Linear Grams
-                preds_linear = apply_tta(model, imgs)
+                # Convert to Linear for averaging
+                lin_pred = torch.expm1(log_pred)
                 
-                fold_preds.append(preds_linear.cpu().numpy())
+                fold_preds.append(lin_pred.cpu().numpy())
+                fold_confs.append(conf.cpu().numpy())
+                
                 if i == 0: final_clean_ids.extend(ids)
                     
-        ensemble_preds_g.append(np.concatenate(fold_preds, axis=0))
+        ensemble_preds.append(np.concatenate(fold_preds, axis=0))
+        ensemble_confs.append(np.concatenate(fold_confs, axis=0))
+    
+    # Convert to Numpy for Analysis: [N_Models, N_Samples]
+    W_raw = np.stack(ensemble_confs, axis=0)
+    
+    # ====================== ROUTER DIAGNOSTICS ======================
+    print("\n" + "="*30 + " ROUTER DIAGNOSTICS " + "="*30)
+    
+    # 1. Who is winning?
+    # Find which model index has max confidence for each sample
+    winners = np.argmax(W_raw, axis=0) 
+    # Print Stats
+    print(f"Total Samples: {len(final_clean_ids)}")
+    for model_idx in range(len(found_folds)):
+        win_count = np.sum(winners == model_idx)
+        win_pct = (win_count / len(final_clean_ids)) * 100
+        fname = os.path.basename(found_folds[model_idx])
+        print(f"  {fname:<25} | Selected {win_count:>4} times ({win_pct:.1f}%)")
         
-    # 5. AVERAGE ENSEMBLE (Linear Space)
-    avg_preds_g = np.mean(ensemble_preds_g, axis=0) 
-    avg_preds_g = np.maximum(avg_preds_g, 0)
+    # 2. Print First 5 Samples Detail
+    print("\n--- Sample Selection Preview ---")
+    for i in range(min(5, len(final_clean_ids))):
+        sid = final_clean_ids[i]
+        scores = W_raw[:, i]
+        best_idx = np.argmax(scores)
+        best_score = scores[best_idx]
+        print(f"Sample {sid:<15}: Trusting Fold {best_idx+1} (Conf: {best_score:.4f}) | Others: {[f'{s:.2f}' for s in scores]}")
+    print("="*80 + "\n")
+    # ================================================================
+
+    # 5. WEIGHTED ENSEMBLE CALCULATION
+    print("Calculating Taxonomy-Weighted Ensemble...")
+    
+    # Shape: [N_Models, N_Samples, 5]
+    E = np.stack(ensemble_preds, axis=0)
+    # Shape: [N_Models, N_Samples]
+    W = W_raw
+    
+    # Expand Weights for broadcasting: [N_Models, N_Samples, 1]
+    W_expanded = W[:, :, np.newaxis]
+    
+    # Sharpen weights (Square them) to favor the expert model more heavily
+    W_expanded = W_expanded ** 2
+    
+    # Weighted Average: Sum(Pred * Weight) / Sum(Weight)
+    numerator = np.sum(E * W_expanded, axis=0)
+    denominator = np.sum(W_expanded, axis=0) + 1e-8
+    
+    avg_preds_g = numerator / denominator
+    avg_preds_g = np.maximum(avg_preds_g, 0) # Clip negatives
     
     # 6. EXPORT
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -339,6 +441,8 @@ def run_inference():
     sub_df.to_csv('submission.csv', index=False)
     print(sub_df)
     print(f"Saved {len(sub_df)} rows to submission.csv")
+    
+
 
 if __name__ == '__main__':
-    run_inference()
+    run_inference()            

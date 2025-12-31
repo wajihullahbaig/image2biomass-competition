@@ -347,7 +347,7 @@ def run_inference(USE_TTA=True):
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
     
-    num_species = metadata.get('num_species', 14)
+    num_species = metadata.get('num_species')
     backbone_name = metadata.get('backbone')
     img_h = metadata.get('image_height', DEFAULT_HEIGHT)
     img_w = metadata.get('image_width', DEFAULT_WIDTH)
@@ -482,5 +482,5 @@ def run_inference(USE_TTA=True):
     print("="*80)
 
 if __name__ == '__main__':
-    USE_TTA = False  
+    USE_TTA = True  
     run_inference(USE_TTA)

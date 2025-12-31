@@ -20,7 +20,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/mixup_taxonomy_20251231_114427'
+MODEL_DIR = './logs/mixup_taxonomy_20251231_163126'
 
 # DEFAULTS
 DEFAULT_HEIGHT = 320

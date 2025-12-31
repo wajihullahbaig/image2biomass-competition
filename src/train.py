@@ -1,3 +1,4 @@
+# train.py
 import os
 import logging
 import torch
@@ -13,6 +14,7 @@ from datetime import datetime
 from collections import defaultdict
 import json
 
+
 # Local Imports
 import configs
 from configs import (
@@ -23,7 +25,7 @@ from configs import (
     CORE_SPECIES, TAXONOMY_IDXS  # Importing the Dictionary Map
 )
 from common import (
-    load_data, get_image_data_transforms, 
+    load_data, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2,
     upsample_minority_classes
 )
@@ -53,10 +55,11 @@ def get_taxonomy_targets(species_vec):
     # shape: (Batch, 3)
     return torch.cat([legume_prob, grass_prob, weed_prob], dim=1)
 
+
 # -----------------------------------------------------------------------------
 # TRAINING ENGINE
 # -----------------------------------------------------------------------------
-def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, device, epoch):
+def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, device, epoch, fold=None, session_dir=None):
     model.train()
     metrics = defaultdict(float)
     scaler = torch.amp.GradScaler('cuda')
@@ -66,12 +69,16 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
     all_targets_g = []
     
     pbar = tqdm(loader, desc=f"Train Ep {epoch}", leave=False)
-    for batch in pbar:
+    for batch_idx, batch in enumerate(pbar):
         images = batch['image'].to(device)
         targets_g = batch['targets'].to(device)
         targets_log = torch.log1p(targets_g)
         aux_feats = batch['aux_feats'].to(device)
         species_vec = batch['species_id'].to(device)
+        
+        # Save batch images (only first epoch and first few batches)
+        if epoch == 0 and fold is not None and session_dir is not None:
+            save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=20)
         
         taxonomy_targets = get_taxonomy_targets(species_vec)
 
@@ -285,7 +292,11 @@ def main():
         patience_counter = 0
         
         for epoch in range(EPOCHS):
-            train_metrics = train_one_epoch(model, train_loader, optimizer, criterion_reg, criterion_ce, DEVICE, epoch)
+            # Pass fold and session_dir to enable image saving
+            train_metrics = train_one_epoch(
+                model, train_loader, optimizer, criterion_reg, criterion_ce, 
+                DEVICE, epoch, fold=fold+1, session_dir=session_dir
+            )
             val_metrics = validate(model, val_loader, criterion_reg, criterion_ce, DEVICE)
 
             

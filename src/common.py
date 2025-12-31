@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms.functional as TF
 from torchvision import transforms
+from torchvision.utils import save_image
 
 # Local Imports
 from configs import (
@@ -117,6 +118,36 @@ class RandomRotateCropResize(nn.Module):
         
         return img_final
 
+from PIL import ImageFilter
+import random
+
+class SubtleSharpen:
+    """
+    Applies subtle sharpening to grass images.
+    Uses PIL's UnsharpMask filter with conservative parameters.
+    """
+    def __init__(self, probability=0.5, radius=1, percent=50, threshold=3):
+        """
+        Args:
+            probability: Chance to apply sharpening (0.0 to 1.0)
+            radius: Sharpening radius (1-2 is subtle for grass)
+            percent: Sharpening strength (50-100 is gentle)
+            threshold: Minimum brightness change to sharpen (higher = less aggressive)
+        """
+        self.probability = probability
+        self.radius = radius
+        self.percent = percent
+        self.threshold = threshold
+    
+    def __call__(self, img):
+        if random.random() < self.probability:
+            return img.filter(ImageFilter.UnsharpMask(
+                radius=self.radius,
+                percent=self.percent,
+                threshold=self.threshold
+            ))
+        return img
+    
 # -----------------------------------------------------------------------------
 # 3. DATA AUGMENTATION PIPELINES
 # -----------------------------------------------------------------------------
@@ -128,28 +159,21 @@ def get_image_data_transforms():
     train_transform = transforms.Compose([
         # 1. Ensure Baseline Resolution
         transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
-        
+        SubtleSharpen(probability=0.5, radius=1, percent=50, threshold=3),
         # 2. Geometry (Manifold Alignment with TTA)
-        RandomRotateCropResize(degrees=30),
-        
+        transforms.RandomApply([
+            RandomRotateCropResize(degrees=5),    
+            RandomRotateCropResize(degrees=-5),
+        ], p=0.5),     
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomVerticalFlip(p=0.5),
 
-        # 3. Physics Simulation (Drone Altitude Noise)
-        # Keep scale conservative (0.9-1.1) to preserve Mass-to-Pixel relationship.
-        transforms.RandomAffine(
-            degrees=0,              # Rotation handled above
-            translate=(0.05, 0.05), # Slight shift
-            scale=(0.9, 1.1),       # Conservative scaling
-            shear=5
-        ),
-
-        # 4. Color Physics
+        # 3. Spatial 
         # Hue/Sat are sensitive for "Dead vs Green" classification.
         # Brightness/Contrast simulate time-of-day/clouds safely.
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.0),
 
-        # 5. Normalization
+        # 4. Normalization
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
     ])
@@ -163,66 +187,7 @@ def get_image_data_transforms():
     return train_transform, val_transform
 
 # -----------------------------------------------------------------------------
-# 4. INFERENCE TTA ENGINE
-# -----------------------------------------------------------------------------
-
-def apply_tta(model, image, device):
-    """
-    Applies Test Time Augmentation.
-    
-    CRITICAL PHYSICS:
-    We average in LINEAR SPACE (Grams), not Log Space.
-    Averaging in Log space = Geometric Mean (underestimates biomass).
-    Averaging in Linear space = Arithmetic Mean (maximizes R2).
-    """
-    model.eval()
-    
-    # Store predictions in LINEAR GRAMS
-    all_biomass_linear = [] 
-    all_aux = []
-    all_species = []
-
-    # TTA Policy: 7 Views
-    # Includes standard flips and the "Zoom+Rotate" views
-    tta_transforms = [
-        lambda x: x,                           # 1. Identity
-        lambda x: torch.flip(x, [3]),          # 2. H-Flip
-        lambda x: torch.flip(x, [2]),          # 3. V-Flip
-        lambda x: rotate_crop_resize(x, 15),   # 4. Rot +15 (Zoom ~1.2x)
-        lambda x: rotate_crop_resize(x, -15),  # 5. Rot -15
-        lambda x: rotate_crop_resize(x, 30),   # 6. Rot +30 (Zoom ~1.4x)
-        lambda x: rotate_crop_resize(x, -30),  # 7. Rot -30
-    ]
-
-    for t in tta_transforms:
-        with torch.no_grad():
-            img_aug = t(image)
-            
-            # Forward Pass (Outputs are Log1p)
-            log_bio, aux, sp = model(img_aug) 
-            
-            # Convert to Linear Grams IMMEDIATELY
-            lin_bio = torch.expm1(log_bio)
-            
-            all_biomass_linear.append(lin_bio)
-            all_aux.append(aux)
-            all_species.append(sp)            
-
-    # --- AGGREGATION ---
-    
-    # 1. Biomass: Arithmetic Mean in Linear Space
-    avg_bio_linear = torch.stack(all_biomass_linear).mean(0)
-    # Convert back to Log Space for consistency with training loop/loss wrappers
-    avg_bio_log = torch.log1p(avg_bio_linear)
-
-    # 2. Aux & Species: Mean in Logit/Raw space is fine
-    avg_aux = torch.stack(all_aux).mean(0)
-    avg_species = torch.stack(all_species).mean(0)
-            
-    return avg_bio_log, avg_aux, avg_species
-
-# -----------------------------------------------------------------------------
-# 5. STRATIFICATION LOGIC (Composite Key)
+# 4. STRATIFICATION LOGIC (Composite Key)
 # -----------------------------------------------------------------------------
 
 def create_stratify_key(df):
@@ -254,7 +219,7 @@ def create_stratify_key(df):
 
 
 # -----------------------------------------------------------------------------
-# 6. DATA LOADING & PREP (UPDATED)
+# 5. DATA LOADING & PREP (UPDATED)
 # -----------------------------------------------------------------------------
 def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info("Loading and Pivoting Data...")
@@ -358,7 +323,7 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     return wide
 
 # -----------------------------------------------------------------------------
-# 7. UPSAMPLING LOGIC (Temporal Neighbor)
+# 6. UPSAMPLING LOGIC (Temporal Neighbor)
 # -----------------------------------------------------------------------------
 def upsample_minority_classes(df, target_col= None, date_col='Sampling_Date'):
     """
@@ -403,7 +368,7 @@ def upsample_minority_classes(df, target_col= None, date_col='Sampling_Date'):
     return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
 
 # -----------------------------------------------------------------------------
-# 8. METRICS & UTILS
+# 7. METRICS & UTILS
 # -----------------------------------------------------------------------------
 
 def calculate_global_weighted_r2(y_true, y_pred, weights):
@@ -428,7 +393,7 @@ def calculate_global_weighted_r2(y_true, y_pred, weights):
     return 1 - (ss_res / ss_tot)
 
 # -----------------------------------------------------------------------------
-# 9. SEED SETTING
+# 8. SEED SETTING
 # -----------------------------------------------------------------------------
 def set_seed(seed: Optional[int] = 42, logger=None) -> None:
     if seed is not None:
@@ -439,7 +404,7 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
 
 
 # -----------------------------------------------------------------------------
-# 10. FUNCTIONAL GROUP LOGIC 
+# 9. FUNCTIONAL GROUP LOGIC 
 # -----------------------------------------------------------------------------
 
 def assign_functional_groups(df):
@@ -530,3 +495,36 @@ def upsample_minority_classes(df, target_col='FunctionalGroup', date_col='Sampli
 
     # 4. Shuffle and Return
     return pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+
+
+# -----------------------------------------------------------------------------
+# 10. SAVE BATCH IMAGES
+# -----------------------------------------------------------------------------
+def save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=5):
+    """
+    Save a batch of images as a grid to disk.
+    
+    Args:
+        images: Tensor of shape (B, C, H, W)
+        fold: Current fold number
+        batch_idx: Current batch index
+        session_dir: Root session directory
+        max_batches_to_save: Only save first N batches per epoch to avoid too many files
+    """
+    if batch_idx >= max_batches_to_save:
+        return
+    
+    # Create directory structure: session_dir/images/fold<N>/
+    images_dir = os.path.join(session_dir, 'images', f'fold{fold}')
+    os.makedirs(images_dir, exist_ok=True)
+    
+    # Denormalize images if they were normalized
+    # Assuming ImageNet normalization: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(images.device)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(images.device)
+    images_denorm = images * std + mean
+    images_denorm = torch.clamp(images_denorm, 0, 1)
+    
+    # Save as grid
+    save_path = os.path.join(images_dir, f'batch_{batch_idx:03d}.png')
+    save_image(images_denorm, save_path, nrow=4, padding=2)

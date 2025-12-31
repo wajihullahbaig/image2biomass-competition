@@ -4,14 +4,16 @@ import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from PIL import Image
+from PIL import Image, ImageFilter
 from tqdm import tqdm
 import json
 import torch.nn as nn
 import timm
 from torchvision import transforms
 import torchvision.transforms.functional as TF
+from torchvision.utils import save_image
 import math
+import matplotlib.pyplot as plt
 
 # ====================== CONFIGURATION ======================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -21,7 +23,6 @@ TEST_CSV_PATH = './test.csv'
 TEST_IMG_DIR = './test/' 
 MODEL_DIR = './logs/mixup_taxonomy_20251231_114427'
 
-
 # DEFAULTS
 DEFAULT_HEIGHT = 320
 DEFAULT_WIDTH = 768
@@ -30,8 +31,50 @@ IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 16
 
-import matplotlib.pyplot as plt
+# FEATURE FLAGS
+SAVE_IMAGES = True          # Save augmented images for debugging
+MAX_IMAGES_TO_SAVE = 10     # Only save first N batches to avoid disk fill
 
+# ====================== SHARPENING TRANSFORM ======================
+class SubtleSharpen:
+    """
+    Applies subtle sharpening to grass images.
+    For inference, we use probability=1.0 for consistency.
+    """
+    def __init__(self, probability=1.0, radius=1, percent=50, threshold=3):
+        self.probability = probability
+        self.radius = radius
+        self.percent = percent
+        self.threshold = threshold
+    
+    def __call__(self, img):
+        if np.random.random() < self.probability:
+            return img.filter(ImageFilter.UnsharpMask(
+                radius=self.radius,
+                percent=self.percent,
+                threshold=self.threshold
+            ))
+        return img
+
+# ====================== IMAGE SAVING HELPER ======================
+def save_tta_images(images, batch_idx, view_name, output_dir='./routed_inference_images', max_to_save=MAX_IMAGES_TO_SAVE):
+    """
+    Save TTA-augmented images for visualization.
+    """
+    if not SAVE_IMAGES or batch_idx >= max_to_save:
+        return
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Denormalize images
+    mean = torch.tensor(IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
+    std = torch.tensor(IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
+    images_denorm = images * std + mean
+    images_denorm = torch.clamp(images_denorm, 0, 1)
+    
+    # Save as grid
+    save_path = os.path.join(output_dir, f'batch_{batch_idx:03d}_{view_name}.png')
+    save_image(images_denorm, save_path, nrow=4, padding=2)
 
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
@@ -62,11 +105,11 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 64),
             nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Dropout(0.5), # Matched training dropout
+            nn.Dropout(0.5),
             nn.Linear(64, num_species)
         )
 
-        # 4. Taxonomy Head (Coarse-grained: Legume/Grass/Weed) - NEW
+        # 4. Taxonomy Head (Coarse-grained: Legume/Grass/Weed)
         self.taxonomy_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
             nn.ReLU(),
@@ -74,7 +117,6 @@ class BiomassUnifiedModel(nn.Module):
         )
                 
         # 5. Biomass Head
-        # Inputs: Backbone + Aux(3) + Species(14) + Taxonomy(3)
         input_dim = self.backbone_dim + num_aux + num_species + 3
         
         self.biomass_head = nn.Sequential(
@@ -84,14 +126,13 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.5),
             nn.Linear(FUSION_DIM, 256),
             nn.ReLU(),
-            nn.Linear(256, 4) # [Log_C, Log_D, Log_G, Log_T]
+            nn.Linear(256, 4)
         )
 
     def forward(self, x):
         feat_map = self.backbone(x)
         img_feats = self.global_pool(feat_map).flatten(1)
         
-        # Heads
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
@@ -100,10 +141,8 @@ class BiomassUnifiedModel(nn.Module):
         
         aux_out = self.aux_head(img_feats) 
             
-        # Fusion: Include Taxonomy Probs
         combined_feats = torch.cat([img_feats, aux_out, species_probs, taxonomy_probs], dim=1)
         
-        # Log-Space Predictions
         log_preds_raw = self.biomass_head(combined_feats)
         log_preds = nn.functional.softplus(log_preds_raw)
         
@@ -112,18 +151,15 @@ class BiomassUnifiedModel(nn.Module):
         log_g = log_preds[:, 2:3]
         log_t = log_preds[:, 3:4]
         
-        # Derived GDM
         c = torch.expm1(log_c)
         g = torch.expm1(log_g)
         log_gdm = torch.log1p(c + g + 1e-8)
         
         biomass_out = torch.cat([log_c, log_d, log_g, log_t, log_gdm], dim=1)
         
-        # RETURN 4 VALUES
         return biomass_out, aux_out, species_logits, taxonomy_logits
 
-# ====================== TTA HELPERS (INLINED) ======================
-# ====================== TTA HELPERS (FIXED) ======================
+# ====================== TTA HELPERS ======================
 def get_largest_rotated_crop(h, w, angle):
     angle_rad = math.radians(abs(angle))
     sin_a = math.sin(angle_rad)
@@ -135,121 +171,103 @@ def rotate_crop_resize(img, angle):
     """
     Handles both Single Image (C, H, W) and Batch (B, C, H, W).
     """
-    # 1. Robustly get Height and Width (last two dims)
     h, w = img.shape[-2:]
-    
-    # 2. Rotate (TF.rotate handles batches automatically)
     img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR)
     
-    # 3. Calculate Valid Crop
     ch, cw = get_largest_rotated_crop(h, w, angle)
-    
-    # 4. Center Crop
     img_crop = TF.center_crop(img_rot, [ch, cw])
     
-    # 5. Resize (Interpolate)
-    # Check if batch (4D) or single (3D) to handle unsqueeze logic if needed
     if img.ndim == 3:
-        # Single image: needs unsqueeze to be (1, C, H, W) for interpolate
         img_resized = torch.nn.functional.interpolate(
             img_crop.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False
         ).squeeze(0)
     else:
-        # Batch (B, C, H, W): works directly
         img_resized = torch.nn.functional.interpolate(
             img_crop, size=(h, w), mode='bilinear', align_corners=False
         )
         
     return img_resized
 
-def no_tta(model, image):
+def no_tta(model, image, batch_idx=0):
     """
     Single pass inference with PHYSICS BARRIER.
     Safe against exploding gradients or hallucinations.
     """
     model.eval()
-    print("No TTA Inference")
-    # 1. Forward Pass
-    # log_bio: [Batch, 5]
-    # tax_logits: [Batch, 3]
-    log_bio, aux, sp, tax_logits = model(image)
     
-    # 2. Convert to Linear Grams
-    lin_bio = torch.expm1(log_bio)
+    # Save original image
+    if SAVE_IMAGES:
+        save_tta_images(image, batch_idx, 'original')
     
-    # 3. PHYSICS BARRIER 
-    # Force values to be between 0g and 3000g (3kg).
-    # This guarantees no '1e+25' errors.
-    lin_bio = torch.clamp(lin_bio, min=0.0, max=3000.0)
-    
-    # 4. Convert back to Log Space
-    # (Because your run_inference loop expects log inputs to perform the expm1 later)
-    log_bio_clamped = torch.log1p(lin_bio)
-    
-    # 5. Extract Confidence (Softmax Fix)
-    # Convert Raw Logits (e.g., 19.4) -> Probabilities (0.0 - 1.0)
-    probs = torch.softmax(tax_logits, dim=1)
-    conf, _ = torch.max(probs, dim=1)
-    
+    with torch.no_grad():
+        log_bio, aux, sp, tax_logits = model(image)
+        
+        # Convert to Linear Grams
+        lin_bio = torch.expm1(log_bio)
+        
+        # PHYSICS BARRIER: Clamp to realistic range
+        lin_bio = torch.clamp(lin_bio, min=0.0, max=3000.0)
+        
+        # Convert back to Log Space
+        log_bio_clamped = torch.log1p(lin_bio)
+        
+        # Extract Confidence
+        probs = torch.softmax(tax_logits, dim=1)
+        conf, _ = torch.max(probs, dim=1)
+        
     return log_bio_clamped, conf
     
-def apply_tta(model, image):
+def apply_tta(model, image, batch_idx=0):
     """
-    TTA with HARD PHYSICS BARRIER.
-    Prevents any single view from predicting mass > 20,000g (20kg).
+    TTA with HARD PHYSICS BARRIER and image saving.
     """
     model.eval()
-    print("Applying TTA Inference")
     
     all_biomass_linear = [] 
     all_confidences = []
 
-    # TTA Policy: 7 Views
-    transforms_list = [
-        lambda x: x,                           
-        lambda x: torch.flip(x, [3]),          
-        lambda x: torch.flip(x, [2]),          
-        lambda x: rotate_crop_resize(x, 15),   
-        lambda x: rotate_crop_resize(x, -15),  
-        lambda x: rotate_crop_resize(x, 30),   
-        lambda x: rotate_crop_resize(x, -30),  
+    # TTA Policy: 5 Views with names for saving
+    tta_views = [
+        ('identity', lambda x: x),
+        ('hflip', lambda x: torch.flip(x, [3])),
+        ('vflip', lambda x: torch.flip(x, [2])),
+        ('rot5', lambda x: rotate_crop_resize(x, 5)),
+        ('rot-5', lambda x: rotate_crop_resize(x, -5)),
     ]
 
-    for t in transforms_list:
+    for view_name, transform_fn in tta_views:
         with torch.no_grad():
-            img_aug = t(image)
+            img_aug = transform_fn(image)
+            
+            # Save augmented view
+            if SAVE_IMAGES:
+                save_tta_images(img_aug, batch_idx, view_name)
             
             # Forward Pass
             log_bio, aux, sp, tax_logits = model(img_aug) 
             
-            # 1. Convert to Linear Grams
+            # Convert to Linear Grams
             lin_bio = torch.expm1(log_bio)
             
-            # --- THE PHYSICS BARRIER ---
-            # Anything above 3000g (3kg) in a 70cm plot is a black hole, not grass.
-            # We clamp heavily here to stop 1e+25 from polluting the average.
+            # PHYSICS BARRIER: Clamp to realistic range
+            # Anything above 2000g (2kg) in a 70cm plot is unrealistic
             lin_bio = torch.clamp(lin_bio, min=0.0, max=2000.0)
             
             all_biomass_linear.append(lin_bio)
             
-            # 2. Extract Confidence
+            # Extract Confidence
             probs = torch.softmax(tax_logits, dim=1) 
             conf, _ = torch.max(probs, dim=1) 
             all_confidences.append(conf)
 
-    # --- AGGREGATION ---
-    
-    # 1. Average Biomass (Linear Space)
+    # AGGREGATION
+    # Average Biomass (Linear Space)
     avg_bio_linear = torch.stack(all_biomass_linear).mean(0)
     
-    # 2. Average Confidence
+    # Average Confidence
     avg_confidence = torch.stack(all_confidences).mean(0)
             
-    # Return Linear directly to avoid log/exp conversions in the loop
-    # We will log1p it only if we need to return log, but your loop expects linear now
-    # Based on your previous code, let's return LOG to match signature, 
-    # OR change the return to linear. 
-    # Let's return LOG to match your 'run_inference' expectation:
+    # Convert to Log for consistency with return signature
     avg_bio_log = torch.log1p(avg_bio_linear)
             
     return avg_bio_log, avg_confidence
@@ -271,7 +289,7 @@ class TestDataset(Dataset):
         try:
             img = Image.open(img_path).convert('RGB')
         except:
-            img = Image.new('RGB', (512, 512)) # Fallback
+            img = Image.new('RGB', (512, 512))
         
         if self.transform:
             img = self.transform(img)
@@ -279,8 +297,12 @@ class TestDataset(Dataset):
         return img, row['clean_id']
 
 def get_inference_transforms(h, w):
+    """
+    Inference transforms with subtle sharpening.
+    """
     return transforms.Compose([
-        transforms.Resize((h, w)),
+        transforms.Resize((h, w)),        
+        SubtleSharpen(probability=1.0, radius=1, percent=50, threshold=3),        
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
     ])
@@ -293,8 +315,13 @@ def load_model(fold_path, device, num_species, backbone_name):
     return model
 
 # ====================== MAIN INFERENCE ======================
-def run_inference():
-    print("="*60 + "\nGRANDMASTER INFERENCE (Weighted Ensemble)\n" + "="*60)
+def run_inference(USE_TTA=True):
+    print("="*80)
+    print("ROUTED INFERENCE (Weighted Ensemble)")
+    print(f"MODE: {'TTA ENABLED' if USE_TTA else 'NO TTA'}")
+    print(f"IMAGE SAVING: {'ENABLED' if SAVE_IMAGES else 'DISABLED'}")
+    print(f"SHARPENING: ENABLED (radius=1, percent=50)")
+    print("="*80 + "\n")
     
     # 1. LOAD TEST DATA
     if not os.path.exists(TEST_CSV_PATH):
@@ -307,7 +334,8 @@ def run_inference():
             df_wide = df[['clean_id', 'image_path']].drop_duplicates().reset_index(drop=True)
         else:
             df_wide = df
-            if 'clean_id' not in df_wide.columns: df_wide['clean_id'] = df_wide['sample_id']
+            if 'clean_id' not in df_wide.columns: 
+                df_wide['clean_id'] = df_wide['sample_id']
                  
     print(f"Test Images: {len(df_wide)}")
     
@@ -329,14 +357,16 @@ def run_inference():
     found_folds = []
     for f in range(10):
         p = os.path.join(MODEL_DIR, f"best_model_fold{f+1}.pth")
-        if os.path.exists(p): found_folds.append(p)
+        if os.path.exists(p): 
+            found_folds.append(p)
             
     if not found_folds: 
         if os.path.exists(os.path.join(MODEL_DIR, "best_model_overall.pth")):
             found_folds.append(os.path.join(MODEL_DIR, "best_model_overall.pth"))
             
-    if not found_folds: raise FileNotFoundError(f"No models found in {MODEL_DIR}")
-    print(f"Found {len(found_folds)} checkpoints.")
+    if not found_folds: 
+        raise FileNotFoundError(f"No models found in {MODEL_DIR}")
+    print(f"Found {len(found_folds)} checkpoints.\n")
 
     # 4. RUN INFERENCE LOOP
     val_transform = get_inference_transforms(h=img_h, w=img_w)
@@ -356,12 +386,14 @@ def run_inference():
         fold_confs = []
         
         with torch.no_grad():
-            for imgs, ids in tqdm(loader, leave=False):
+            for batch_idx, (imgs, ids) in enumerate(tqdm(loader, desc=f"  Fold {i+1}", leave=False)):
                 imgs = imgs.to(DEVICE)
                 
-                # --- APPLY TTA ---
-                # Returns Log Preds and Confidence Score
-                log_pred, conf = no_tta(model, imgs)
+                # Choose TTA or no TTA
+                if USE_TTA:
+                    log_pred, conf = apply_tta(model, imgs, batch_idx)
+                else:
+                    log_pred, conf = no_tta(model, imgs, batch_idx)
                 
                 # Convert to Linear for averaging
                 lin_pred = torch.expm1(log_pred)
@@ -369,10 +401,12 @@ def run_inference():
                 fold_preds.append(lin_pred.cpu().numpy())
                 fold_confs.append(conf.cpu().numpy())
                 
-                if i == 0: final_clean_ids.extend(ids)
+                if i == 0: 
+                    final_clean_ids.extend(ids)
                     
         ensemble_preds.append(np.concatenate(fold_preds, axis=0))
         ensemble_confs.append(np.concatenate(fold_confs, axis=0))
+        print(f"  ✓ Completed\n")
     
     # Convert to Numpy for Analysis: [N_Models, N_Samples]
     W_raw = np.stack(ensemble_confs, axis=0)
@@ -381,9 +415,7 @@ def run_inference():
     print("\n" + "="*30 + " ROUTER DIAGNOSTICS " + "="*30)
     
     # 1. Who is winning?
-    # Find which model index has max confidence for each sample
     winners = np.argmax(W_raw, axis=0) 
-    # Print Stats
     print(f"Total Samples: {len(final_clean_ids)}")
     for model_idx in range(len(found_folds)):
         win_count = np.sum(winners == model_idx)
@@ -413,15 +445,12 @@ def run_inference():
     # Expand Weights for broadcasting: [N_Models, N_Samples, 1]
     W_expanded = W[:, :, np.newaxis]
     
-    # Sharpen weights (Square them) to favor the expert model more heavily
-    W_expanded = W_expanded ** 2
-    
     # Weighted Average: Sum(Pred * Weight) / Sum(Weight)
     numerator = np.sum(E * W_expanded, axis=0)
     denominator = np.sum(W_expanded, axis=0) + 1e-8
     
     avg_preds_g = numerator / denominator
-    avg_preds_g = np.maximum(avg_preds_g, 0) # Clip negatives
+    avg_preds_g = np.maximum(avg_preds_g, 0)
     
     # 6. EXPORT
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -438,11 +467,20 @@ def run_inference():
             })
             
     sub_df = pd.DataFrame(submission_rows)
-    sub_df.to_csv('submission.csv', index=False)
-    print(sub_df)
-    print(f"Saved {len(sub_df)} rows to submission.csv")
     
-
+    # Save with appropriate filename
+    output_filename ='submission.csv'
+    sub_df.to_csv(output_filename, index=False)
+    
+    print("\n" + "="*80)
+    print("ROUTED INFERENCE COMPLETE")
+    print("="*80)
+    print(sub_df.head(10))
+    print(f"\nSaved {len(sub_df)} rows to {output_filename}")
+    if SAVE_IMAGES:
+        print(f"Saved augmented images to ./inference_images_routed/")
+    print("="*80)
 
 if __name__ == '__main__':
-    run_inference()            
+    USE_TTA = False  
+    run_inference(USE_TTA)

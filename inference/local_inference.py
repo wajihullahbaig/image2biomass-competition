@@ -23,8 +23,8 @@ TEST_IMG_DIR = './test/'
 MODEL_DIR = './logs/mixup_taxonomy_20251231_163126'
 
 # DEFAULTS
-DEFAULT_HEIGHT = 320
-DEFAULT_WIDTH = 768
+IMAGE_HEIGHT = 320
+IMAGE_WIDTH = 768
 FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -91,7 +91,7 @@ class BiomassUnifiedModel(nn.Module):
         self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0, global_pool='')
         
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, 224, 224) 
+            dummy_input = torch.randn(1, 3, IMAGE_HEIGHT, IMAGE_WIDTH)
             feats = self.backbone(dummy_input)
             self.backbone_dim = feats.shape[1]
             
@@ -323,8 +323,8 @@ def run_inference(use_tta=False):
     
     num_species = metadata.get('num_species')
     backbone_name = metadata.get('backbone')
-    img_h = metadata.get('image_height', DEFAULT_HEIGHT)
-    img_w = metadata.get('image_width', DEFAULT_WIDTH)
+    img_h = metadata.get('image_height', IMAGE_HEIGHT)
+    img_w = metadata.get('image_width', IMAGE_WIDTH)
     print(f"Config: {backbone_name} | {img_w}x{img_h}")
 
     # 3. DISCOVER MODELS

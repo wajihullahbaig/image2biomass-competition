@@ -210,7 +210,7 @@ def create_stratify_key(df):
     # If a combo appears < N_FOLDS, StratifiedKFold will crash.
     # We map them to just 'State' or just 'Group' to allow splitting.
     counts = df['StratifyKey'].value_counts()
-    rare_keys = counts[counts < N_FOLDS].index # Assuming 4 or 5 folds
+    rare_keys = counts[counts < N_FOLDS].index 
     
     # Fallback for rare items: Just use FunctionalGroup (Biology is more important than State for mass)
     df.loc[df['StratifyKey'].isin(rare_keys), 'StratifyKey'] = df['FunctionalGroup'].astype(str)

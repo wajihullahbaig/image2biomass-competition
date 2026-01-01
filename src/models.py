@@ -57,10 +57,11 @@ class BiomassUnifiedModel(nn.Module):
         )
 
         # 4. Taxonomy Head (Coarse-Grained: 3 classes - Legume, Grass, Weed)
-        # This fixes Fold 1 by transferring "Legume" features from Lucerne to Clover
         self.taxonomy_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
+            nn.LayerNorm(32),
             nn.ReLU(),
+            nn.Dropout(0.5),
             nn.Linear(32, 3) 
         )
         

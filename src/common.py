@@ -276,23 +276,33 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
         if not isinstance(s, str):
             return vec
         
-        s_lower = s.lower().replace(' ', '')
-        
-        # Mapping specific cases
-        # Note: 'clover' in string matches 'Clover', 'WhiteClover' etc. logic below handles exact/substring
-        parts = s_lower.split('_')
+        # Clean and split the string
+        # Examples: "clover", "ryegrass_clover", "white clover"
+        s_clean = s.lower().replace(' ', '')
+        parts = s_clean.split('_')
         
         found_indices = set()
+        core_lower = [sp.lower() for sp in CORE_SPECIES]
         
         for p in parts:
-            # Check against core species
-            for idx, core in enumerate(CORE_SPECIES):
-                c_lower = core.lower()
-                # Check for match. 
-                # p="ryegrass" matches c="ryegrass"
-                # p="whiteclover" matches c="whiteclover"
-                # p="clover" matches c="clover"
-                if c_lower == p or (p in c_lower and len(p) > 3) or (c_lower in p and len(c_lower) > 3):
+            if not p: continue
+            
+            # 1. Try Exact Match First (Highest Priority)
+            matched_exactly = False
+            for idx, c_low in enumerate(core_lower):
+                if p == c_low:
+                    found_indices.add(idx)
+                    matched_exactly = True
+                    break # Found exact match for this part
+            
+            if matched_exactly:
+                continue
+                
+            # 2. Substring Match Fallback (Only if no exact match for this part)
+            for idx, c_low in enumerate(core_lower):
+                # c_low in p: e.g. "subclover" in "whiteclover" (unlikely with our list but possible)
+                # p in c_low: e.g. "clover" matches "whiteclover", "subcloverlosa"
+                if (p in c_low and len(p) > 3) or (c_low in p and len(c_low) > 3):
                     found_indices.add(idx)
         
         if found_indices:

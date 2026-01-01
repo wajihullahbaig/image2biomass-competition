@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/mixup_taxonomy_20251231_163126'
+MODEL_DIR = './logs/month_group_kfold_20260101_214448'
 
 # DEFAULTS
 IMAGE_HEIGHT = 320
@@ -119,7 +119,9 @@ class BiomassUnifiedModel(nn.Module):
         # 4. Taxonomy Head (Coarse-grained: Legume/Grass/Weed)
         self.taxonomy_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
+            nn.LayerNorm(32),
             nn.ReLU(),
+            nn.Dropout(0.5),
             nn.Linear(32, 3) 
         )
                 

@@ -1,4 +1,4 @@
-# train.py
+# train3.py
 import os
 import logging
 import torch
@@ -6,14 +6,13 @@ import numpy as np
 import pandas as pd
 from torch import nn
 from torch.utils.data import DataLoader
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
 import json
-
 
 # Local Imports
 import configs
@@ -22,21 +21,19 @@ from configs import (
     EARLY_STOP_PATIENCE, N_FOLDS,
     BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
     OFFICIAL_WEIGHTS, config_str,
-    CORE_SPECIES, TAXONOMY_IDXS  # Importing the Dictionary Map
+    CORE_SPECIES, TAXONOMY_IDXS
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
-    set_seed, calculate_global_weighted_r2,
-    upsample_minority_classes, get_taxonomy_targets
+    set_seed, calculate_global_weighted_r2, get_taxonomy_targets,
+    upsample_minority_classes
 )
 from log_and_plots import (
     setup_logging, plot_training_history, 
     log_fold_details, log_upsample_stats
 )
-from dataset import BiomassDataset, MixupDataset
+from dataset import BiomassDataset
 from models import BiomassUnifiedModel
-
-
 
 # -----------------------------------------------------------------------------
 # TRAINING ENGINE
@@ -46,7 +43,6 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
     metrics = defaultdict(float)
     scaler = torch.amp.GradScaler('cuda')
     
-    # Containers for R2 calculation
     all_preds_log = []
     all_targets_g = []
     
@@ -58,9 +54,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
         aux_feats = batch['aux_feats'].to(device)
         species_vec = batch['species_id'].to(device)
         
-        # Save batch images (only first epoch and first few batches)
         if epoch == 0 and fold is not None and session_dir is not None:
-            save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=20)
+            save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=10)
         
         taxonomy_targets = get_taxonomy_targets(species_vec)
 
@@ -74,6 +69,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
             loss_sp = criterion_ce(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
             loss_tax = criterion_ce(taxonomy_logits, taxonomy_targets) * TAXONOMY_FEAT_WEIGHT
             
+            # Physics Loss (Self-Consistency)
             pred_c = torch.expm1(biomass_out[:, 0])
             pred_d = torch.expm1(biomass_out[:, 1])
             pred_g = torch.expm1(biomass_out[:, 2])
@@ -94,21 +90,18 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
         metrics['train_tax'] += loss_tax.item() * B  
         metrics['train_phy'] += loss_phy.item() * B
         
-        # Store for R2 (Detach to save memory)
         all_preds_log.append(biomass_out.detach().cpu())
         all_targets_g.append(targets_g.detach().cpu())
         
         pbar.set_postfix({'L': total_loss.item()})
         
     N = len(loader.dataset)
-    # Average Losses
     final_metrics = {k: v / N for k, v in metrics.items()}
     
     # Calculate Train R2
     preds_log = torch.cat(all_preds_log).numpy()
     preds_linear = np.expm1(preds_log)
     targets_linear = torch.cat(all_targets_g).numpy()
-    
     final_metrics['train_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, OFFICIAL_WEIGHTS)
     
     return final_metrics
@@ -181,86 +174,74 @@ def save_metadata(session_dir, species_list, target_cols):
 # MAIN EXECUTION
 # -----------------------------------------------------------------------------
 def main():
-    session_dir = setup_logging(file_name_part="mixup_taxonomy")
+    # File name part reflects the Month Group strategy
+    session_dir = setup_logging(file_name_part="month_group_kfold")
     logger = logging.getLogger("System Logger")
     set_seed(42, logger)
     logger.info(config_str())
     
-    # 1. Load Data (Step 1 Global Parsing occurs here)
+    # 1. Load Data
     df = load_data(logger)
-    df = df.sort_values('Sampling_Date').reset_index(drop=True)
+    
+    # 2. Prepare Month and Stratification Columns
+    # month extraction (1-12)
+    df['Month'] = df['Sampling_Date'].dt.month
+    
+    # Stratify by Species, but group rare ones to "Rare" for splitter safety
+    species_counts = df['Species'].value_counts()
+    rare_species = species_counts[species_counts < N_FOLDS].index
+    df['StratifySpecies'] = df['Species'].apply(lambda x: 'Rare' if x in rare_species else x)
+    
+    # Groups: Month (Temporal Robustness)
+    # This forces the model to generalize to unseen months/seasons.
+    df['Groups'] = df['Month'].astype(str)
     
     species_list = CORE_SPECIES
-    logger.info(f"Using Semantic Base Species mapping: {len(species_list)} core species.")
-    
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     save_metadata(session_dir, species_list, target_cols)
 
     splits_dir = os.path.join(session_dir, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
     
-     # STRATIFIED SPLIT
-    # Ensures every fold sees every State + FunctionalGroup combination
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=False, random_state=None)
-    split_key = df['StratifyKey'] # Generated in common.py
+    # STRATIFIED GROUP K-FOLD
+    # Ensures each fold has a distinct set of MONTHS.
+    sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     
     best_overall_r2 = -float('inf')
     train_transform, val_transform = get_image_data_transforms()
-    # CRITICAL: Re-sort by Date to honor temporal order
-    df = df.sort_values('Sampling_Date').reset_index(drop=True)
     
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df, split_key)):
+    # Iterate Folds
+    for fold, (train_idx, val_idx) in enumerate(sgkf.split(df, df['StratifySpecies'], groups=df['Groups'])):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
         
-        # Split
         train_df = df.iloc[train_idx].copy()
         val_df = df.iloc[val_idx].copy()
         
-        # Temporal Check
-        # max_train_date = train_df['Sampling_Date'].max()
+        # Log which months are in validation for this fold
+        val_months = sorted(val_df['Month'].unique())
+        logger.info(f"Validation Months for Fold {fold+1}: {val_months}")
         
-        # # STRICT TEMPORAL SEPARATION
-        # original_val_len = len(val_df)
-        # val_df = val_df[val_df['Sampling_Date'] > max_train_date].reset_index(drop=True)
-        # dropped_count = original_val_len - len(val_df)
-        
-        # if dropped_count > 0:
-        #     logger.warning(f"Dropped {dropped_count} validation samples to enforce strict temporal order")
-            
-        # if len(val_df) == 0:
-        #     logger.warning("Validation set empty! Skipping fold.")
-        #     continue
-            
-        # Log Pre-Upsample Details
         log_fold_details(logger, train_df, val_df)
 
-        # Upsampling (Step 2: Functional Group + Temporal Neighbors)
-        logger.info(f"Train size before upsample: {len(train_df)}")
-
-        # We still use FunctionalGroup upsampling to balance for functional groups
+        # Optional Upsampling (Functional Group balance)
+        # Note: Upsampling is done AFTER splitting to avoid leakage
         train_df = upsample_minority_classes(train_df, target_col='FunctionalGroup')
-        logger.info(f"Train size after upsample: {len(train_df)}")
-        
-        
-        logger.info(f"Train size after functional-group upsample: {len(train_df)}")
         
         # Save Splits
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
         val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
         
-        # Datasets (Mixup)
-        # Base Dataset (reads pre-calculated probability columns)
-        train_ds_base = BiomassDataset(train_df, transform=train_transform)        
-        # Mixup Wrapper: The "Texture Solver" for composite species
-        train_ds = MixupDataset(train_ds_base, prob=0.10, alpha=0.4)        
+        # Datasets
+        train_ds = BiomassDataset(train_df, transform=train_transform)        
         val_ds = BiomassDataset(val_df, transform=val_transform)
         
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+        # Shuffle=True in DataLoader since temporal sequence is handled by Month splits
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
-        # Check num_aux logic just in case
+        # Model
         dummy_ds = BiomassDataset(train_df[:1], transform=train_transform)
-        n_aux = dummy_ds[0]['aux_feats'].shape[0] # Should be 3 (NDVI, H, Int)        
+        n_aux = dummy_ds[0]['aux_feats'].shape[0]        
         model = BiomassUnifiedModel(num_species=len(species_list), num_aux=n_aux).to(DEVICE)       
         
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
@@ -274,30 +255,23 @@ def main():
         patience_counter = 0
         
         for epoch in range(EPOCHS):
-            # Pass fold and session_dir to enable image saving
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, criterion_reg, criterion_ce, 
                 DEVICE, epoch, fold=fold+1, session_dir=session_dir
             )
             val_metrics = validate(model, val_loader, criterion_reg, criterion_ce, DEVICE)
 
-            
-            # Step Scheduler
             scheduler.step(val_metrics['val_loss'])
             
-            # Logging
-            # --- (Shows both T_R2 and V_R2) ---
             log_msg = (f"Ep {epoch} | T_Loss: {train_metrics['train_loss']:.2f} | T_R2: {train_metrics['train_r2']:.4f} | "
                        f"V_Loss: {val_metrics['val_loss']:.2f} | V_R2: {val_metrics['val_r2']:.4f} | "
                        f"LR: {scheduler.get_last_lr()[0]:.1e}")
             logger.info(log_msg)
             
-            # History
             for k, v in train_metrics.items(): history[k].append(v)
             for k, v in val_metrics.items(): history[k].append(v)
             history['lr'].append(optimizer.param_groups[0]['lr'])
             
-            # Save Best
             if val_metrics['val_r2'] > best_fold_r2:
                 best_fold_r2 = val_metrics['val_r2']
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold+1}.pth"))
@@ -315,7 +289,6 @@ def main():
                 break
                 
             plot_training_history(history, fold+1, session_dir)
-                    
 
 if __name__ == '__main__':    
     main()

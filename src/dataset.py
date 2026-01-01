@@ -86,7 +86,7 @@ class BiomassDataset(Dataset):
 
 class MixupDataset(Dataset):
     """
-    Grandmaster Texture Blender.
+    Texture Blender.
     Mathematically constructs 'Composite' species from pure ones.
     Replaces Mosaic for texture-heavy tasks.
     """

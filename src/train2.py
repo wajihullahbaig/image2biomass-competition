@@ -1,4 +1,4 @@
-# train.py
+# train2.py
 import os
 import logging
 import torch
@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from torch import nn
 from torch.utils.data import DataLoader
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
@@ -22,12 +22,12 @@ from configs import (
     EARLY_STOP_PATIENCE, N_FOLDS,
     BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
     OFFICIAL_WEIGHTS, config_str,
-    CORE_SPECIES, TAXONOMY_IDXS  # Importing the Dictionary Map
+    CORE_SPECIES, TAXONOMY_IDXS  
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
-    set_seed, calculate_global_weighted_r2,
-    upsample_minority_classes, get_taxonomy_targets
+    set_seed, calculate_global_weighted_r2,get_taxonomy_targets,
+    upsample_minority_classes
 )
 from log_and_plots import (
     setup_logging, plot_training_history, 
@@ -35,7 +35,6 @@ from log_and_plots import (
 )
 from dataset import BiomassDataset, MixupDataset
 from models import BiomassUnifiedModel
-
 
 
 # -----------------------------------------------------------------------------
@@ -181,14 +180,24 @@ def save_metadata(session_dir, species_list, target_cols):
 # MAIN EXECUTION
 # -----------------------------------------------------------------------------
 def main():
-    session_dir = setup_logging(file_name_part="mixup_taxonomy")
+    session_dir = setup_logging(file_name_part="stratified_group_kfold")
     logger = logging.getLogger("System Logger")
     set_seed(42, logger)
     logger.info(config_str())
     
     # 1. Load Data (Step 1 Global Parsing occurs here)
     df = load_data(logger)
-    df = df.sort_values('Sampling_Date').reset_index(drop=True)
+    
+    # 2. Add Month and Prepare Stratification Keys
+    df['Month'] = df['Sampling_Date'].dt.month
+    
+    # Stratify by Species, but group rare species to avoid split failures
+    counts = df['Species'].value_counts()
+    rare_species = counts[counts < N_FOLDS].index
+    df['StratifySpecies'] = df['Species'].apply(lambda x: 'Rare' if x in rare_species else x)
+    
+    # Group by Date to prevent background leakage
+    df['Groups'] = df['Sampling_Date'].dt.date.astype(str)
     
     species_list = CORE_SPECIES
     logger.info(f"Using Semantic Base Species mapping: {len(species_list)} core species.")
@@ -199,38 +208,24 @@ def main():
     splits_dir = os.path.join(session_dir, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
     
-     # STRATIFIED SPLIT
-    # Ensures every fold sees every State + FunctionalGroup combination
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=False, random_state=None)
-    split_key = df['StratifyKey'] # Generated in common.py
+    # STRATIFIED GROUP K-FOLD
+    # Groups: Sampling_Date (Date-level independence)
+    # Stratify: Species (Balanced biodiversity)
+    sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     
     best_overall_r2 = -float('inf')
     train_transform, val_transform = get_image_data_transforms()
-    # CRITICAL: Re-sort by Date to honor temporal order
-    df = df.sort_values('Sampling_Date').reset_index(drop=True)
     
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df, split_key)):
+    # No longer strictly sorting by date to allow shuffling in SGKF
+    
+    for fold, (train_idx, val_idx) in enumerate(sgkf.split(df, df['StratifySpecies'], groups=df['Groups'])):
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
         
         # Split
         train_df = df.iloc[train_idx].copy()
         val_df = df.iloc[val_idx].copy()
         
-        # Temporal Check
-        # max_train_date = train_df['Sampling_Date'].max()
         
-        # # STRICT TEMPORAL SEPARATION
-        # original_val_len = len(val_df)
-        # val_df = val_df[val_df['Sampling_Date'] > max_train_date].reset_index(drop=True)
-        # dropped_count = original_val_len - len(val_df)
-        
-        # if dropped_count > 0:
-        #     logger.warning(f"Dropped {dropped_count} validation samples to enforce strict temporal order")
-            
-        # if len(val_df) == 0:
-        #     logger.warning("Validation set empty! Skipping fold.")
-        #     continue
-            
         # Log Pre-Upsample Details
         log_fold_details(logger, train_df, val_df)
 
@@ -248,14 +243,13 @@ def main():
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
         val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
         
-        # Datasets (Mixup)
+        # Datasets
         # Base Dataset (reads pre-calculated probability columns)
-        train_ds_base = BiomassDataset(train_df, transform=train_transform)        
-        # Mixup Wrapper: The "Texture Solver" for composite species
-        train_ds = MixupDataset(train_ds_base, prob=0.10, alpha=0.4)        
+        train_ds = BiomassDataset(train_df, transform=train_transform)        
+        # Mixup is disabled to maintain specimen integrity
         val_ds = BiomassDataset(val_df, transform=val_transform)
         
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
         # Check num_aux logic just in case

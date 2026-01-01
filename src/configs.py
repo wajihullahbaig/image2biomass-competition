@@ -13,7 +13,7 @@ IMAGE_WIDTH = 768
 # Training Hyperparameters
 BATCH_SIZE = 16 
 LEARNING_RATE = 2e-4 
-N_FOLDS = 4
+N_FOLDS = 5
 EPOCHS = 50 
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
@@ -22,19 +22,19 @@ BACKBONE = 'timm/convnext_tiny.fb_in1k'
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
 # Official Weights: Clover, Dead, Green, Total, GDM
 OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
-COL_WEIGHTS_TENSOR = torch.tensor(OFFICIAL_WEIGHTS, device=DEVICE)
 # training settings
 FREEZE_BACKBONE = True
-BACKBONE_FREEZE_FRACTION = 0.3 
+BACKBONE_FREEZE_FRACTION = 0.7
 USE_TTA = True
 
 # --- Model Settings ---
 FUSION_DIM = 256
 # Balanced Weights: Scaling optimized for Gram-scale Log-space
-BIOMASS_FEAT_WEIGHT = 80.0 
+BIOMASS_FEAT_WEIGHT = 100.0 
 AUX_FEAT_WEIGHT = 10.0
 SPECIES_FEAT_WEIGHT = 20.0
-PHYSICS_FEAT_WEIGHT = 20.0 
+TAXONOMY_FEAT_WEIGHT = 25.0
+PHYSICS_FEAT_WEIGHT = 30.0 
 
 # ====================== TAXONOMY & SPECIES ======================
 CORE_SPECIES = [
@@ -80,6 +80,7 @@ def config_str():
         f"FUSION_DIM: {FUSION_DIM}",
         f"AUX_FEAT_WEIGHT: {AUX_FEAT_WEIGHT}",
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
+        f"TAXONOMY_FEAT_WEIGHT: {TAXONOMY_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
         f"PHYSICS_FEAT_WEIGHT: {PHYSICS_FEAT_WEIGHT}"
     ]

@@ -15,7 +15,7 @@ from torchvision.utils import save_image
 # Local Imports
 from configs import (
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, 
-    IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES,GROUP_DEFINITIONS, N_FOLDS
+    IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES,GROUP_DEFINITIONS, N_FOLDS, TAXONOMY_IDXS
 )
 
 
@@ -542,3 +542,23 @@ def save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=
     # Save as grid
     save_path = os.path.join(images_dir, f'batch_{batch_idx:03d}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
+
+# -----------------------------------------------------------------------------
+# 12. TAXONOMY TARGET GENERATION
+# -----------------------------------------------------------------------------
+def get_taxonomy_targets(species_vec):
+    """
+    Converts 14-dim species probability vector to 3-dim Taxonomy vector.
+    Order: [Legume, Grass, Weed]
+    
+    Uses indices defined in configs.py to ensure consistency with CORE_SPECIES.
+    """
+    # Sum probabilities of constituent species for each group
+    # shape: (Batch, 1) for each group
+    legume_prob = species_vec[:, TAXONOMY_IDXS['legume']].sum(dim=1, keepdim=True)
+    grass_prob  = species_vec[:, TAXONOMY_IDXS['grass']].sum(dim=1, keepdim=True)
+    weed_prob   = species_vec[:, TAXONOMY_IDXS['weed']].sum(dim=1, keepdim=True)
+    
+    # shape: (Batch, 3)
+    return torch.cat([legume_prob, grass_prob, weed_prob], dim=1)
+

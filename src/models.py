@@ -58,11 +58,11 @@ class BiomassUnifiedModel(nn.Module):
 
         # 4. Taxonomy Head (Coarse-Grained: 3 classes - Legume, Grass, Weed)
         self.taxonomy_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 32),
-            nn.LayerNorm(32),
+            nn.Linear(self.backbone_dim, 16),
+            nn.LayerNorm(16),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(32, 3) 
+            nn.Dropout(0.6),
+            nn.Linear(16, 3) 
         )
         
         # 5. Biomass Head

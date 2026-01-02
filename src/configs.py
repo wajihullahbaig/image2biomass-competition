@@ -11,9 +11,9 @@ IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 IMAGE_HEIGHT = 320
 IMAGE_WIDTH = 768
 # Training Hyperparameters
-BATCH_SIZE = 16 
-LEARNING_RATE = 2e-4 
-N_FOLDS = 5
+BATCH_SIZE = 32 
+LEARNING_RATE = 1e-4 
+N_FOLDS = 3
 EPOCHS = 50 
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
@@ -24,13 +24,13 @@ TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_
 OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
 # training settings
 FREEZE_BACKBONE = True
-BACKBONE_FREEZE_FRACTION = 0.7
+BACKBONE_FREEZE_FRACTION = 0.5
 USE_TTA = True
 
 # --- Model Settings ---
 FUSION_DIM = 256
 # Balanced Weights: Scaling optimized for Gram-scale Log-space
-BIOMASS_FEAT_WEIGHT = 120.0 
+BIOMASS_FEAT_WEIGHT = 80.0 
 AUX_FEAT_WEIGHT = 15.0
 SPECIES_FEAT_WEIGHT = 20.0
 TAXONOMY_FEAT_WEIGHT = 25.0

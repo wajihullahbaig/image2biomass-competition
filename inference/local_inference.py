@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/month_group_kfold_20260101_214448'
+MODEL_DIR = './logs/mixup_taxonomy_20260102_211104'
 
 # DEFAULTS
 IMAGE_HEIGHT = 320
@@ -122,13 +122,13 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(64, num_species)
         )
 
-        # 4. Taxonomy Head (Coarse-grained: Legume/Grass/Weed)
+        # 4. Taxonomy Head (Coarse-Grained: 3 classes - Legume, Grass, Weed)
         self.taxonomy_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 32),
-            nn.LayerNorm(32),
+            nn.Linear(self.backbone_dim, 16),
+            nn.LayerNorm(16),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(32, 3) 
+            nn.Dropout(0.6),
+            nn.Linear(16, 3) 
         )
                 
         # 5. Biomass Head
@@ -139,9 +139,9 @@ class BiomassUnifiedModel(nn.Module):
             nn.LayerNorm(FUSION_DIM),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(FUSION_DIM, 256),
+            nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(256, 4)
+            nn.Linear(128, 4)
         )
 
     def forward(self, x):

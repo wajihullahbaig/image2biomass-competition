@@ -30,8 +30,8 @@ USE_TTA = True
 # --- Model Settings ---
 FUSION_DIM = 256
 # Balanced Weights: Scaling optimized for Gram-scale Log-space
-BIOMASS_FEAT_WEIGHT = 100.0 
-AUX_FEAT_WEIGHT = 10.0
+BIOMASS_FEAT_WEIGHT = 120.0 
+AUX_FEAT_WEIGHT = 15.0
 SPECIES_FEAT_WEIGHT = 20.0
 TAXONOMY_FEAT_WEIGHT = 25.0
 PHYSICS_FEAT_WEIGHT = 30.0 

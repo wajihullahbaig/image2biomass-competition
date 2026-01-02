@@ -79,6 +79,58 @@ def plot_training_history(history, fold, session_dir):
     plt.savefig(os.path.join(save_dir, f"fold_{fold}_metrics.png"))
     plt.close()
 
+    # --- NEW: Component-wise Plots ---
+    comp_dir = os.path.join(save_dir, 'components')
+    os.makedirs(comp_dir, exist_ok=True)
+
+    # 1. Biomass Components
+    fig_b, axes_b = plt.subplots(2, 3, figsize=(18, 10))
+    axes_b = axes_b.flatten()
+    
+    bio_map = [
+        ('loss_c', 'Clover Loss'), ('loss_d', 'Dead Loss'), ('loss_g', 'Green Loss'),
+        ('loss_t', 'Total Loss'), ('loss_gdm', 'GDM Loss')
+    ]
+    
+    for idx, (suffix, title) in enumerate(bio_map):
+        try_plot_on_ax(axes_b[idx], history, f'train_{suffix}', f'val_{suffix}', title)
+        
+    plt.tight_layout()
+    plt.savefig(os.path.join(comp_dir, f"fold_{fold}_biomass_components.png"))
+    plt.close()
+
+    # 2. Aux Components
+    fig_a, axes_a = plt.subplots(1, 3, figsize=(18, 5))
+    axes_a = axes_a.flatten()
+    
+    aux_map = [
+        ('loss_ndvi', 'NDVI Loss'), ('loss_h', 'Height Loss'), ('loss_int', 'Interaction Loss')
+    ]
+    
+    for idx, (suffix, title) in enumerate(aux_map):
+        try_plot_on_ax(axes_a[idx], history, f'train_{suffix}', f'val_{suffix}', title)
+        
+    plt.tight_layout()
+    plt.savefig(os.path.join(comp_dir, f"fold_{fold}_aux_components.png"))
+    plt.close()
+
+def try_plot_on_ax(ax, history, train_key, val_key, title):
+    """Helper to plot train/val curves on a given axis."""
+    has_data = False
+    if train_key in history and len(history[train_key]) > 0:
+        ax.plot(history[train_key], label='Train', color='tab:blue')
+        has_data = True
+    if val_key in history and len(history[val_key]) > 0:
+        ax.plot(history[val_key], label='Val', color='tab:red')
+        has_data = True
+        
+    if has_data:
+        ax.set_title(title)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    else:
+        ax.set_visible(False) # Hide empty plots
+
     
 def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=None) -> str:
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

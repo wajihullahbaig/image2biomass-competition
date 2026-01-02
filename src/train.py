@@ -69,11 +69,13 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
         with torch.amp.autocast('cuda'):
             biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
             
+            # Loss Components
             loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
             loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
             loss_sp = criterion_ce(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
             loss_tax = criterion_ce(taxonomy_logits, taxonomy_targets) * TAXONOMY_FEAT_WEIGHT
             
+            # Physics Loss
             pred_c = torch.expm1(biomass_out[:, 0])
             pred_d = torch.expm1(biomass_out[:, 1])
             pred_g = torch.expm1(biomass_out[:, 2])
@@ -93,6 +95,23 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
         metrics['train_sp']  += loss_sp.item() * B
         metrics['train_tax'] += loss_tax.item() * B  
         metrics['train_phy'] += loss_phy.item() * B
+
+        # --- Individual Component Losses (Diagnostic) ---
+        with torch.no_grad():
+            # Biomass Components (MSE on Log Space)
+            # targets_log mapping: 0:C, 1:D, 2:G, 3:T, 4:GDM
+            metrics['train_loss_c'] += nn.functional.mse_loss(biomass_out[:, 0], targets_log[:, 0]).item() * B
+            metrics['train_loss_d'] += nn.functional.mse_loss(biomass_out[:, 1], targets_log[:, 1]).item() * B
+            metrics['train_loss_g'] += nn.functional.mse_loss(biomass_out[:, 2], targets_log[:, 2]).item() * B
+            metrics['train_loss_t'] += nn.functional.mse_loss(biomass_out[:, 3], targets_log[:, 3]).item() * B
+            metrics['train_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 4], targets_log[:, 4]).item() * B
+            
+            # Aux Components
+            # aux_feats mapping: 0:NDVI, 1:Height, 2:Interaction
+            metrics['train_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
+            metrics['train_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
+            metrics['train_loss_int']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
+
         
         # Store for R2 (Detach to save memory)
         all_preds_log.append(biomass_out.detach().cpu())
@@ -149,6 +168,19 @@ def validate(model, loader, criterion_reg, criterion_ce, device):
         metrics['val_sp']  += loss_sp.item() * B
         metrics['val_tax'] += loss_tax.item() * B 
         metrics['val_phy'] += loss_phy.item() * B
+
+        # --- Individual Component Losses (Diagnostic) ---
+        # Biomass Components (MSE on Log Space)
+        metrics['val_loss_c'] += nn.functional.mse_loss(biomass_out[:, 0], targets_log[:, 0]).item() * B
+        metrics['val_loss_d'] += nn.functional.mse_loss(biomass_out[:, 1], targets_log[:, 1]).item() * B
+        metrics['val_loss_g'] += nn.functional.mse_loss(biomass_out[:, 2], targets_log[:, 2]).item() * B
+        metrics['val_loss_t'] += nn.functional.mse_loss(biomass_out[:, 3], targets_log[:, 3]).item() * B
+        metrics['val_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 4], targets_log[:, 4]).item() * B
+        
+        # Aux Components
+        metrics['val_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
+        metrics['val_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
+        metrics['val_loss_int']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
         
         all_preds_log.append(biomass_out.cpu())
         all_targets_g.append(targets_g.cpu())

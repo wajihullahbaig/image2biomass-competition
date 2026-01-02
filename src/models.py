@@ -75,9 +75,9 @@ class BiomassUnifiedModel(nn.Module):
             nn.LayerNorm(FUSION_DIM),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(FUSION_DIM, 256),
+            nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(256, 4), # [Log_C, Log_D, Log_G, Log_T]
+            nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
         )
 
         self._init_biomass_head()

@@ -442,9 +442,13 @@ def assign_functional_groups(df):
 
     groups = []
     for l, g, w in zip(s_legume, s_grass, s_weed):
-        if l >= g and l >= w: groups.append('legume')
-        elif w > g: groups.append('weed')
-        else: groups.append('grass')
+        # Hierarchy: Weed > Legume > Grass (Prioritize rare groups in ties/mixes)
+        if w > 0 and w >= g and w >= l:
+            groups.append('weed')
+        elif l >= g: 
+            groups.append('legume')
+        else: 
+            groups.append('grass')
 
     df['FunctionalGroup'] = groups
     return df

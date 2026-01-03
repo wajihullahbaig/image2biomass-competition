@@ -21,10 +21,10 @@ N_DAYS = 45
 SEED = 42
 
 BASE_SPECIES = [
-    'Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa',
-    'Ryegrass', 'Phalaris', 'Fescue', 'Lucerne',
-    'Barleygrass', 'Silvergrass', 'Speargrass', 'Bromegrass',
-    'Capeweed', 'Crumbweed'
+    'clover', 'whiteclover', 'subcloverdalkeith', 'subcloverlosa',
+    'ryegrass', 'phalaris', 'fescue', 'lucerne',
+    'barleygrass', 'silvergrass', 'speargrass', 'bromegrass',
+    'capeweed', 'crumbweed'
 ]
 
 def parse_species_components(species_name):

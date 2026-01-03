@@ -41,7 +41,7 @@ def verify():
         if n_samples == 0: continue
             
         # 15% Holdout
-        holdout_cnt = int(n_samples * 0.15)
+        holdout_cnt = int(n_samples * 0.20)
         
         if n_samples < 2:
             dev_dfs.append(sp_df)

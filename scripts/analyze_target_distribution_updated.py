@@ -18,10 +18,10 @@ OUTPUT_DIR = Path('analysis_results/target_distribution_updated/')
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
 
 BASE_SPECIES = [
-    'Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa',
-    'Ryegrass', 'Phalaris', 'Fescue', 'Lucerne',
-    'Barleygrass', 'Silvergrass', 'Speargrass', 'Bromegrass',
-    'Capeweed', 'Crumbweed'
+    'clover', 'whiteClover', 'subcloverdalkeith', 'subcloverLosa',
+    'ryegrass', 'phalaris', 'fescue', 'lucerne',
+    'barleygrass', 'silvergrass', 'speargrass', 'bromegrass',
+    'capeweed', 'crumbweed'
 ]
 
 def parse_species_components(species_name):
@@ -33,8 +33,8 @@ def parse_species_components(species_name):
     parts = species_name.split('_')
     
     for part in parts:
-        if part == 'Clover':
-            components.extend(['Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa'])
+        if part == 'clover':
+            components.extend(['clover', 'whiteclover', 'subcloverdalkeith', 'subcloverlosa'])
         else:
             components.append(part)
     

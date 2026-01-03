@@ -24,11 +24,11 @@ ENGINEERED_FEATURES = ['Interaction_Mul']  # NDVI * Height interaction
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
 
 SPECIES_COLS = [
-    'Species_Clover', 'Species_WhiteClover', 'Species_SubcloverDalkeith', 
-    'Species_SubcloverLosa', 'Species_Ryegrass', 'Species_Phalaris', 
-    'Species_Fescue', 'Species_Lucerne', 'Species_Barleygrass', 
-    'Species_Silvergrass', 'Species_Speargrass', 'Species_Bromegrass',
-    'Species_Capeweed', 'Species_Crumbweed'
+    'Species_clover', 'Species_whiteclover', 'Species_subcloverdalkeith', 
+    'Species_subcloverlosa', 'Species_ryegrass', 'Species_phalaris', 
+    'Species_fescue', 'Species_lucerne', 'Species_barleygrass', 
+    'Species_silvergrass', 'Species_speargrass', 'Species_bromegrass',
+    'Species_capeweed', 'Species_crumbweed'
 ]
 
 def load_data():

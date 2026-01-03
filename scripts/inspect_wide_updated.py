@@ -15,10 +15,10 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 # Base species that compose the combinations
 BASE_SPECIES = [
-    'Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa',
-    'Ryegrass', 'Phalaris', 'Fescue', 'Lucerne',
-    'Barleygrass', 'Silvergrass', 'Speargrass', 'Bromegrass',
-    'Capeweed', 'Crumbweed'
+    'clover', 'whiteclover', 'subcloverdalkeith', 'subcloverlosa',
+    'ryegrass', 'phalaris', 'fescue', 'lucerne',
+    'barleygrass', 'silvergrass', 'speargrass', 'bromegrass',
+    'capeweed', 'crumbweed'
 ]
 
 def parse_species_components(species_name):
@@ -37,9 +37,9 @@ def parse_species_components(species_name):
     parts = species_name.split('_')
     
     for part in parts:
-        if part == 'Clover':
+        if part == 'clover':
             # Clover expands to 4 sub-types
-            components.extend(['Clover', 'WhiteClover', 'SubcloverDalkeith', 'SubcloverLosa'])
+            components.extend(['clover', 'whiteclover', 'subcloverdalkeith', 'subcloverlosa'])
         else:
             components.append(part)
     

@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/mixup_taxonomy_20260102_211104'
+MODEL_DIR = './logs/stratified_holdout_20260103_133902'
 
 # DEFAULTS
 IMAGE_HEIGHT = 320
@@ -138,7 +138,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(input_dim, FUSION_DIM),
             nn.LayerNorm(FUSION_DIM),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
             nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
             nn.Linear(128, 4)

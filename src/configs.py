@@ -23,7 +23,7 @@ TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_
 # Official Weights: Clover, Dead, Green, Total, GDM
 OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2] 
 # training settings
-FREEZE_BACKBONE = True
+FREEZE_BACKBONE = False
 BACKBONE_FREEZE_FRACTION = 0.5
 USE_TTA = True
 

@@ -57,68 +57,105 @@ def compute_derived_features(df):
     
     return df
 
-def plot_correlation_heatmap(df):
+def plot_target_analysis(df, target_base, predictors):
     """
-    Plot heatmap for all 5 target variables against:
-    NDVI, Height, Height(Log), and Ratio Features.
+    Analyzes which version of the target (Raw, Density, Ratio) 
+    correlates best with the predictors.
     """
-    print("Generating correlation heatmap...")
+    print(f"Analyzing target: {target_base}...")
     
-    targets = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    # 1. Create Derived Versions of this Target
+    # Raw
+    t_raw = df[target_base]
     
-    features = [
-        'Pre_GSHH_NDVI', 
-        'Height_Clean', 
-        'Height_Log',
-        'Dead_per_cm_Height',
-        'Dead_to_Total_Ratio',
-        'Dead_to_GDM_Ratio'
-    ]
+    # Density (Target / Height)
+    t_density = df[target_base] / df['Height_Clean']
     
-    # Filter for columns that exist
-    valid_targets = [t for t in targets if t in df.columns]
-    valid_features = [f for f in features if f in df.columns]
+    # Ratio to Total (Target / Total)
+    # Avoid self-division for Total
+    if target_base == 'Dry_Total_g':
+        t_ratio_total = pd.Series(np.ones(len(df)), index=df.index) # Trivial
+    else:
+        t_ratio_total = df[target_base] / (df['Dry_Total_g'] + 1e-6)
+        
+    # Ratio to GDM (Target / GDM)
+    if target_base == 'GDM_g':
+        t_ratio_gdm = pd.Series(np.ones(len(df)), index=df.index)
+    else:
+        t_ratio_gdm = df[target_base] / (df['GDM_g'] + 1e-6)
+
+    # 2. Build DataFrame for Correlation
+    data = pd.DataFrame({
+        f'{target_base} (Raw)': t_raw,
+        f'{target_base} / Height (Density)': t_density,
+        f'{target_base} / Total (Ratio)': t_ratio_total,
+        f'{target_base} / GDM (Ratio)': t_ratio_gdm
+    })
     
-    # Calculate Correlation Matrix
-    # We want rows=Targets, cols=Features
-    corr_matrix = pd.DataFrame(index=valid_targets, columns=valid_features)
+    # Remove trivial columns (e.g. Total/Total)
+    if target_base == 'Dry_Total_g':
+        data.drop(columns=[f'{target_base} / Total (Ratio)'], inplace=True)
+    if target_base == 'GDM_g':
+        data.drop(columns=[f'{target_base} / GDM (Ratio)'], inplace=True)
+        
+    # 3. Calculate Correlations with Predictors
+    # Rows: Derived Targets
+    # Cols: Predictors
+    corr_data = []
     
-    for target in valid_targets:
-        for feature in valid_features:
-            # Drop NaNs for valid correlation
-            valid_mask = df[[target, feature]].notna().all(axis=1)
-            if valid_mask.sum() > 10:
-                r, _ = stats.pearsonr(df.loc[valid_mask, target], df.loc[valid_mask, feature])
-                corr_matrix.loc[target, feature] = r
+    for derived_name in data.columns:
+        row_corrs = []
+        for pred in predictors:
+            # Drop NaNs
+            valid = data[derived_name].notna() & df[pred].notna()
+            if valid.sum() > 10:
+                r, _ = stats.pearsonr(data.loc[valid, derived_name], df.loc[valid, pred])
+                row_corrs.append(r)
             else:
-                corr_matrix.loc[target, feature] = np.nan
-                
-    corr_matrix = corr_matrix.astype(float)
+                row_corrs.append(np.nan)
+        corr_data.append(row_corrs)
+        
+    corr_df = pd.DataFrame(corr_data, index=data.columns, columns=predictors)
     
-    # Plotting
-    plt.figure(figsize=(12, 8))
-    sns.heatmap(corr_matrix, annot=True, cmap='RdBu_r', center=0, fmt='.2f', 
+    # 4. Plot
+    plt.figure(figsize=(10, 6))
+    sns.heatmap(corr_df, annot=True, cmap='RdBu_r', center=0, fmt='.3f',
                 linewidths=1, linecolor='white')
     
-    plt.title('Correlation: Biomass Targets vs Derived Features', fontsize=15, fontweight='bold', pad=20)
-    plt.xlabel('Features (Derived & Raw)', fontsize=12, fontweight='bold')
-    plt.ylabel('Biomass Targets', fontsize=12, fontweight='bold')
-    plt.xticks(rotation=45, ha='right')
+    plt.title(f'Which version of {target_base} is easiest to predict?', fontsize=14, fontweight='bold')
+    plt.ylabel('Target Variations')
+    plt.xlabel('Predictors')
     plt.tight_layout()
     
-    save_path = OUTPUT_DIR / 'ratio_correlation_heatmap.png'
+    safe_name = target_base.replace('_', '')
+    save_path = OUTPUT_DIR / f'heatmap_{safe_name}.png'
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"   [OK] Heatmap saved to {save_path}")
+    print(f"   [OK] Saved {save_path}")
+
+def plot_correlation_heatmaps(df):
+    """
+    Orchestrator for the 5 separate heatmaps.
+    """
+    targets = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    predictors = ['Pre_GSHH_NDVI', 'Height_Ave_cm', 'Height_Log']
     
-    # Save CSV
-    corr_matrix.to_csv(OUTPUT_DIR / 'ratio_correlation_matrix.csv')
-    print("   [OK] Correlation matrix saved to CSV")
+    # Ensure predictors exist
+    for p in predictors:
+        if p not in df.columns:
+            print(f"Warning: Predictor {p} not found in dataframe.")
+            return
+
+    for target in targets:
+        if target in df.columns:
+            plot_target_analysis(df, target, predictors)
+        else:
+            print(f"Warning: Target {target} not found in dataframe.")
 
 def main():
     print("="*60)
-    print("RATIO CORRELATION ANALYSIS (Requested Steps)")
+    print("RATIO CORRELATION ANALYSIS (5 Targets)")
     print("="*60)
     
     df = load_data()
@@ -127,7 +164,7 @@ def main():
         
     df = compute_derived_features(df)
     
-    plot_correlation_heatmap(df)
+    plot_correlation_heatmaps(df) # Updated main call
     
     print("\n" + "="*60)
     print("ANALYSIS COMPLETE")

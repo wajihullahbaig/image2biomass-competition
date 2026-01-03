@@ -96,8 +96,9 @@ class RandomRotateCropResize(nn.Module):
         # 1. Pick Random Angle
         angle = random.uniform(-self.degrees, self.degrees)
         
-        # 2. Rotate
-        img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR)
+        # 2. Rotate (Fill with Mean Color ~ Gray/Brown to match TTA/ImageNet Mean)
+        # ImageNet Mean (0.485, 0.456, 0.406) * 255 ~= (124, 116, 104)
+        img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR, fill=(124, 116, 104))
         
         # 3. Get Dimensions
         if isinstance(img, torch.Tensor):

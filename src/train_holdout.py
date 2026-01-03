@@ -29,7 +29,8 @@ from configs import (
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2,
-    upsample_minority_classes, get_taxonomy_targets
+    upsample_minority_classes, get_taxonomy_targets,
+    rotate_crop_resize
 )
 from log_and_plots import (
     setup_logging, plot_training_history, 
@@ -38,36 +39,7 @@ from log_and_plots import (
 from dataset import BiomassDataset, MixupDataset
 from models import BiomassUnifiedModel
 
-# -----------------------------------------------------------------------------
-# TTA HELPERS
-# -----------------------------------------------------------------------------
-def get_largest_rotated_crop(h, w, angle):
-    angle_rad = math.radians(abs(angle))
-    sin_a = math.sin(angle_rad)
-    cos_a = math.cos(angle_rad)
-    scale = 1.0 / (cos_a + sin_a)
-    return int(h * scale), int(w * scale)
 
-def rotate_crop_resize(img, angle):
-    """
-    Handles both Single Image (C, H, W) and Batch (B, C, H, W).
-    """
-    h, w = img.shape[-2:]
-    img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR)
-    
-    ch, cw = get_largest_rotated_crop(h, w, angle)
-    img_crop = TF.center_crop(img_rot, [ch, cw])
-    
-    if img.ndim == 3:
-        img_resized = torch.nn.functional.interpolate(
-            img_crop.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False
-        ).squeeze(0)
-    else:
-        img_resized = torch.nn.functional.interpolate(
-            img_crop, size=(h, w), mode='bilinear', align_corners=False
-        )
-        
-    return img_resized
 
 
 from torchvision.utils import save_image

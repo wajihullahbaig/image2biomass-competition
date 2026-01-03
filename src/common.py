@@ -67,9 +67,16 @@ def rotate_crop_resize(img: torch.Tensor, angle: float) -> torch.Tensor:
     
     # 4. Resize back (The "upsample")
     # align_corners=False prevents sub-pixel phase shifts
-    img_resized = torch.nn.functional.interpolate(
-        img_crop.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False
-    ).squeeze(0)
+    if img.ndim == 4:
+        # Batched input (B, C, H, W) -> Directly interpolate
+        img_resized = torch.nn.functional.interpolate(
+            img_crop, size=(h, w), mode='bilinear', align_corners=False
+        )
+    else:
+        # Single image (C, H, W) -> Unsqueeze to (1, C, H, W)
+        img_resized = torch.nn.functional.interpolate(
+            img_crop.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False
+        ).squeeze(0)
     
     return img_resized
 

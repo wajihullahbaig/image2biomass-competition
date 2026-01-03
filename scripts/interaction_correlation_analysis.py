@@ -79,65 +79,126 @@ def compute_interaction_features(df):
 
 def plot_giant_heatmap(df):
     """
-    Plot a giant heatmap for all 5 target variables against
-    NDVI, Height, and their interactions.
+    Plot a giant heatmap looking for correlations between:
+    Rows: Derived Targets (Target <op> Feature)
+    Cols: Features
     """
     print("Generating giant interaction heatmap...")
     
     targets = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     
-    # Identify all feature columns
-    # We look for base features + generated interaction columns
+    # 1. Identify Feature Columns
     base_feats = ['Pre_GSHH_NDVI', 'Height_Clean', 'Height_Log']
-    
     interaction_cols = [c for c in df.columns if any(x in c for x in ['+', '-', '*', '_div_'])]
+    feature_cols = base_feats + sorted(interaction_cols)
     
-    # Combine and sort for nicer plotting
-    features = base_feats + sorted(interaction_cols)
-    
-    # Filter for columns that exist
+    # Filter for validity
     valid_targets = [t for t in targets if t in df.columns]
-    valid_features = [f for f in features if f in df.columns]
+    valid_features = [f for f in feature_cols if f in df.columns]
     
-    # Calculate Correlation Matrix
-    # We want rows=Targets, cols=Features
-    corr_matrix = pd.DataFrame(index=valid_targets, columns=valid_features)
+    if not valid_targets or not valid_features:
+        print("No valid targets or features found.")
+        return
+
+    print(f"Features: {len(valid_features)}")
+    print(f"Targets: {len(valid_targets)}")
+    
+    # 2. Build Rows (Derived Targets)
+    # We will build a list of dictionaries to construct the correlation DataFrame
+    epsilon = 1e-6
+    correlation_rows = []
+    row_labels = []
     
     for target in valid_targets:
-        for feature in valid_features:
-            # Drop NaNs for valid correlation
-            valid_mask = df[[target, feature]].notna().all(axis=1)
-            if valid_mask.sum() > 10:
-                r, _ = stats.pearsonr(df.loc[valid_mask, target], df.loc[valid_mask, feature])
-                corr_matrix.loc[target, feature] = r
+        t_series = df[target]
+        
+        # Also include the Raw Target itself
+        corrs = []
+        for feat in valid_features:
+            f_series = df[feat]
+            # Correlation(Target, Feature)
+            # Standard Pearson
+            valid = t_series.notna() & f_series.notna()
+            if valid.sum() > 10:
+                r, _ = stats.pearsonr(t_series[valid], f_series[valid])
             else:
-                corr_matrix.loc[target, feature] = np.nan
+                r = np.nan
+            corrs.append(r)
+        
+        correlation_rows.append(corrs)
+        row_labels.append(f"RAW: {target}")
+        
+        # Now interactions
+        for inter_feat in valid_features:
+            f_inter = df[inter_feat]
+            
+            # Operations
+            ops = {
+                f'{target} * {inter_feat}': t_series * f_inter,
+                f'{target} / {inter_feat}': t_series / (f_inter + epsilon),
+                f'{target} + {inter_feat}': t_series + f_inter,
+                f'{target} - {inter_feat}': t_series - f_inter
+            }
+            
+            for op_name, derived_series in ops.items():
+                # Correlate this derived series against ALL features
+                row_corrs = []
+                for feat in valid_features:
+                    f_col = df[feat]
+                    valid = derived_series.notna() & f_col.notna()
+                    
+                    if valid.sum() > 10:
+                        r, _ = stats.pearsonr(derived_series[valid], f_col[valid])
+                    else:
+                        r = np.nan
+                    row_corrs.append(r)
                 
-    corr_matrix = corr_matrix.astype(float)
+                correlation_rows.append(row_corrs)
+                row_labels.append(op_name)
+
+    # 3. Create DataFrame
+    corr_df = pd.DataFrame(correlation_rows, index=row_labels, columns=valid_features)
+    corr_df = corr_df.astype(float)
     
-    # Plotting - Adjust size dynamically based on number of features
-    width = max(12, len(valid_features) * 0.8)
-    height = max(8, len(valid_targets) * 1.5)
+    # 4. Plotting
+    # This matrix is HUGE. Rows ~ 5 * (1 + 11*4) = 225. Cols = 11.
+    n_rows = len(corr_df)
+    n_cols = len(corr_df.columns)
     
-    plt.figure(figsize=(width, height))
-    sns.heatmap(corr_matrix, annot=True, cmap='RdBu_r', center=0, fmt='.2f', 
-                linewidths=1, linecolor='white')
+    # Dynamic Height: 0.25 inch per row is comfortable
+    fig_height = max(10, n_rows * 0.25)
+    fig_width = max(12, n_cols * 1.2)
     
-    plt.title('Feature Interaction Correlations\nTargets vs (NDVI, Height, Interactions)', fontsize=15, fontweight='bold', pad=20)
-    plt.xlabel('Features & Interactions', fontsize=12, fontweight='bold')
-    plt.ylabel('Biomass Targets', fontsize=12, fontweight='bold')
+    print(f"Plotting heatmap ({n_rows} rows x {n_cols} cols). Output size: {fig_width:.1f}x{fig_height:.1f} inches.")
+    
+    plt.figure(figsize=(fig_width, fig_height))
+    
+    # Use a diverging colormap to show +/- 1 correlations clearly
+    sns.heatmap(corr_df, annot=True, cmap='RdBu_r', center=0, fmt='.2f', 
+                linewidths=0.5, linecolor='white', cbar_kws={"shrink": 0.5})
+    
+    plt.title('Giant Interaction Correlation Heatmap\n(Rows: Derived Targets, Cols: Features)', fontsize=16, fontweight='bold', pad=20)
+    plt.xlabel('Base & Interaction Features', fontsize=14, fontweight='bold')
+    plt.ylabel('Derived Targets (Target <op> Feature)', fontsize=14, fontweight='bold')
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     
-    save_path = OUTPUT_DIR / 'interaction_correlation_heatmap.png'
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    save_path = OUTPUT_DIR / 'giant_interaction_heatmap.png'
+    # Increase limit for large images correlation map
+    import matplotlib as mpl
+    mpl.rcParams['agg.path.chunksize'] = 10000
+    
+    try:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight') # Lower DPI for huge image to save memory
+        print(f"   [OK] Heatmap saved to {save_path}")
+    except Exception as e:
+        print(f"   [Error] Failed to save image: {e}")
+    
     plt.close()
     
-    print(f"   [OK] Heatmap saved to {save_path}")
-    
     # Save CSV
-    corr_matrix.to_csv(OUTPUT_DIR / 'interaction_correlation_matrix.csv')
-    print("   [OK] Correlation matrix saved to CSV")
+    corr_df.to_csv(OUTPUT_DIR / 'giant_interaction_matrix.csv')
+    print("   [OK] Matrix saved to CSV")
 
 def main():
     print("="*60)

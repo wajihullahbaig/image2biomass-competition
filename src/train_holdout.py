@@ -24,7 +24,7 @@ from configs import (
     EARLY_STOP_PATIENCE, N_FOLDS,
     BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
     OFFICIAL_WEIGHTS, config_str,
-    CORE_SPECIES, USE_TTA
+    CORE_SPECIES, USE_TTA, PREDICT_DEAD_RATIO
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
@@ -96,18 +96,44 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
             biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
             
             # Loss Components
-            loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
+            if PREDICT_DEAD_RATIO:
+                # 1. Prepare Targets: Use Ratio for Dead (Index 1)
+                # aux_feats[:, 1] is log1p(Height_cm)
+                height_cm = torch.expm1(aux_feats[:, 1]) + 1e-6
+                target_dead_g = targets_g[:, 1]
+                target_dead_ratio = target_dead_g / height_cm
+                
+                # Construct composite targets_log
+                # Clone to avoid mutating original if needed elsewhere (though targets_log is local)
+                targets_log_model = targets_log.clone()
+                targets_log_model[:, 1] = torch.log1p(target_dead_ratio)
+                
+                loss_bio = criterion_reg(biomass_out, targets_log_model) * BIOMASS_FEAT_WEIGHT
+                
+                # 2. Physics Loss: Need predictions in GRAMS
+                pred_c = torch.expm1(biomass_out[:, 0])
+                
+                # Recover Dead Grams from Ratio Prediction
+                pred_d_ratio = torch.expm1(biomass_out[:, 1])
+                pred_d = pred_d_ratio * height_cm
+                
+                pred_g = torch.expm1(biomass_out[:, 2])
+                derived_total = torch.log1p(pred_c + pred_d + pred_g + 1e-8)
+                loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * PHYSICS_FEAT_WEIGHT
+                
+            else:
+                # Standard Logic
+                loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
+                pred_c = torch.expm1(biomass_out[:, 0])
+                pred_d = torch.expm1(biomass_out[:, 1])
+                pred_g = torch.expm1(biomass_out[:, 2])
+                derived_total = torch.log1p(pred_c + pred_d + pred_g + 1e-8)
+                loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * PHYSICS_FEAT_WEIGHT
+
             loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
             loss_sp = criterion_ce(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
             loss_tax = criterion_ce(taxonomy_logits, taxonomy_targets) * TAXONOMY_FEAT_WEIGHT
             
-            # Physics Loss
-            pred_c = torch.expm1(biomass_out[:, 0])
-            pred_d = torch.expm1(biomass_out[:, 1])
-            pred_g = torch.expm1(biomass_out[:, 2])
-            derived_total = torch.log1p(pred_c + pred_d + pred_g + 1e-8)
-            loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * PHYSICS_FEAT_WEIGHT
-
             total_loss = loss_bio + loss_aux + loss_sp + loss_tax + loss_phy
         
         scaler.scale(total_loss).backward()
@@ -124,17 +150,47 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
 
         # Component Losses
         with torch.no_grad():
-            metrics['train_loss_c'] += nn.functional.mse_loss(biomass_out[:, 0], targets_log[:, 0]).item() * B
-            metrics['train_loss_d'] += nn.functional.mse_loss(biomass_out[:, 1], targets_log[:, 1]).item() * B
-            metrics['train_loss_g'] += nn.functional.mse_loss(biomass_out[:, 2], targets_log[:, 2]).item() * B
-            metrics['train_loss_t'] += nn.functional.mse_loss(biomass_out[:, 3], targets_log[:, 3]).item() * B
-            metrics['train_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 4], targets_log[:, 4]).item() * B
+            if PREDICT_DEAD_RATIO:
+                # For logging, compare in GRAM space (roughly) or original Log Gram Space
+                # We'll use the original targets_log (which is log grams) for consistency
+                # So we must convert model output for 'dead' back to log grams
+                
+                height_cm = torch.expm1(aux_feats[:, 1]) + 1e-6
+                pred_d_ratio = torch.expm1(biomass_out[:, 1])
+                pred_d_grams = pred_d_ratio * height_cm
+                pred_d_log_grams = torch.log1p(pred_d_grams)
+                
+                # Careful: biomass_out[:, 1] is log_ratio here. 
+                # We construct a "pred_log_grams_vec" for metrics
+                pred_log_grams_vec = biomass_out.clone()
+                pred_log_grams_vec[:, 1] = pred_d_log_grams
+                
+                # Note: This changes the meaning of metrics['train_loss_d'] to be "Error in Grams (Log space)"
+                # which is consistent with previous behavior.
+                metrics['train_loss_c'] += nn.functional.mse_loss(biomass_out[:, 0], targets_log[:, 0]).item() * B
+                metrics['train_loss_d'] += nn.functional.mse_loss(pred_d_log_grams, targets_log[:, 1]).item() * B
+                metrics['train_loss_g'] += nn.functional.mse_loss(biomass_out[:, 2], targets_log[:, 2]).item() * B
+                metrics['train_loss_t'] += nn.functional.mse_loss(biomass_out[:, 3], targets_log[:, 3]).item() * B
+                metrics['train_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 4], targets_log[:, 4]).item() * B
+                
+                # Store the CONVERTED predictions for global R2 calculation
+                all_preds_log.append(pred_log_grams_vec.detach().cpu())
+
+            else:
+                metrics['train_loss_c'] += nn.functional.mse_loss(biomass_out[:, 0], targets_log[:, 0]).item() * B
+                metrics['train_loss_d'] += nn.functional.mse_loss(biomass_out[:, 1], targets_log[:, 1]).item() * B
+                metrics['train_loss_g'] += nn.functional.mse_loss(biomass_out[:, 2], targets_log[:, 2]).item() * B
+                metrics['train_loss_t'] += nn.functional.mse_loss(biomass_out[:, 3], targets_log[:, 3]).item() * B
+                metrics['train_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 4], targets_log[:, 4]).item() * B
+                
+                all_preds_log.append(biomass_out.detach().cpu())
             
             metrics['train_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
             metrics['train_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
             metrics['train_loss_int']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
         
-        all_preds_log.append(biomass_out.detach().cpu())
+        # NOTE: all_preds_log accumulation moved inside the conditional block above to handle conversion
+        # all_preds_log.append(biomass_out.detach().cpu())
         all_targets_g.append(targets_g.detach().cpu())
         
         pbar.set_postfix({'L': total_loss.item()})
@@ -214,16 +270,38 @@ def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', u
             biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
         
         
-        loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
+        
+        if PREDICT_DEAD_RATIO:
+            # 1. Targets Setup
+            height_cm = torch.expm1(aux_feats[:, 1]) + 1e-6
+            target_dead_g = targets_g[:, 1]
+            target_dead_ratio = target_dead_g / height_cm
+            
+            targets_log_model = targets_log.clone()
+            targets_log_model[:, 1] = torch.log1p(target_dead_ratio)
+            
+            loss_bio = criterion_reg(biomass_out, targets_log_model) * BIOMASS_FEAT_WEIGHT
+            
+            # 2. Recover for Physics & Metrics
+            pred_c = torch.expm1(biomass_out[:, 0])
+            pred_d_ratio = torch.expm1(biomass_out[:, 1])
+            pred_d = pred_d_ratio * height_cm
+            pred_g = torch.expm1(biomass_out[:, 2])
+            
+            derived_total = torch.log1p(pred_c + pred_d + pred_g + 1e-8)
+            loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * PHYSICS_FEAT_WEIGHT
+            
+        else:
+            loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
+            pred_c = torch.expm1(biomass_out[:, 0])
+            pred_d = torch.expm1(biomass_out[:, 1])
+            pred_g = torch.expm1(biomass_out[:, 2])
+            derived_total = torch.log1p(pred_c + pred_d + pred_g + 1e-8)
+            loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * PHYSICS_FEAT_WEIGHT
+
         loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
         loss_sp = criterion_ce(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
         loss_tax = criterion_ce(taxonomy_logits, taxonomy_targets) * TAXONOMY_FEAT_WEIGHT
-        
-        pred_c = torch.expm1(biomass_out[:, 0])
-        pred_d = torch.expm1(biomass_out[:, 1])
-        pred_g = torch.expm1(biomass_out[:, 2])
-        derived_total = torch.log1p(pred_c + pred_d + pred_g + 1e-8)
-        loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * PHYSICS_FEAT_WEIGHT
 
         total_loss = loss_bio + loss_aux + loss_sp + loss_tax + loss_phy
         
@@ -236,17 +314,35 @@ def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', u
         metrics[f'{prefix}_phy'] += loss_phy.item() * B
         
         # Component Losses
-        metrics[f'{prefix}_loss_c'] += nn.functional.mse_loss(biomass_out[:, 0], targets_log[:, 0]).item() * B
-        metrics[f'{prefix}_loss_d'] += nn.functional.mse_loss(biomass_out[:, 1], targets_log[:, 1]).item() * B
-        metrics[f'{prefix}_loss_g'] += nn.functional.mse_loss(biomass_out[:, 2], targets_log[:, 2]).item() * B
-        metrics[f'{prefix}_loss_t'] += nn.functional.mse_loss(biomass_out[:, 3], targets_log[:, 3]).item() * B
-        metrics[f'{prefix}_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 4], targets_log[:, 4]).item() * B
+        # Component Losses
+        if PREDICT_DEAD_RATIO:
+            # Reconstruct Log-Grams for Metrics
+            pred_d_log_grams = torch.log1p(pred_d)
+            pred_log_grams_vec = biomass_out.clone()
+            pred_log_grams_vec[:, 1] = pred_d_log_grams
+            
+            metrics[f'{prefix}_loss_c'] += nn.functional.mse_loss(biomass_out[:, 0], targets_log[:, 0]).item() * B
+            metrics[f'{prefix}_loss_d'] += nn.functional.mse_loss(pred_d_log_grams, targets_log[:, 1]).item() * B
+            metrics[f'{prefix}_loss_g'] += nn.functional.mse_loss(biomass_out[:, 2], targets_log[:, 2]).item() * B
+            metrics[f'{prefix}_loss_t'] += nn.functional.mse_loss(biomass_out[:, 3], targets_log[:, 3]).item() * B
+            metrics[f'{prefix}_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 4], targets_log[:, 4]).item() * B
+            
+            all_preds_log.append(pred_log_grams_vec.cpu())
+            
+        else:
+            metrics[f'{prefix}_loss_c'] += nn.functional.mse_loss(biomass_out[:, 0], targets_log[:, 0]).item() * B
+            metrics[f'{prefix}_loss_d'] += nn.functional.mse_loss(biomass_out[:, 1], targets_log[:, 1]).item() * B
+            metrics[f'{prefix}_loss_g'] += nn.functional.mse_loss(biomass_out[:, 2], targets_log[:, 2]).item() * B
+            metrics[f'{prefix}_loss_t'] += nn.functional.mse_loss(biomass_out[:, 3], targets_log[:, 3]).item() * B
+            metrics[f'{prefix}_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 4], targets_log[:, 4]).item() * B
+
+            all_preds_log.append(biomass_out.cpu())
         
         metrics[f'{prefix}_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
         metrics[f'{prefix}_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
         metrics[f'{prefix}_loss_int']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
 
-        all_preds_log.append(biomass_out.cpu())
+        # all_preds_log.append(biomass_out.cpu())
         all_targets_g.append(targets_g.cpu())
         
     N = len(loader.dataset)
@@ -320,7 +416,7 @@ def main():
         if n_samples == 0: continue
             
         # 15% Holdout
-        holdout_cnt = int(n_samples * 0.15)
+        holdout_cnt = int(n_samples * 0.20)
         # Ensure at least 1 sample in dev if possible, or handle tiny classes
         if n_samples < 2:
             # Too small to split effectively, keep in dev to avoid empty train sets
@@ -390,7 +486,7 @@ def main():
         
         # Datasets
         train_ds_base = BiomassDataset(train_df, transform=train_transform)        
-        train_ds = MixupDataset(train_ds_base, prob=0.10, alpha=0.4)        
+        train_ds = MixupDataset(train_ds_base, prob=0.05, alpha=0.4)        
         val_ds = BiomassDataset(val_df, transform=val_transform)
         
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)

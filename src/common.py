@@ -51,7 +51,7 @@ def rotate_crop_resize(img: torch.Tensor, angle: float) -> torch.Tensor:
     """
     # Handle inputs
     if isinstance(img, torch.Tensor):
-        _, h, w = img.shape
+        h, w = img.shape[-2:]
     else:
         # Fallback for PIL (though we usually pass Tensors in TTA)
         w, h = img.size

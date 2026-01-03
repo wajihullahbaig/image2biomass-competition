@@ -13,6 +13,9 @@ from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
 import json
+import math
+import torchvision.transforms.functional as TF
+from torchvision import transforms
 
 # Local Imports
 import configs
@@ -21,7 +24,7 @@ from configs import (
     EARLY_STOP_PATIENCE, N_FOLDS,
     BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
     OFFICIAL_WEIGHTS, config_str,
-    CORE_SPECIES
+    CORE_SPECIES, USE_TTA
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
@@ -34,6 +37,62 @@ from log_and_plots import (
 )
 from dataset import BiomassDataset, MixupDataset
 from models import BiomassUnifiedModel
+
+# -----------------------------------------------------------------------------
+# TTA HELPERS
+# -----------------------------------------------------------------------------
+def get_largest_rotated_crop(h, w, angle):
+    angle_rad = math.radians(abs(angle))
+    sin_a = math.sin(angle_rad)
+    cos_a = math.cos(angle_rad)
+    scale = 1.0 / (cos_a + sin_a)
+    return int(h * scale), int(w * scale)
+
+def rotate_crop_resize(img, angle):
+    """
+    Handles both Single Image (C, H, W) and Batch (B, C, H, W).
+    """
+    h, w = img.shape[-2:]
+    img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR)
+    
+    ch, cw = get_largest_rotated_crop(h, w, angle)
+    img_crop = TF.center_crop(img_rot, [ch, cw])
+    
+    if img.ndim == 3:
+        img_resized = torch.nn.functional.interpolate(
+            img_crop.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False
+        ).squeeze(0)
+    else:
+        img_resized = torch.nn.functional.interpolate(
+            img_crop, size=(h, w), mode='bilinear', align_corners=False
+        )
+        
+    return img_resized
+
+
+from torchvision.utils import save_image
+from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+
+def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
+    """
+    Save TTA-augmented images for visualization.
+    Only saves for the first batch of the first epoch of the first fold.
+    """
+    if fold != 0 or epoch != 0 or batch_idx > 0:
+        return
+        
+    save_dir = os.path.join(session_dir, 'tta_debug', f'fold{fold+1}_ep{epoch}')
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Denormalize
+    mean = torch.tensor(IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
+    std = torch.tensor(IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
+    images_denorm = images * std + mean
+    images_denorm = torch.clamp(images_denorm, 0, 1)
+    
+    save_path = os.path.join(save_dir, f'batch{batch_idx}_{view_name}.png')
+    save_image(images_denorm, save_path, nrow=4, padding=2)
+
 
 # -----------------------------------------------------------------------------
 # TRAINING ENGINE
@@ -119,12 +178,20 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
     return final_metrics
 
 @torch.no_grad()
-def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val'):
+def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', use_tta=False, epoch=0, fold=0, session_dir=None):
     model.eval()
     metrics = defaultdict(float)
     all_preds_log, all_targets_g = [], []
     
-    for batch in loader:
+    tta_views = [
+        ('identity', lambda x: x),
+        ('hflip', lambda x: torch.flip(x, [3])),
+        ('vflip', lambda x: torch.flip(x, [2])),
+        ('rot5', lambda x: rotate_crop_resize(x, 5)),
+        ('rot-5', lambda x: rotate_crop_resize(x, -5)),
+    ]
+    
+    for batch_idx, batch in enumerate(loader):
         images = batch['image'].to(device)
         targets_g = batch['targets'].to(device)
         targets_log = torch.log1p(targets_g)
@@ -132,7 +199,48 @@ def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val'):
         species_vec = batch['species_id'].to(device)
         taxonomy_targets = get_taxonomy_targets(species_vec)
         
-        biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
+        if use_tta:
+            # Accumulate TTA outputs in Linear Space
+            batch_preds_linear = []
+            batch_aux_list = []
+            
+            accum_bio_linear = 0
+            accum_aux = 0
+            accum_sp_probs = 0
+            accum_tax_probs = 0
+            
+            for view_name, transform_fn in tta_views:
+                img_aug = transform_fn(images)
+                
+                # Save TTA Debug Images (Fold 0, Batch 0, Epoch 0 only)
+                if session_dir is not None:
+                     save_tta_images(img_aug, view_name, batch_idx, fold, epoch, session_dir)
+                
+                bio_out, aux_out, sp_logits, tax_logits = model(img_aug)
+                
+                # Convert to linear/prob space for averaging
+                accum_bio_linear += torch.expm1(bio_out)
+                accum_aux += aux_out
+                accum_sp_probs += torch.softmax(sp_logits, dim=1)
+                accum_tax_probs += torch.softmax(tax_logits, dim=1)
+            
+            # Average
+            avg_bio_linear = accum_bio_linear / len(tta_views)
+            avg_aux = accum_aux / len(tta_views)
+            avg_sp_probs = accum_sp_probs / len(tta_views)
+            avg_tax_probs = accum_tax_probs / len(tta_views)
+            
+            # Reconstruct (Pseudo) Logits/Log-Space for Loss
+            # Note: This is an approximation for Loss, but perfect for R2
+            biomass_out = torch.log1p(avg_bio_linear)
+            aux_out = avg_aux 
+            # For CrossEntropy, we need logits. Log(Average Prob) is a decent proxy.
+            species_logits = torch.log(avg_sp_probs + 1e-9)
+            taxonomy_logits = torch.log(avg_tax_probs + 1e-9)
+            
+        else:
+            biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
+        
         
         loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
         loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
@@ -291,6 +399,9 @@ def main():
         
         history = defaultdict(list)        
         best_fold_score = -float('inf')
+        best_fold_v_r2 = -float('inf')
+        best_fold_h_r2 = -float('inf')
+        best_fold_epoch = -1
         patience_counter = 0
         
         for epoch in range(EPOCHS):
@@ -300,11 +411,15 @@ def main():
                 DEVICE, epoch, session_dir=session_dir
             )
             
-            # 2. Validate (Temporal Slice)
-            val_metrics = validate(model, val_loader, criterion_reg, criterion_ce, DEVICE, prefix='val')
+            # 2. Validate (Fold Validation - NO TTA for Speed)
+            val_metrics = validate(model, val_loader, criterion_reg, criterion_ce, DEVICE, prefix='val', use_tta=False)
             
-            # 3. Holdout (Global Future)
-            hol_metrics = validate(model, holdout_loader, criterion_reg, criterion_ce, DEVICE, prefix='holdout')
+            # 3. Holdout (Global Future - YES TTA if Configured)
+            hol_metrics = validate(
+                model, holdout_loader, criterion_reg, criterion_ce, DEVICE, 
+                prefix='holdout', use_tta=USE_TTA,
+                epoch=epoch, fold=fold, session_dir=session_dir
+            )
             
             # 4. Custom Score (Minimizing the Weakest Link)
             v_r2 = val_metrics['val_r2']
@@ -333,6 +448,10 @@ def main():
             # Save Best
             if current_score > best_fold_score:
                 best_fold_score = current_score
+                best_fold_v_r2 = v_r2
+                best_fold_h_r2 = h_r2
+                best_fold_epoch = epoch
+                
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold+1}.pth"))
                 logger.info(f"*** Fold {fold+1} Best Score: {best_fold_score:.4f} (V:{v_r2:.3f}, H:{h_r2:.3f}) ***")
                 patience_counter = 0
@@ -348,6 +467,13 @@ def main():
                 break
                 
             plot_training_history(history, fold+1, session_dir)
+        
+        # End of Fold Summary
+        logger.info(f"\n[Fold {fold+1} COMPLETE]")
+        logger.info(f"Best Score: {best_fold_score:.4f} (at Epoch {best_fold_epoch})")
+        logger.info(f"Best Val R2: {best_fold_v_r2:.4f}")
+        logger.info(f"Best Holdout R2: {best_fold_h_r2:.4f}")
+        logger.info("-" * 40)
 
 if __name__ == '__main__':    
     main()

@@ -43,7 +43,7 @@ def compute_interaction_features(df):
     # 1. Clean Height & Log Space
     # Ensure no zero/negative heights for log
     df['Height_Clean'] = df['Height_Ave_cm'].clip(lower=0.1)
-    df['Height_Log'] = np.log1p(df['Height_Clean'])
+    df['Height_Clean_Log'] = np.log1p(df['Height_Clean'])
     
     # Systematic Interaction Generation
     epsilon = 1e-6
@@ -51,7 +51,7 @@ def compute_interaction_features(df):
     base_features = {
         'NDVI': df['Pre_GSHH_NDVI'],
         'H': df['Height_Clean'],
-        'logH': df['Height_Log']
+        'logH': df['Height_Clean_Log']
     }
     
     # 2. Generate Pairs: (NDVI, H) and (NDVI, logH)
@@ -77,6 +77,56 @@ def compute_interaction_features(df):
 
     return df
 
+def print_best_derived_targets(corr_df):
+    """
+    Analyzes the correlation matrix to find the best derived form for each target.
+    Prints a sorted list of top correlations for each target.
+    """
+    print("\n" + "="*80)
+    print("BEST DERIVED TARGETS SUMMARY (Top 5 per Target)")
+    print("="*80)
+    
+    base_targets = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    
+    for base in base_targets:
+        print(f"\nTarget: {base}")
+        print(f"{'-'*60}")
+        print(f"{'Correlation':<12} | {'Derived Form':<40} | {'Predictor'}")
+        print(f"{'-'*60}")
+        
+        # Filter rows for this base target
+        relevant_rows = [idx for idx in corr_df.index if base in idx]
+        if not relevant_rows:
+            continue
+            
+        sub_df = corr_df.loc[relevant_rows]
+        
+        # Flatten and sort
+        correlations = []
+        for derived_t in sub_df.index:
+            for feat in sub_df.columns:
+                val = sub_df.loc[derived_t, feat]
+                if pd.notna(val):
+                    correlations.append({
+                        'derived': derived_t,
+                        'predictor': feat,
+                        'corr': val,
+                        'abs_corr': abs(val)
+                    })
+        
+        # Sort by absolute correlation desc
+        correlations.sort(key=lambda x: x['abs_corr'], reverse=True)
+        
+        # Save to CSV
+        results_df = pd.DataFrame(correlations)
+        csv_name = f'best_derived_{base}.csv'
+        results_df.to_csv(OUTPUT_DIR / csv_name, index=False)
+        print(f"   [Saved] {csv_name}")
+        
+        # Print top 5
+        for item in correlations[:5]:
+            print(f"{item['corr']:<12.4f} | {item['derived']:<40} | {item['predictor']}")
+
 def plot_giant_heatmap(df):
     """
     Plot a giant heatmap looking for correlations between:
@@ -88,7 +138,7 @@ def plot_giant_heatmap(df):
     targets = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     
     # 1. Identify Feature Columns
-    base_feats = ['Pre_GSHH_NDVI', 'Height_Clean', 'Height_Log']
+    base_feats = ['Pre_GSHH_NDVI', 'Height_Clean', 'Height_Clean_Log']
     interaction_cols = [c for c in df.columns if any(x in c for x in ['+', '-', '*', '_div_'])]
     feature_cols = base_feats + sorted(interaction_cols)
     
@@ -159,6 +209,9 @@ def plot_giant_heatmap(df):
     # 3. Create DataFrame
     corr_df = pd.DataFrame(correlation_rows, index=row_labels, columns=valid_features)
     corr_df = corr_df.astype(float)
+    
+    # 3b. Print Top Correlation Summary
+    print_best_derived_targets(corr_df)
     
     # 4. Plotting
     # This matrix is HUGE. Rows ~ 5 * (1 + 11*4) = 225. Cols = 11.

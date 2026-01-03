@@ -298,22 +298,59 @@ def main():
     
     # -------------------------------------------------------------------------
     # DATA SPLIT Strategy: 
-    # 1. Global Holdout (Last 15% of Data) - STRICT FUTURE
-    # 2. Development Set (First 85% of Data) - CV (Stratified Group?) 
-    #    User requested StratifiedKFold on Dev Set.
+    # 1. Global Holdout (Last 15% of EACH SPECIES) - Stratified Temporal
+    # 2. Development Set (First 85% of EACH SPECIES)
+    #    User requested StratifiedKFold on Dev Set (FunctionalGroup).
     # -------------------------------------------------------------------------
-    total_len = len(df)
-    holdout_split_idx = int(total_len * 0.85)
     
-    dev_df = df.iloc[:holdout_split_idx].copy()
-    global_holdout_df = df.iloc[holdout_split_idx:].copy()
+    dev_dfs = []
+    holdout_dfs = []
+    
+    # Iterate over unique raw species strings (e.g. 'ryegrass', 'clover', 'mix_x_y')
+    # This ensures even rare mixtures are stratified if possible.
+    # We use the raw 'Species' column which is already lowercased in load_data.
+    unique_species = df['Species'].unique()
+    
+    for sp in unique_species:
+        # Get all samples for this species, ensure sorted by date
+        sp_df = df[df['Species'] == sp].sort_values('Sampling_Date')
+        
+        n_samples = len(sp_df)
+        if n_samples == 0: continue
+            
+        # 15% Holdout
+        holdout_cnt = int(n_samples * 0.15)
+        # Ensure at least 1 sample in dev if possible, or handle tiny classes
+        if n_samples < 2:
+            # Too small to split effectively, keep in dev to avoid empty train sets
+            dev_dfs.append(sp_df)
+            continue
+            
+        split_idx = n_samples - holdout_cnt
+        
+        # Temporal Split per Species
+        sp_dev = sp_df.iloc[:split_idx]
+        sp_hol = sp_df.iloc[split_idx:]
+        
+        dev_dfs.append(sp_dev)
+        holdout_dfs.append(sp_hol)
+        
+    # Re-assemble and Re-sort by Date to maintain global temporal flow
+    dev_df = pd.concat(dev_dfs).sort_values('Sampling_Date').reset_index(drop=True)
+    global_holdout_df = pd.concat(holdout_dfs).sort_values('Sampling_Date').reset_index(drop=True)
+    
+    total_len = len(df)
     
     logger.info(f"\n{'='*40}")
-    logger.info(f"STRATIFIED HOLDOUT CONFIGURATION")
+    logger.info(f"SPECIES-STRATIFIED TEMPORAL HOLDOUT")
     logger.info(f"{'='*40}")
     logger.info(f"Total Samples: {total_len}")
-    logger.info(f"Development Set (85%): {len(dev_df)} ({dev_df['Sampling_Date'].min().date()} -> {dev_df['Sampling_Date'].max().date()})")
-    logger.info(f"Global Holdout (15%): {len(global_holdout_df)} ({global_holdout_df['Sampling_Date'].min().date()} -> {global_holdout_df['Sampling_Date'].max().date()})")
+    logger.info(f"Development Set: {len(dev_df)} ({dev_df['Sampling_Date'].min().date()} -> {dev_df['Sampling_Date'].max().date()})")
+    logger.info(f"Global Holdout:  {len(global_holdout_df)} ({global_holdout_df['Sampling_Date'].min().date()} -> {global_holdout_df['Sampling_Date'].max().date()})")
+    
+    # Log Species distribution in Holdout to confirm stratification
+    hol_sp_counts = global_holdout_df['Species'].value_counts().head(5)
+    logger.info(f"Top 5 Species in Holdout:\n{hol_sp_counts}")
     
     global_holdout_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
     

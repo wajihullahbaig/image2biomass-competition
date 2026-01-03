@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/stratified_holdout_20260103_133902'
+MODEL_DIR = './logs/stratified_holdout_20260103_163931'
 
 # DEFAULTS
 IMAGE_HEIGHT = 320

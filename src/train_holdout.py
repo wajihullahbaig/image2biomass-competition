@@ -306,7 +306,7 @@ def main():
             # 3. Holdout (Global Future)
             hol_metrics = validate(model, holdout_loader, criterion_reg, criterion_ce, DEVICE, prefix='holdout')
             
-            # 4. Custom Score
+            # 4. Custom Score (Minimizing the Weakest Link)
             v_r2 = val_metrics['val_r2']
             h_r2 = hol_metrics['holdout_r2']
             
@@ -314,12 +314,13 @@ def main():
             consistency_penalty = 0.5 * abs(v_r2 - h_r2)
             current_score = avg_r2 - consistency_penalty
             
+            score_gap = abs(v_r2 - h_r2)
             # Scheduler Step (Maximize Score)
             scheduler.step(current_score)
             
             log_msg = (f"Ep {epoch} | T_Loss: {train_metrics['train_loss']:.3f} | V_Loss: {val_metrics['val_loss']:.3f} | H_Loss: {hol_metrics['holdout_loss']:.3f} | "
                        f"T_R2: {train_metrics['train_r2']:.4f} | V_R2: {v_r2:.4f} | H_R2: {h_r2:.4f} | "
-                       f"Score: {current_score:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}")
+                       f"Score: {current_score:.4f} | Gap: {score_gap:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}")
             logger.info(log_msg)
             
             # Store History

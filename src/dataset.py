@@ -28,7 +28,7 @@ class BiomassDataset(Dataset):
         self.df = df.reset_index(drop=True)
         self.transform = transform
         self.target_cols = target_cols or ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-        self.aux_cols = aux_cols or ['Pre_GSHH_NDVI', 'Height_Ave_cm_log', 'Interaction_Mul']
+        self.aux_cols = aux_cols or ['Pre_GSHH_NDVI', 'Height_Ave_cm_log', 'Interaction_Mul', 'Height_Clean', 'Height_Clean_Log']
         self.is_test = is_test
         
         self.core_species = CORE_SPECIES

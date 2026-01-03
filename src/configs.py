@@ -9,11 +9,11 @@ IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 # We use 224x512 to respect the ~2.33 aspect ratio of the 70cm x 30cm quadrats.
 # This prevents "squashing" the grass which destroys density features.
 IMAGE_HEIGHT = 320
-IMAGE_WIDTH = 768
+IMAGE_WIDTH = 512
 # Training Hyperparameters
 BATCH_SIZE = 32 
 LEARNING_RATE = 1e-4 
-N_FOLDS = 3
+N_FOLDS = 2
 EPOCHS = 40 
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
@@ -35,7 +35,7 @@ AUX_FEAT_WEIGHT = 15.0
 SPECIES_FEAT_WEIGHT = 20.0
 TAXONOMY_FEAT_WEIGHT = 25.0
 PHYSICS_FEAT_WEIGHT = 30.0 
-PREDICT_DEAD_RATIO = True 
+PHYSICS_FEAT_WEIGHT = 30.0 
 
 # ====================== TAXONOMY & SPECIES ======================
 CORE_SPECIES = [

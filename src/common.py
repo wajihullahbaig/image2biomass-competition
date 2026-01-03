@@ -266,6 +266,9 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     wide['Pre_GSHH_NDVI'] = pd.to_numeric(wide['Pre_GSHH_NDVI'], errors='coerce').fillna(0)
     wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'])
     wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
+    wide['Height_Clean'] = wide['Height_Ave_cm'].clip(lower=0.1)
+    wide['Height_Clean_Log'] = np.log1p(wide['Height_Clean'])
+    
     
     wide = wide.rename(columns={'clean_id': 'sample_id'})
     

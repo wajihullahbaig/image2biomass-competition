@@ -309,11 +309,12 @@ def main():
     # Iterate over unique raw species strings (e.g. 'ryegrass', 'clover', 'mix_x_y')
     # This ensures even rare mixtures are stratified if possible.
     # We use the raw 'Species' column which is already lowercased in load_data.
-    unique_species = df['Species'].unique()
+    stratification_col = 'FunctionalGroup'
+    unique_species = df[stratification_col].unique()
     
     for sp in unique_species:
         # Get all samples for this species, ensure sorted by date
-        sp_df = df[df['Species'] == sp].sort_values('Sampling_Date')
+        sp_df = df[df[stratification_col] == sp].sort_values('Sampling_Date')
         
         n_samples = len(sp_df)
         if n_samples == 0: continue
@@ -349,7 +350,7 @@ def main():
     logger.info(f"Global Holdout:  {len(global_holdout_df)} ({global_holdout_df['Sampling_Date'].min().date()} -> {global_holdout_df['Sampling_Date'].max().date()})")
     
     # Log Species distribution in Holdout to confirm stratification
-    hol_sp_counts = global_holdout_df['Species'].value_counts().head(5)
+    hol_sp_counts = global_holdout_df[stratification_col].value_counts().head(5)
     logger.info(f"Top 5 Species in Holdout:\n{hol_sp_counts}")
     
     global_holdout_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)

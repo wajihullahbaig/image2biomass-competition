@@ -14,7 +14,7 @@ def verify():
     # Setup basic logging to catch load_data info
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("Verify")
-    
+    stratification_col = 'FunctionalGroup'
     print("Loading data...")
     try:
         df = load_data(logger)
@@ -31,11 +31,11 @@ def verify():
     dev_dfs = []
     holdout_dfs = []
     
-    unique_species = df['Species'].unique()
+    unique_species = df[stratification_col].unique()
     
     for sp in unique_species:
         # Get all samples for this species, ensure sorted by date
-        sp_df = df[df['Species'] == sp].sort_values('Sampling_Date')
+        sp_df = df[df[stratification_col] == sp].sort_values('Sampling_Date')
         
         n_samples = len(sp_df)
         if n_samples == 0: continue
@@ -66,13 +66,13 @@ def verify():
     print(f"Holdout Set:     {len(global_holdout_df)} ({(len(global_holdout_df)/len(df))*100:.1f}%)")
     
     print("\nPer-Species Temporal Check:")
-    print(f"{'Species':<25} | {'Dev Count':<10} | {'Hol Count':<10} | {'Dev Max Date':<12} | {'Hol Min Date':<12} | {'Status':<10}")
+    print(f"{'FunctionalGroup':<25} | {'Dev Count':<10} | {'Hol Count':<10} | {'Dev Max Date':<12} | {'Hol Min Date':<12} | {'Status':<10}")
     print("-" * 90)
     
     violations = 0
     for sp in unique_species:
-        d = dev_df[dev_df['Species'] == sp]
-        h = global_holdout_df[global_holdout_df['Species'] == sp]
+        d = dev_df[dev_df[stratification_col] == sp]
+        h = global_holdout_df[global_holdout_df[stratification_col] == sp]
         
         d_cnt = len(d)
         h_cnt = len(h)

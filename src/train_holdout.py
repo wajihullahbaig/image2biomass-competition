@@ -324,9 +324,12 @@ def main():
     #    User requested StratifiedKFold on Dev Set (FunctionalGroup).
     # -------------------------------------------------------------------------
     
-    # 1. Smart Temporal Split
-    stratification_col = 'StratifyKey'
-    dev_df, global_holdout_df = smart_temporal_split(df, stratify_col=stratification_col)
+    # 1. Strict Temporal Tail (No Leakage)
+    # We take the first 85% of time for development and the last 15% for global holdout.
+    # This ensures that Global Holdout is ALWAYS the future relative to any training fold.
+    split_idx = int(len(df) * 0.85)
+    dev_df = df.iloc[:split_idx].copy()
+    global_holdout_df = df.iloc[split_idx:].copy()
     
     # 2. Re-assemble and Re-sort by Date to maintain global temporal flow
     dev_df = dev_df.sort_values('Sampling_Date').reset_index(drop=True)
@@ -341,8 +344,8 @@ def main():
     logger.info(f"Development Set: {len(dev_df)} ({dev_df['Sampling_Date'].min().date()} -> {dev_df['Sampling_Date'].max().date()})")
     logger.info(f"Global Holdout:  {len(global_holdout_df)} ({global_holdout_df['Sampling_Date'].min().date()} -> {global_holdout_df['Sampling_Date'].max().date()})")
     
-    # Log Species distribution in Holdout to confirm stratification
-    hol_sp_counts = global_holdout_df[stratification_col].value_counts().head(5)
+    # Log Species distribution in Holdout to confirm coverage
+    hol_sp_counts = global_holdout_df['StratifyKey'].value_counts().head(5)
     logger.info(f"Top 5 Species in Holdout:\n{hol_sp_counts}")
     
     global_holdout_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)

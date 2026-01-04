@@ -13,7 +13,6 @@ from torchvision import transforms
 import torchvision.transforms.functional as TF
 from torchvision.utils import save_image
 import math
-import matplotlib.pyplot as plt
 
 import random
 random.seed(42)
@@ -28,40 +27,22 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/stratified_holdout_20260103_163931'
+MODEL_DIR = './logs/stratified_holdout_20260104_104702'
 
 # DEFAULTS
-IMAGE_HEIGHT = 320
-IMAGE_WIDTH = 768
+IMAGE_HEIGHT = 256
+IMAGE_WIDTH = 512
 FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 
 # FEATURE FLAGS
 SAVE_IMAGES = True          # Save augmented images for debugging
 MAX_IMAGES_TO_SAVE = 10     # Only save first N batches to avoid disk fill
 
 # ====================== SHARPENING TRANSFORM ======================
-class SubtleSharpen:
-    """
-    Applies subtle sharpening to grass images.
-    For inference, we use probability=1.0 for consistency.
-    """
-    def __init__(self, probability=1.0, radius=1, percent=50, threshold=3):
-        self.probability = probability
-        self.radius = radius
-        self.percent = percent
-        self.threshold = threshold
-    
-    def __call__(self, img):
-        if np.random.random() < self.probability:
-            return img.filter(ImageFilter.UnsharpMask(
-                radius=self.radius,
-                percent=self.percent,
-                threshold=self.threshold
-            ))
-        return img
+
 
 # ====================== IMAGE SAVING HELPER ======================
 def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images_routed', max_to_save=MAX_IMAGES_TO_SAVE):
@@ -85,7 +66,7 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
 
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name, num_aux=3, num_species=14, pretrained=False):
+    def __init__(self, backbone_name, num_aux=4, num_species=14, pretrained=False):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
@@ -97,8 +78,10 @@ class BiomassUnifiedModel(nn.Module):
             self.backbone_dim = feats.shape[1]
             
         self.global_pool = nn.AdaptiveAvgPool2d(1)
-            
-        # 2. Auxiliary Head
+        
+        # Backbone Freezing Logic (Not used in inference but kept for consistency)
+        
+        # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
             nn.LayerNorm(128),
@@ -107,7 +90,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(128, num_aux)
         )
         
-        # 3. Species Head (Fine-grained)
+        # 3. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
             nn.LayerNorm(64),
@@ -124,10 +107,11 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.6),
             nn.Linear(16, 3) 
         )
-              
-        # 5. Biomass Head
-        input_dim = self.backbone_dim + num_aux + num_species + 3
         
+        # 5. Biomass Head
+        # Inputs: Backbone + Aux(3) + Species(14) + Taxonomy(3)
+        input_dim = self.backbone_dim + num_aux + num_species + 3
+                
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
             nn.LayerNorm(FUSION_DIM),
@@ -135,8 +119,20 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.4),
             nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(128, 4)
+            nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
         )
+
+        self._init_biomass_head()
+        
+    def _init_biomass_head(self):
+        last_layer = self.biomass_head[-1]
+        nn.init.xavier_uniform_(last_layer.weight)
+        with torch.no_grad():
+            last_layer.bias.fill_(0)
+            last_layer.bias[0] = 3.0 # ~20g
+            last_layer.bias[1] = 2.0 # ~7g
+            last_layer.bias[2] = 3.0 # ~20g
+            last_layer.bias[3] = 4.0 # ~54g
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -215,7 +211,7 @@ def no_tta(model, image, batch_idx=0):
         lin_bio = torch.expm1(log_bio)
         
         # PHYSICS BARRIER: Clamp to realistic range
-        lin_bio = torch.clamp(lin_bio, min=0.0, max=3000.0)
+        lin_bio = torch.clamp(lin_bio, min=0.0, max=2500.0)
         
         # Convert back to Log Space
         log_bio_clamped = torch.log1p(lin_bio)
@@ -260,7 +256,7 @@ def apply_tta(model, image, batch_idx=0):
             
             # PHYSICS BARRIER: Clamp to realistic range
             # Anything above 2000g (2kg) in a 70cm plot is unrealistic
-            lin_bio = torch.clamp(lin_bio, min=0.0, max=2000.0)
+            lin_bio = torch.clamp(lin_bio, min=0.0, max=2500.0)
             
             all_biomass_linear.append(lin_bio)
             
@@ -310,17 +306,17 @@ class TestDataset(Dataset):
 
 def get_inference_transforms(h, w):
     """
-    Inference transforms with subtle sharpening.
+    Inference transforms matches validation (Resize + Norm).
+    No sharpening to ensure consistency with trained weights.
     """
     return transforms.Compose([
         transforms.Resize((h, w)),        
-        SubtleSharpen(probability=1.0, radius=1, percent=50, threshold=3),        
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
     ])
 
-def load_model(fold_path, device, num_species, backbone_name):
-    model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species).to(device)
+def load_model(fold_path, device, num_species, backbone_name, num_aux=4):
+    model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species, num_aux=num_aux).to(device)
     state_dict = torch.load(fold_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
@@ -332,7 +328,7 @@ def run_inference(USE_TTA=True):
     print("ROUTED INFERENCE (Weighted Ensemble)")
     print(f"MODE: {'TTA ENABLED' if USE_TTA else 'NO TTA'}")
     print(f"IMAGE SAVING: {'ENABLED' if SAVE_IMAGES else 'DISABLED'}")
-    print(f"SHARPENING: ENABLED (radius=1, percent=50)")
+    print(f"SHARPENING: DISABLED")
     print("="*80 + "\n")
     
     # 1. LOAD TEST DATA
@@ -392,7 +388,7 @@ def run_inference(USE_TTA=True):
     for i, model_path in enumerate(found_folds):
         fold_name = os.path.basename(model_path)
         print(f"-> Processing {fold_name}...")
-        model = load_model(model_path, DEVICE, num_species, backbone_name)
+        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=4)
         
         fold_preds = []
         fold_confs = []

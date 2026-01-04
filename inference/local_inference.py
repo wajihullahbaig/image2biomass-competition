@@ -27,11 +27,11 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/stratified_holdout_20260103_163931'
+MODEL_DIR = './logs/stratified_holdout_20260104_104702'
 
 # DEFAULTS
-IMAGE_HEIGHT = 320
-IMAGE_WIDTH = 768
+IMAGE_HEIGHT = 256
+IMAGE_WIDTH = 512
 FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -42,37 +42,12 @@ SAVE_IMAGES = True  # Set to False to disable image saving
 MAX_IMAGES_TO_SAVE = 10  # Only save first N batches
 
 # ====================== SHARPENING TRANSFORM ======================
-class SubtleSharpen:
-    """
-    Applies subtle sharpening to grass images.
-    For inference, we typically use probability=1.0 for consistency.
-    """
-    def __init__(self, probability=1.0, radius=1, percent=50, threshold=3):
-        self.probability = probability
-        self.radius = radius
-        self.percent = percent
-        self.threshold = threshold
-    
-    def __call__(self, img):
-        if np.random.random() < self.probability:
-            return img.filter(ImageFilter.UnsharpMask(
-                radius=self.radius,
-                percent=self.percent,
-                threshold=self.threshold
-            ))
-        return img
+
 
 # ====================== IMAGE SAVING HELPER ======================
-def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images', max_to_save=MAX_IMAGES_TO_SAVE):
+def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images_routed', max_to_save=MAX_IMAGES_TO_SAVE):
     """
     Save TTA-augmented images for visualization.
-    
-    Args:
-        images: Tensor of shape (B, C, H, W) - already normalized
-        batch_idx: Current batch index
-        view_name: Name of the TTA view (e.g., 'identity', 'hflip', 'rot5')
-        output_dir: Directory to save images
-        max_to_save: Only save first N batches
     """
     if not SAVE_IMAGES or batch_idx >= max_to_save:
         return
@@ -88,10 +63,9 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
     # Save as grid
     save_path = os.path.join(output_dir, f'batch_{batch_idx:03d}_{view_name}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
-
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name, num_aux=3, num_species=14, pretrained=False):
+    def __init__(self, backbone_name, num_aux=4, num_species=14, pretrained=False):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
@@ -103,8 +77,10 @@ class BiomassUnifiedModel(nn.Module):
             self.backbone_dim = feats.shape[1]
             
         self.global_pool = nn.AdaptiveAvgPool2d(1)
-            
-        # 2. Auxiliary Head
+        
+        # Backbone Freezing Logic (Not used in inference but kept for consistency)
+        
+        # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),
             nn.LayerNorm(128),
@@ -113,7 +89,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(128, num_aux)
         )
         
-        # 3. Species Head (Fine-grained)
+        # 3. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
             nn.LayerNorm(64),
@@ -130,10 +106,11 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.6),
             nn.Linear(16, 3) 
         )
-                
-        # 5. Biomass Head
-        input_dim = self.backbone_dim + num_aux + num_species + 3
         
+        # 5. Biomass Head
+        # Inputs: Backbone + Aux(3) + Species(14) + Taxonomy(3)
+        input_dim = self.backbone_dim + num_aux + num_species + 3
+                
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
             nn.LayerNorm(FUSION_DIM),
@@ -141,8 +118,20 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.4),
             nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(128, 4)
+            nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
         )
+
+        self._init_biomass_head()
+        
+    def _init_biomass_head(self):
+        last_layer = self.biomass_head[-1]
+        nn.init.xavier_uniform_(last_layer.weight)
+        with torch.no_grad():
+            last_layer.bias.fill_(0)
+            last_layer.bias[0] = 3.0 # ~20g
+            last_layer.bias[1] = 2.0 # ~7g
+            last_layer.bias[2] = 3.0 # ~20g
+            last_layer.bias[3] = 4.0 # ~54g
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -205,28 +194,43 @@ def rotate_crop_resize(img, angle):
 
 def no_tta(model, image, batch_idx=0):
     """
-    Performs inference WITHOUT test-time augmentation.
+    Single pass inference with PHYSICS BARRIER.
+    Safe against exploding gradients or hallucinations.
     """
     model.eval()
     
-    # Save original images
+    # Save original image
     if SAVE_IMAGES:
         save_tta_images(image, batch_idx, 'original')
     
     with torch.no_grad():
-        log_bio, _, _, _ = model(image)
-        bio_linear = torch.expm1(log_bio)
-    
-    return bio_linear
+        log_bio, aux, sp, tax_logits = model(image)
+        
+        # Convert to Linear Grams
+        lin_bio = torch.expm1(log_bio)
+        
+        # PHYSICS BARRIER: Clamp to realistic range
+        lin_bio = torch.clamp(lin_bio, min=0.0, max=2500.0)
+        
+        # Convert back to Log Space
+        log_bio_clamped = torch.log1p(lin_bio)
+        
+        # Extract Confidence
+        probs = torch.softmax(tax_logits, dim=1)
+        conf, _ = torch.max(probs, dim=1)
+        
+    return log_bio_clamped, conf
 
 def apply_tta(model, image, batch_idx=0):
     """
-    Applies 5-view TTA with image saving.
+    TTA with HARD PHYSICS BARRIER and image saving.
     """
     model.eval()
-    all_biomass_linear = []
     
-    # Define TTA views with names for saving
+    all_biomass_linear = [] 
+    all_confidences = []
+
+    # TTA Policy: 5 Views with names for saving
     tta_views = [
         ('identity', lambda x: x),
         ('hflip', lambda x: torch.flip(x, [3])),
@@ -239,18 +243,38 @@ def apply_tta(model, image, batch_idx=0):
         with torch.no_grad():
             img_aug = transform_fn(image)
             
-            # Save augmented images
+            # Save augmented view
             if SAVE_IMAGES:
                 save_tta_images(img_aug, batch_idx, view_name)
             
-            log_bio, _, _, _ = model(img_aug)
-            all_biomass_linear.append(torch.expm1(log_bio))
+            # Forward Pass
+            log_bio, aux, sp, tax_logits = model(img_aug) 
+            
+            # Convert to Linear Grams
+            lin_bio = torch.expm1(log_bio)
+            
+            # PHYSICS BARRIER: Clamp to realistic range
+            # Anything above 2000g (2kg) in a 70cm plot is unrealistic
+            lin_bio = torch.clamp(lin_bio, min=0.0, max=2500.0)
+            
+            all_biomass_linear.append(lin_bio)
+            
+            # Extract Confidence
+            probs = torch.softmax(tax_logits, dim=1) 
+            conf, _ = torch.max(probs, dim=1) 
+            all_confidences.append(conf)
 
-    # Average in Linear Space
+    # AGGREGATION
+    # Average Biomass (Linear Space)
     avg_bio_linear = torch.stack(all_biomass_linear).mean(0)
     
-    return avg_bio_linear
-
+    # Average Confidence
+    avg_confidence = torch.stack(all_confidences).mean(0)
+            
+    # Convert to Log for consistency with return signature
+    avg_bio_log = torch.log1p(avg_bio_linear)
+            
+    return avg_bio_log, avg_confidence
 # ====================== DATASET ======================
 class TestDataset(Dataset):
     def __init__(self, df, img_dir, transform=None):
@@ -280,17 +304,16 @@ class TestDataset(Dataset):
 
 def get_inference_transforms(h, w):
     """
-    Inference transforms WITH subtle sharpening and rotation augmentation.
+    Inference transforms matches validation (Resize + Norm).
     """
     return transforms.Compose([
         transforms.Resize((h, w)),        
-        SubtleSharpen(probability=1.0, radius=1, percent=50, threshold=3),       
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
     ])
 
-def load_model(fold_path, device, num_species, backbone_name):
-    model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species).to(device)
+def load_model(fold_path, device, num_species, backbone_name, num_aux=4):
+    model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species, num_aux=num_aux).to(device)
     state_dict = torch.load(fold_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
@@ -363,7 +386,7 @@ def run_inference(use_tta=False):
     
     for i, model_path in enumerate(found_folds):
         print(f"-> Model {i+1}/{len(found_folds)}: {os.path.basename(model_path)}")
-        model = load_model(model_path, DEVICE, num_species, backbone_name)
+        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=4)
         
         fold_preds = []
         with torch.no_grad():
@@ -372,9 +395,13 @@ def run_inference(use_tta=False):
                 
                 # Choose TTA or no TTA
                 if use_tta:
-                    preds_linear = apply_tta(model, imgs, batch_idx)
+                    # Returns: (log_pred, conf)
+                    log_pred, _ = apply_tta(model, imgs, batch_idx)
                 else:
-                    preds_linear = no_tta(model, imgs, batch_idx)
+                    log_pred, _ = no_tta(model, imgs, batch_idx)
+                
+                # Convert back to Linear Grams for averaging
+                preds_linear = torch.expm1(log_pred)
                 
                 fold_preds.append(preds_linear.cpu().numpy())
                 if i == 0: 

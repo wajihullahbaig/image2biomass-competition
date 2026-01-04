@@ -7,15 +7,6 @@ from configs import (
     IMAGE_HEIGHT, IMAGE_WIDTH, FREEZE_BACKBONE
 )
 
-
-import torch
-import torch.nn as nn
-import timm
-from configs import (
-    BACKBONE, FUSION_DIM, BACKBONE_FREEZE_FRACTION, 
-    IMAGE_HEIGHT, IMAGE_WIDTH, FREEZE_BACKBONE
-)
-
 class BiomassUnifiedModel(nn.Module):
     def __init__(self, backbone_name=BACKBONE, num_aux=3, num_species=14, pretrained=True):
         super(BiomassUnifiedModel, self).__init__()

@@ -8,7 +8,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, TimeSeriesSplit
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -24,7 +24,9 @@ from configs import (
     EARLY_STOP_PATIENCE, N_FOLDS,
     BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
     OFFICIAL_WEIGHTS, config_str,
-    CORE_SPECIES, USE_TTA
+    CORE_SPECIES, USE_TTA,
+    MIN_TRAIN_SAMPLES, BACKBONE_FREEZE_THRESHOLD,
+    FREEZE_BACKBONE, BACKBONE_FREEZE_FRACTION
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
@@ -335,28 +337,40 @@ def main():
     holdout_ds = BiomassDataset(global_holdout_df, transform=val_transform)
     holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
     
-    # STRATIFIED SPLIT on Development Set
-    # Ensures every fold sees every State + FunctionalGroup combination
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=False)
-    split_key = dev_df['StratifyKey'] 
+    # TIME-SERIES SPLIT on Development Set (Expanding Window)
+    # Ensures zero temporal leakage while maintaining global order
+    tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
     best_overall_score = -float('inf')
     
-    for fold, (train_idx, val_idx) in enumerate(skf.split(dev_df, split_key)):
-        logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
-        
+    # StratifyKey is used for upsampling within each fold window
+    stratification_col = 'StratifyKey'
+    
+    for fold, (train_idx, val_idx) in enumerate(tscv.split(dev_df)):
         train_df = dev_df.iloc[train_idx].copy()
         val_df = dev_df.iloc[val_idx].copy()
+        
+       
+        logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
         
         # Log Temporal Ranges
         logger.info(f"Train: {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)})")
         logger.info(f"Val:   {val_df['Sampling_Date'].min().date()} -> {val_df['Sampling_Date'].max().date()} (n={len(val_df)})")
         
         log_fold_details(logger, train_df, val_df) 
-        
+
+        # Knowledge Anchor - Skip folds that are too small for stable training
+        if len(train_df) < MIN_TRAIN_SAMPLES:
+            logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({len(train_df)} < {MIN_TRAIN_SAMPLES})")
+            continue
+ 
         # Upsampling (Train Only)
         #train_df = upsample_minority_classes(train_df, target_col='FunctionalGroup')
+        # Detailed logging of upsampling
+        logger.info("\nUpsampling Train Set")
+        logger.info(f"Before Upsampling: {train_df['StratifyKey'].value_counts()}")
         train_df = smart_upsample(train_df, stratify_col='StratifyKey')
+        logger.info(f"After Upsampling: {train_df['StratifyKey'].value_counts()}")
         
         # Save Fold Splits
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
@@ -364,7 +378,7 @@ def main():
         
         # Datasets
         train_ds_base = BiomassDataset(train_df, transform=train_transform)        
-        train_ds = MixupDataset(train_ds_base, prob=0.10, alpha=0.4)        
+        train_ds = MixupDataset(train_ds_base, prob=0.10, alpha=0.25)        
         val_ds = BiomassDataset(val_df, transform=val_transform)
         
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
@@ -373,7 +387,27 @@ def main():
         # Model
         dummy_ds = BiomassDataset(train_df[:1], transform=train_transform)
         n_aux = dummy_ds[0]['aux_feats'].shape[0]        
+        # 2. Dynamic Backbone Protection
+        # We only unfreeze the backbone once we have enough diverse data
         model = BiomassUnifiedModel(num_species=len(species_list), num_aux=n_aux).to(DEVICE)       
+        
+        if len(train_df) < BACKBONE_FREEZE_THRESHOLD:
+            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n={len(train_df)} < {BACKBONE_FREEZE_THRESHOLD})")
+            # Freeze all parameters in the backbone for absolute safety
+            for param in model.backbone.parameters():
+                param.requires_grad = False
+        else:
+            # Data is sufficient - we now apply the intended strategy from configs.py
+            if FREEZE_BACKBONE:
+                logger.info(f"STRATEGY: Applying Partial Freeze ({BACKBONE_FREEZE_FRACTION*100}%) for Fold {fold+1}")
+                all_params = list(model.backbone.parameters())
+                freeze_until = int(len(all_params) * BACKBONE_FREEZE_FRACTION)
+                for i, p in enumerate(all_params):
+                    p.requires_grad = (i >= freeze_until)
+            else:
+                logger.info(f"STRATEGY: Full Backbone Unfreeze for Fold {fold+1}")
+                for param in model.backbone.parameters():
+                    param.requires_grad = True
         
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, threshold=1e-3, min_lr=1e-6)

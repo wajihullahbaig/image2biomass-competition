@@ -324,12 +324,10 @@ def main():
     #    User requested StratifiedKFold on Dev Set (FunctionalGroup).
     # -------------------------------------------------------------------------
     
-    # 1. Strict Temporal Tail (No Leakage)
-    # We take the first 85% of time for development and the last 15% for global holdout.
-    # This ensures that Global Holdout is ALWAYS the future relative to any training fold.
-    split_idx = int(len(df) * 0.85)
-    dev_df = df.iloc[:split_idx].copy()
-    global_holdout_df = df.iloc[split_idx:].copy()
+    # 1. Smart Temporal Split (No Leakage + Group Representation)
+    # This uses the new hybrid logic in common.py to find a safe global date.
+    stratification_col = 'StratifyKey'
+    dev_df, global_holdout_df = smart_temporal_split(df, stratify_col=stratification_col)
     
     # 2. Re-assemble and Re-sort by Date to maintain global temporal flow
     dev_df = dev_df.sort_values('Sampling_Date').reset_index(drop=True)

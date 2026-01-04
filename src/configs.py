@@ -15,9 +15,9 @@ IMAGE_HEIGHT = 256
 IMAGE_WIDTH = 512
 
 # Training Hyperparameters
-BATCH_SIZE = 32 
-LEARNING_RATE = 2e-4 
-N_FOLDS = 5
+BATCH_SIZE = 16 
+LEARNING_RATE = 1e-4 
+N_FOLDS = 3
 EPOCHS = 40 
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
@@ -41,11 +41,11 @@ USE_TTA = True
 FUSION_DIM = 256
 # Balanced Weights: Scaling optimized for Gram-scale Log-space
 # Reduced Biomass weight slightly to prevent exploding gradients during unfreeze
-BIOMASS_FEAT_WEIGHT = 80.0 
-AUX_FEAT_WEIGHT = 20.0
-SPECIES_FEAT_WEIGHT = 30.0
-TAXONOMY_FEAT_WEIGHT = 30.0
-PHYSICS_FEAT_WEIGHT = 40.0 
+BIOMASS_FEAT_WEIGHT = 50.0 
+AUX_FEAT_WEIGHT = 15.0
+SPECIES_FEAT_WEIGHT = 20.0
+TAXONOMY_FEAT_WEIGHT = 25.0
+PHYSICS_FEAT_WEIGHT = 30.0 
 
 # ====================== SPECIES & TAXONOMY ======================
 CORE_SPECIES = [

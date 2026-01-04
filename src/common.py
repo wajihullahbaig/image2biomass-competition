@@ -327,52 +327,39 @@ def add_species_columns(df):
 
 def smart_temporal_split(df, stratify_col='StratifyKey'):
     """
-    Adaptive temporal split that preserves sparse regional groups.
-    
-    Strategy:
-    - Groups ≤4 samples: Keep ALL in dev (critical for learning, e.g., WA_Clover)
-    - Groups 5-9: Take last 1-2 for holdout (minimal but valid)
-    - Groups ≥10: Take last 20% for holdout (proper temporal validation)
-    
-    Why this works:
-    - WA samples (8 total) stay in training → model learns regional patterns
-    - Large groups get proper temporal holdout → prevents overfitting
-    - Balances data preservation with validation integrity
+    Hybrid Temporal Split:
+    1. STRICT: evaluation_dates > training_dates (Zero leakage across all groups).
+    2. SMART: Adjusts the split cutoff to ensure every group is represented in training.
     """
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
+    n_total = len(df)
     
-    dev_dfs = []
-    holdout_dfs = []
+    # Configuration
+    holdout_pct = SPLIT_CONFIG.get('holdout_pct', 0.15)
+    target_split_idx = int(n_total * (1.0 - holdout_pct))
     
-    holdout_pct = SPLIT_CONFIG['holdout_pct']
-    sparse_threshold = SPLIT_CONFIG['sparse_threshold']
-    small_threshold = SPLIT_CONFIG['small_threshold']
+    # 1. Representation Guard: Every group must have at least one sample in dev
+    # We find the MIN date for each group, and then the MAX of those.
+    # This date is the absolute earliest we can split to include everyone.
+    min_dates_per_group = df.groupby(stratify_col)['Sampling_Date'].min()
+    safe_cutoff_date = min_dates_per_group.max()
     
-    for key in df[stratify_col].unique():
-        key_df = df[df[stratify_col] == key].sort_values('Sampling_Date')
-        n = len(key_df)
+    # 2. Target Cutoff: The date at our target split percentile
+    target_cutoff_date = df.iloc[target_split_idx]['Sampling_Date']
+    
+    # Final Choice: Use the later of the two dates to satisfy both constraints
+    final_cutoff = max(target_cutoff_date, safe_cutoff_date)
+    
+    # Split
+    dev_df = df[df['Sampling_Date'] <= final_cutoff].copy()
+    holdout_df = df[df['Sampling_Date'] > final_cutoff].copy()
+    
+    # Emergency fallback: If holdout is empty (rare), take the last 5% regardless
+    if len(holdout_df) == 0:
+        split_idx = int(len(df) * 0.95)
+        dev_df = df.iloc[:split_idx].copy()
+        holdout_df = df.iloc[split_idx:].copy()
         
-        if n <= sparse_threshold:
-            # Too sparse: Keep all in dev (e.g., WA_Clover with 8 samples)
-            dev_dfs.append(key_df)
-            
-        elif n <= small_threshold:
-            # Small group: Take 1-2 for holdout
-            holdout_cnt = max(1, int(n * 0.15))
-            split_idx = n - holdout_cnt
-            dev_dfs.append(key_df.iloc[:split_idx])
-            holdout_dfs.append(key_df.iloc[split_idx:])
-            
-        else:
-            # Normal: Last 20% as holdout
-            holdout_cnt = int(n * holdout_pct)
-            split_idx = n - holdout_cnt
-            dev_dfs.append(key_df.iloc[:split_idx])
-            holdout_dfs.append(key_df.iloc[split_idx:])
-    
-    dev_df = pd.concat(dev_dfs, ignore_index=True)
-    holdout_df = pd.concat(holdout_dfs, ignore_index=True) if holdout_dfs else pd.DataFrame()
-    
     return dev_df, holdout_df
 
 # -----------------------------------------------------------------------------

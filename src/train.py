@@ -110,7 +110,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
             # aux_feats mapping: 0:NDVI, 1:Height, 2:Interaction
             metrics['train_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
             metrics['train_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
-            metrics['train_loss_int']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
+            metrics['train_loss_int_mul']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
+            metrics['train_loss_int_add']  += nn.functional.mse_loss(aux_out[:, 3], aux_feats[:, 3]).item() * B
 
         
         # Store for R2 (Detach to save memory)
@@ -180,7 +181,8 @@ def validate(model, loader, criterion_reg, criterion_ce, device):
         # Aux Components
         metrics['val_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
         metrics['val_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
-        metrics['val_loss_int']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
+        metrics['val_loss_int_mul']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
+        metrics['val_loss_int_add']  += nn.functional.mse_loss(aux_out[:, 3], aux_feats[:, 3]).item() * B
         
         all_preds_log.append(biomass_out.cpu())
         all_targets_g.append(targets_g.cpu())

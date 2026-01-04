@@ -109,11 +109,12 @@ def plot_training_history(history, fold, session_dir):
     plt.close()
 
     # 2. Aux Components
-    fig_a, axes_a = plt.subplots(1, 3, figsize=(18, 5))
+    fig_a, axes_a = plt.subplots(1, 4, figsize=(24, 5))
     axes_a = axes_a.flatten()
     
     aux_map = [
-        ('loss_ndvi', 'NDVI Loss'), ('loss_h', 'Height Loss'), ('loss_int', 'Interaction Loss')
+        ('loss_ndvi', 'NDVI Loss'), ('loss_h', 'Height Loss'), 
+        ('loss_int_mul', 'Interaction Mul Loss'), ('loss_int_add', 'Interaction Add Loss')
     ]
     
     for idx, (suffix, title) in enumerate(aux_map):

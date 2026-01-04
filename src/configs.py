@@ -8,12 +8,12 @@ IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 # We use 224x512 to respect the ~2.33 aspect ratio of the 70cm x 30cm quadrats.
 # This prevents "squashing" the grass which destroys density features.
-IMAGE_HEIGHT = 320
+IMAGE_HEIGHT = 256
 IMAGE_WIDTH = 512
 # Training Hyperparameters
 BATCH_SIZE = 32 
 LEARNING_RATE = 1e-4 
-N_FOLDS = 2
+N_FOLDS = 5
 EPOCHS = 40 
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20

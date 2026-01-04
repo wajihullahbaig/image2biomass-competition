@@ -16,7 +16,7 @@ IMAGE_WIDTH = 512
 
 # Training Hyperparameters
 BATCH_SIZE = 32 
-LEARNING_RATE = 1e-4 
+LEARNING_RATE = 2e-4 
 N_FOLDS = 5
 EPOCHS = 40 
 WEIGHT_DECAY = 0.05

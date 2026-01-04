@@ -101,7 +101,8 @@ class BiomassUnifiedModel(nn.Module):
         
         # Biomass Prediction
         log_preds_raw = self.biomass_head(combined_feats)
-        log_preds = nn.functional.softplus(log_preds_raw)
+        # softplus ensures positivity, clamp ensures we don't blow up expm1 (6.0 ~= 400g)
+        log_preds = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, 6.0)
         
         log_c = log_preds[:, 0:1]
         log_d = log_preds[:, 1:2]

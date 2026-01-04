@@ -15,15 +15,17 @@ IMAGE_HEIGHT = 256
 IMAGE_WIDTH = 512
 
 # Training Hyperparameters
-BATCH_SIZE = 32 
+BATCH_SIZE = 16 
 LEARNING_RATE = 1e-4 
 N_FOLDS = 5
 EPOCHS = 40 
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/efficientnetv2_rw_s.ra2_in1k'  
-MIN_TRAIN_SAMPLES = 80 # Skip folds with too little data
-BACKBONE_FREEZE_THRESHOLD = 120 # Keep backbone frozen until we have this many samples
+MIN_TRAIN_SAMPLES = 120 # Skip folds with too little data
+BACKBONE_FREEZE_THRESHOLD = 180 # Keep backbone frozen until we have this many samples
+MAX_GRAD_NORM = 1.0 # Gradient clipping
+BACKBONE_LR_FACTOR = 0.1 # Fine-tune backbone at 1/10th of head LR
 
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -38,7 +40,8 @@ USE_TTA = True
 # --- Model Settings ---
 FUSION_DIM = 256
 # Balanced Weights: Scaling optimized for Gram-scale Log-space
-BIOMASS_FEAT_WEIGHT = 80.0 
+# Reduced Biomass weight slightly to prevent exploding gradients during unfreeze
+BIOMASS_FEAT_WEIGHT = 50.0 
 AUX_FEAT_WEIGHT = 15.0
 SPECIES_FEAT_WEIGHT = 20.0
 TAXONOMY_FEAT_WEIGHT = 25.0
@@ -121,16 +124,16 @@ def get_stratify_key(row):
 # ===== UPSAMPLING STRATEGY =====
 UPSAMPLE_CONFIG = {
     'enabled': True,
-    'target_min_samples': 15,  # Minimum samples per stratify key
+    'target_min_samples': 20,  # Minimum samples per stratify key
     'method': 'smart',  # Only upsample sparse groups
     'noise_scale': 0.05,  # Add 5% noise to biomass targets (prevents overfitting)
 }
 
 # ===== TEMPORAL SPLIT STRATEGY =====
 SPLIT_CONFIG = {
-    'holdout_pct': 0.20,  # 20% holdout for groups with enough data
+    'holdout_pct': 0.15,  # 20% holdout for groups with enough data
     'sparse_threshold': 4,  # Groups ≤4 samples: keep all in training
-    'small_threshold': 9,   # Groups 5-9: take 1-2 for holdout
+    'small_threshold': 6,   # Groups 5-9: take 1-2 for holdout
 }
 
 # return a string representation of the configuration
@@ -161,6 +164,8 @@ def config_str():
         f"UPSAMPLE: Enabled={UPSAMPLE_CONFIG['enabled']} (target={UPSAMPLE_CONFIG['target_min_samples']})",
         f"SPLIT: Adaptive temporal (sparse_threshold={SPLIT_CONFIG['sparse_threshold']})",
         f"MIN_TRAIN_SAMPLES: {MIN_TRAIN_SAMPLES}",
-        f"BACKBONE_FREEZE_THRESHOLD: {BACKBONE_FREEZE_THRESHOLD}"
+        f"BACKBONE_FREEZE_THRESHOLD: {BACKBONE_FREEZE_THRESHOLD}",
+        f"MAX_GRAD_NORM: {MAX_GRAD_NORM}",
+        f"BACKBONE_LR_FACTOR: {BACKBONE_LR_FACTOR}"
     ]
     return "\n".join(config_items)

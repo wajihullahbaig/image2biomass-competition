@@ -418,7 +418,9 @@ def smart_upsample(train_df, stratify_col='StratifyKey',date_col='Sampling_Date'
             biomass_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
             for col in biomass_cols:
                 if col in upsampled.columns:
-                    noise = np.random.normal(0, upsampled[col].std() * noise_scale, size=len(upsampled))
+                    s = upsampled[col].std()
+                    if np.isnan(s) or s == 0: s = upsampled[col].mean() # Fallback if std is undefined
+                    noise = np.random.normal(0, s * noise_scale, size=len(upsampled))
                     upsampled[col] = np.maximum(0, upsampled[col] + noise)  # Ensure non-negative
             
             # Mark samples

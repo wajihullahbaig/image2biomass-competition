@@ -26,7 +26,8 @@ from configs import (
     OFFICIAL_WEIGHTS, config_str,
     CORE_SPECIES, USE_TTA,
     MIN_TRAIN_SAMPLES, BACKBONE_FREEZE_THRESHOLD,
-    FREEZE_BACKBONE, BACKBONE_FREEZE_FRACTION
+    FREEZE_BACKBONE, BACKBONE_FREEZE_FRACTION,
+    MAX_GRAD_NORM, BACKBONE_LR_FACTOR
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
@@ -83,6 +84,12 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
     for batch_idx, batch in enumerate(pbar):
         images = batch['image'].to(device)
         targets_g = batch['targets'].to(device)
+        
+        # Proactive Safety Check
+        if torch.isnan(targets_g).any():
+            logger.warning(f"NaN TARGETS DETECTED in batch {batch_idx}. Skipping.")
+            continue
+
         targets_log = torch.log1p(targets_g)
         aux_feats = batch['aux_feats'].to(device)
         species_vec = batch['species_id'].to(device)
@@ -112,7 +119,17 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
 
             total_loss = loss_bio + loss_aux + loss_sp + loss_tax + loss_phy
         
+        if torch.isnan(total_loss):
+            logger.warning(f"!!! NAN TOTAL LOSS at Ep {epoch}, batch {batch_idx} !!!")
+            optimizer.zero_grad() # Clear any bad gradients
+            continue
+
         scaler.scale(total_loss).backward()
+        
+        # Gradient Clipping (Unscale first)
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+        
         scaler.step(optimizer)
         scaler.update()
         
@@ -349,6 +366,7 @@ def main():
     for fold, (train_idx, val_idx) in enumerate(tscv.split(dev_df)):
         train_df = dev_df.iloc[train_idx].copy()
         val_df = dev_df.iloc[val_idx].copy()
+        raw_n_train = len(train_df)
         
        
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
@@ -360,8 +378,8 @@ def main():
         log_fold_details(logger, train_df, val_df) 
 
         # Knowledge Anchor - Skip folds that are too small for stable training
-        if len(train_df) < MIN_TRAIN_SAMPLES:
-            logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({len(train_df)} < {MIN_TRAIN_SAMPLES})")
+        if raw_n_train < MIN_TRAIN_SAMPLES:
+            logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({raw_n_train} < {MIN_TRAIN_SAMPLES})")
             continue
  
         # Upsampling (Train Only)
@@ -388,18 +406,18 @@ def main():
         dummy_ds = BiomassDataset(train_df[:1], transform=train_transform)
         n_aux = dummy_ds[0]['aux_feats'].shape[0]        
         # 2. Dynamic Backbone Protection
-        # We only unfreeze the backbone once we have enough diverse data
+        # CRITICAL: We use raw_n_train (pre-upsampling) so we don't trick ourselves with duplicates
         model = BiomassUnifiedModel(num_species=len(species_list), num_aux=n_aux).to(DEVICE)       
         
-        if len(train_df) < BACKBONE_FREEZE_THRESHOLD:
-            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n={len(train_df)} < {BACKBONE_FREEZE_THRESHOLD})")
+        if raw_n_train < BACKBONE_FREEZE_THRESHOLD:
+            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (raw_n={raw_n_train} < {BACKBONE_FREEZE_THRESHOLD})")
             # Freeze all parameters in the backbone for absolute safety
             for param in model.backbone.parameters():
                 param.requires_grad = False
         else:
             # Data is sufficient - we now apply the intended strategy from configs.py
             if FREEZE_BACKBONE:
-                logger.info(f"STRATEGY: Applying Partial Freeze ({BACKBONE_FREEZE_FRACTION*100}%) for Fold {fold+1}")
+                logger.info(f"STRATEGY: Applying Partial Freeze ({BACKBONE_FREEZE_FRACTION*100}%) for Fold {fold+1} (raw_n={raw_n_train})")
                 all_params = list(model.backbone.parameters())
                 freeze_until = int(len(all_params) * BACKBONE_FREEZE_FRACTION)
                 for i, p in enumerate(all_params):
@@ -409,7 +427,18 @@ def main():
                 for param in model.backbone.parameters():
                     param.requires_grad = True
         
-        optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+        # 3. Differential Learning Rates
+        # Backbone gets BACKBONE_LR_FACTOR * LEARNING_RATE for gentle fine-tuning
+        # Everything else gets full LEARNING_RATE
+        backbone_params = list(model.backbone.parameters())
+        head_params = [p for n, p in model.named_parameters() if 'backbone' not in n]
+        
+        param_groups = [
+            {'params': backbone_params, 'lr': LEARNING_RATE * BACKBONE_LR_FACTOR},
+            {'params': head_params, 'lr': LEARNING_RATE}
+        ]
+        
+        optimizer = AdamW(param_groups, weight_decay=WEIGHT_DECAY)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, threshold=1e-3, min_lr=1e-6)
         
         criterion_reg = nn.MSELoss() 

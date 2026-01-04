@@ -14,7 +14,7 @@ def verify():
     # Setup basic logging to catch load_data info
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("Verify")
-    stratification_col = 'FunctionalGroup'
+    stratification_col = 'StratifyKey'
     print("Loading data...")
     try:
         df = load_data(logger)

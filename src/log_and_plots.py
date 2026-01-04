@@ -168,32 +168,52 @@ def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=No
     return session_dir
 
 def log_fold_details(logger, train_df, val_df):
-    def get_stats(df):
-        if len(df) == 0: return "EMPTY", "EMPTY", "EMPTY"
+    def get_basic_stats(df):
+        if len(df) == 0: return "EMPTY", "EMPTY"
         dates = f"{df['Sampling_Date'].min().date()} -> {df['Sampling_Date'].max().date()}"
         states = sorted(df['State'].unique().tolist())
-        sp_counts = df['Species'].value_counts()
-        species_str = str(sp_counts.head(5).to_dict())
-        if len(sp_counts) > 10: species_str += "..."
-        return dates, states, species_str
+        return dates, states
 
-    t_dates, t_states, t_species = get_stats(train_df)
-    v_dates, v_states, v_species = get_stats(val_df)
+    t_dates, t_states = get_basic_stats(train_df)
+    v_dates, v_states = get_basic_stats(val_df)
     
+    # Species Table
+    sp_train = train_df['Species'].value_counts()
+    sp_val = val_df['Species'].value_counts()
+    all_species = sorted(list(set(sp_train.index) | set(sp_val.index)))
+    
+    table_msg = f"{'Species':<30} | {'Train':>8} | {'Val':>8} | {'Total':>8}"
+    table_msg += "\n    " + "-" * 61
+    
+    total_train = 0
+    total_val = 0
+    
+    for sp in all_species:
+        tc = sp_train.get(sp, 0)
+        vc = sp_val.get(sp, 0)
+        tot = tc + vc
+        table_msg += f"\n    {str(sp)[:30]:<30} | {tc:>8} | {vc:>8} | {tot:>8}"
+        total_train += tc
+        total_val += vc
+        
+    table_msg += "\n    " + "-" * 61
+    table_msg += f"\n    {'TOTAL':<30} | {total_train:>8} | {total_val:>8} | {total_train + total_val:>8}"
+
     msg = f"""
-    \n    ----------------------------------------------------------------
+    \n    -----------------------------------------------------------------
     FOLD DETAILS
-    ----------------------------------------------------------------
-    [TRAIN] (n={len(train_df)})
-      Dates:   {t_dates}
-      States:  {t_states}
-      Species: {t_species}
-    ----------------------------------------------------------------
-    [VALIDATION] (n={len(val_df)})
-      Dates:   {v_dates}
-      States:  {v_states}
-      Species: {v_species}
-    ----------------------------------------------------------------
+    -----------------------------------------------------------------
+    [TRAIN] ({total_train} samples)
+      Dates:  {t_dates}
+      States: {t_states}
+    
+    [VALIDATION] ({total_val} samples)
+      Dates:  {v_dates}
+      States: {v_states}
+    
+    SPECIES DISTRIBUTION:
+    {table_msg}
+    -----------------------------------------------------------------
     """
     logger.info(msg)
 

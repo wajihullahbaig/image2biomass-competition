@@ -28,9 +28,9 @@ from configs import (
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
-    set_seed, calculate_global_weighted_r2,
+    set_seed, calculate_global_weighted_r2, smart_upsample,
     upsample_minority_classes, get_taxonomy_targets,
-    rotate_crop_resize
+    rotate_crop_resize, smart_temporal_split
 )
 from log_and_plots import (
     setup_logging, plot_training_history, 
@@ -305,42 +305,13 @@ def main():
     #    User requested StratifiedKFold on Dev Set (FunctionalGroup).
     # -------------------------------------------------------------------------
     
-    dev_dfs = []
-    holdout_dfs = []
+    # 1. Smart Temporal Split
+    stratification_col = 'StratifyKey'
+    dev_df, global_holdout_df = smart_temporal_split(df, stratify_col=stratification_col)
     
-    # Iterate over unique raw species strings (e.g. 'ryegrass', 'clover', 'mix_x_y')
-    # This ensures even rare mixtures are stratified if possible.
-    # We use the raw 'Species' column which is already lowercased in load_data.
-    stratification_col = 'FunctionalGroup'
-    unique_species = df[stratification_col].unique()
-    
-    for sp in unique_species:
-        # Get all samples for this species, ensure sorted by date
-        sp_df = df[df[stratification_col] == sp].sort_values('Sampling_Date')
-        
-        n_samples = len(sp_df)
-        if n_samples == 0: continue
-            
-        # 20% Holdout
-        holdout_cnt = int(n_samples * 0.20)
-        # Ensure at least 1 sample in dev if possible, or handle tiny classes
-        if n_samples < 2:
-            # Too small to split effectively, keep in dev to avoid empty train sets
-            dev_dfs.append(sp_df)
-            continue
-            
-        split_idx = n_samples - holdout_cnt
-        
-        # Temporal Split per Species
-        sp_dev = sp_df.iloc[:split_idx]
-        sp_hol = sp_df.iloc[split_idx:]
-        
-        dev_dfs.append(sp_dev)
-        holdout_dfs.append(sp_hol)
-        
-    # Re-assemble and Re-sort by Date to maintain global temporal flow
-    dev_df = pd.concat(dev_dfs).sort_values('Sampling_Date').reset_index(drop=True)
-    global_holdout_df = pd.concat(holdout_dfs).sort_values('Sampling_Date').reset_index(drop=True)
+    # 2. Re-assemble and Re-sort by Date to maintain global temporal flow
+    dev_df = dev_df.sort_values('Sampling_Date').reset_index(drop=True)
+    global_holdout_df = global_holdout_df.sort_values('Sampling_Date').reset_index(drop=True)
     
     total_len = len(df)
     
@@ -352,7 +323,7 @@ def main():
     logger.info(f"Global Holdout:  {len(global_holdout_df)} ({global_holdout_df['Sampling_Date'].min().date()} -> {global_holdout_df['Sampling_Date'].max().date()})")
     
     # Log Species distribution in Holdout to confirm stratification
-    hol_sp_counts = global_holdout_df['FunctionalGroup'].value_counts().head(5)
+    hol_sp_counts = global_holdout_df[stratification_col].value_counts().head(5)
     logger.info(f"Top 5 Species in Holdout:\n{hol_sp_counts}")
     
     global_holdout_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
@@ -384,7 +355,8 @@ def main():
         log_fold_details(logger, train_df, val_df) 
         
         # Upsampling (Train Only)
-        train_df = upsample_minority_classes(train_df, target_col='FunctionalGroup')
+        #train_df = upsample_minority_classes(train_df, target_col='FunctionalGroup')
+        train_df = smart_upsample(train_df, stratify_col='StratifyKey')
         
         # Save Fold Splits
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)

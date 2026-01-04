@@ -1,3 +1,4 @@
+# common.py
 import os
 import math
 import random
@@ -11,14 +12,15 @@ import torch.nn as nn
 import torchvision.transforms.functional as TF
 from torchvision import transforms
 from torchvision.utils import save_image
+from PIL import ImageFilter
 
 # Local Imports
 from configs import (
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, 
-    IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES,GROUP_DEFINITIONS, N_FOLDS, TAXONOMY_IDXS
+    IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES, GROUP_DEFINITIONS, 
+    N_FOLDS, TAXONOMY_IDXS, get_stratify_key, 
+    UPSAMPLE_CONFIG, SPLIT_CONFIG
 )
-
-
 
 # -----------------------------------------------------------------------------
 # 1. MATH & GEOMETRY HELPERS (The Core of the Strategy)
@@ -126,9 +128,6 @@ class RandomRotateCropResize(nn.Module):
         
         return img_final
 
-from PIL import ImageFilter
-import random
-
 class SubtleSharpen:
     """
     Applies subtle sharpening to grass images.
@@ -195,46 +194,18 @@ def get_image_data_transforms():
     return train_transform, val_transform
 
 # -----------------------------------------------------------------------------
-# 4. STRATIFICATION LOGIC (Composite Key)
+# 4. DATA LOADING & STRATIFICATION
 # -----------------------------------------------------------------------------
 
-def create_stratify_key(df):
+def load_data(logger):
     """
-    Creates a composite key to ensure every fold gets a fair distribution of
-    Geographies (State) and Biology (FunctionalGroup).
-    
-    Crucial because State is temporally disjoint (NSW=Jan, WA=Sept).
-    Random Stratified split is the ONLY way to ensure Fold 1 sees WA soil.
+    Load and preprocess train.csv with improved region-aware stratification.
+    This creates wide.csv with all features and the new StratifyKey.
     """
-    # 1. Ensure Functional Group exists
-    if 'FunctionalGroup' not in df.columns:
-        df = assign_functional_groups(df)
-        
-    # 2. Composite Key: State + Group
-    # e.g., "NSW_Legume", "WA_Grass", "Vic_Weed"
-    df['StratifyKey'] = df['State'].astype(str) + "_" + df['FunctionalGroup'].astype(str)
-    
-    # 3. Handle Rare Combinations
-    # If a combo appears < N_FOLDS, StratifiedKFold will crash.
-    # We map them to just 'State' or just 'Group' to allow splitting.
-    counts = df['StratifyKey'].value_counts()
-    rare_keys = counts[counts < N_FOLDS].index 
-    
-    # Fallback for rare items: Just use FunctionalGroup (Biology is more important than State for mass)
-    df.loc[df['StratifyKey'].isin(rare_keys), 'StratifyKey'] = df['FunctionalGroup'].astype(str)
-    
-    return df
-
-
-# -----------------------------------------------------------------------------
-# 5. DATA LOADING & PREP (UPDATED)
-# -----------------------------------------------------------------------------
-def load_data(logger: logging.Logger) -> pd.DataFrame:
     logger.info("Loading and Pivoting Data...")
     if not os.path.exists('train.csv'):
         raise FileNotFoundError("train.csv not found in current directory")
     
-        
     df = pd.read_csv('train.csv')
     df['clean_id'] = df['sample_id'].astype(str).apply(lambda x: x.split('__')[0])
     
@@ -248,7 +219,8 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     for col in target_cols:
-        if col not in targets.columns: targets[col] = 0.0
+        if col not in targets.columns: 
+            targets[col] = 0.0
     targets[target_cols] = targets[target_cols].fillna(0.0)
 
     # Merge Metadata
@@ -258,7 +230,7 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     meta = df[valid_meta_cols].drop_duplicates(subset=['clean_id']).reset_index(drop=True)
     wide = pd.merge(meta, targets, on='clean_id', how='left')
     
-    # Dates
+    # Parse Dates
     wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'], format='mixed', dayfirst=False)
     
     # Feature Engineering (Auxiliary Inputs)
@@ -269,101 +241,256 @@ def load_data(logger: logging.Logger) -> pd.DataFrame:
     wide['Interaction_Add'] = wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']
     
     wide = wide.rename(columns={'clean_id': 'sample_id'})
-    
     wide[target_cols] = wide[target_cols].astype(float)
 
-    logger.info("Performing global species breakup...")
-
+    logger.info("Parsing species to vectors...")
+    
     # Initialize columns for each core species
     wide['Species'] = wide['Species'].str.lower()
     for sp in CORE_SPECIES:
         wide[f'Species_{sp}'] = 0.0
 
-    # Parsing Logic
-    def parse_species_string(s):
-        vec = np.zeros(len(CORE_SPECIES))
-        if not isinstance(s, str):
-            return vec
-        
-        # Clean and split the string
-        # Examples: "clover", "ryegrass_clover", "white clover"
-        s_clean = s.lower().replace(' ', '')
-        parts = s_clean.split('_')
-        
-        found_indices = set()
-        core_lower = [sp.lower() for sp in CORE_SPECIES]
-        
-        for p in parts:
-            if not p: continue
-            
-            # 1. Try Exact Match First (Highest Priority)
-            matched_exactly = False
-            for idx, c_low in enumerate(core_lower):
-                if p == c_low:
-                    found_indices.add(idx)
-                    matched_exactly = True
-                    break # Found exact match for this part
-            
-            if matched_exactly:
-                continue
-                
-            # 2. Substring Match Fallback (Only if no exact match for this part)
-            for idx, c_low in enumerate(core_lower):
-                # c_low in p: e.g. "subclover" in "whiteclover" (unlikely with our list but possible)
-                # p in c_low: e.g. "clover" matches "whiteclover", "subcloverlosa"
-                if (p in c_low and len(p) > 3) or (c_low in p and len(c_low) > 3):
-                    found_indices.add(idx)
-        
-        if found_indices:
-            # Distribute probability uniformly among found species
-            prob = 1.0 / len(found_indices)
-            for idx in found_indices:
-                vec[idx] = prob
-        else:
-            # Fallback for "Mixed" or unknown -> Uniform across all
-            vec[:] = 1.0 / len(CORE_SPECIES)
-            
-        return vec
-
-    # Apply to dataframe
-    # We iterate to assign to new columns
-    species_vectors = wide['Species'].apply(parse_species_string)
-    
-    # Stack vectors into a matrix and assign to columns
+    # Apply species parsing (uses parse_species_to_vector from section 5)
+    species_vectors = wide['Species'].apply(parse_species_to_vector)
     species_matrix = np.stack(species_vectors.values)
     for i, sp in enumerate(CORE_SPECIES):
         wide[f'Species_{sp}'] = species_matrix[:, i]
 
+    # Assign functional groups (for model features)
     wide = assign_functional_groups(wide)
-    wide = create_stratify_key(wide)
+    
+    # === NEW: Region-Aware Stratification ===
+    wide['StratifyKey'] = wide.apply(get_stratify_key, axis=1)
+    
+    # Log distribution
+    logger.info("\n" + "="*70)
+    logger.info("STRATIFICATION KEY DISTRIBUTION (State + Dominant Species)")
+    logger.info("="*70)
+    key_counts = wide['StratifyKey'].value_counts().sort_index()
+    for key, count in key_counts.items():
+        logger.info(f"  {key:<30}: {count:>3} samples")
+    logger.info("="*70 + "\n")
         
     logger.info(f"Data Loaded and Parsed. Rows: {len(wide)}")
     wide.to_csv('wide.csv', index=False)
     return wide
 
 # -----------------------------------------------------------------------------
-# 6. UPSAMPLING LOGIC (Temporal Neighbor)
+# 5. SPECIES PARSING (Existing Logic)
 # -----------------------------------------------------------------------------
-def upsample_minority_classes(df, target_col= None, date_col='Sampling_Date'):
+
+def parse_species_to_vector(species_str):
     """
-    Temporal Neighbor Upsampling.
-    Tries to find samples from D-1 or D+1 to fill the class quota before
-    resorting to exact duplication.
+    Parse species string to 14-dim binary vector.
+    Handles mixtures like 'Ryegrass_Clover' and 'Mixed'.
     """
+    if pd.isna(species_str):
+        return np.zeros(14, dtype=np.float32)
+    
+    species_str = str(species_str).lower().replace(' ', '')
+    vec = np.zeros(14, dtype=np.float32)
+    
+    # Special case: Mixed = all species
+    if species_str == 'mixed':
+        return np.ones(14, dtype=np.float32)
+    
+    # Split by underscore and expand 'clover'
+    parts = species_str.split('_')
+    for part in parts:
+        if part == 'clover':
+            # Expand to 4 sub-types
+            for idx, sp in enumerate(CORE_SPECIES):
+                if 'clover' in sp:
+                    vec[idx] = 1.0
+        else:
+            # Direct match
+            for idx, sp in enumerate(CORE_SPECIES):
+                if part == sp:
+                    vec[idx] = 1.0
+    
+    return vec
+
+def add_species_columns(df):
+    """
+    Add Species_{name} columns for each core species.
+    This is used by the dataset class.
+    """
+    for idx, sp in enumerate(CORE_SPECIES):
+        df[f'Species_{sp}'] = df['Species'].apply(
+            lambda x: parse_species_to_vector(x)[idx]
+        )
+    return df
+
+# -----------------------------------------------------------------------------
+# 6. IMPROVED TEMPORAL SPLIT
+# -----------------------------------------------------------------------------
+
+def smart_temporal_split(df, stratify_col='StratifyKey'):
+    """
+    Adaptive temporal split that preserves sparse regional groups.
+    
+    Strategy:
+    - Groups ≤4 samples: Keep ALL in dev (critical for learning, e.g., WA_Clover)
+    - Groups 5-9: Take last 1-2 for holdout (minimal but valid)
+    - Groups ≥10: Take last 20% for holdout (proper temporal validation)
+    
+    Why this works:
+    - WA samples (8 total) stay in training → model learns regional patterns
+    - Large groups get proper temporal holdout → prevents overfitting
+    - Balances data preservation with validation integrity
+    """
+    df = df.sort_values('Sampling_Date').reset_index(drop=True)
+    
+    dev_dfs = []
+    holdout_dfs = []
+    
+    holdout_pct = SPLIT_CONFIG['holdout_pct']
+    sparse_threshold = SPLIT_CONFIG['sparse_threshold']
+    small_threshold = SPLIT_CONFIG['small_threshold']
+    
+    for key in df[stratify_col].unique():
+        key_df = df[df[stratify_col] == key].sort_values('Sampling_Date')
+        n = len(key_df)
+        
+        if n <= sparse_threshold:
+            # Too sparse: Keep all in dev (e.g., WA_Clover with 8 samples)
+            dev_dfs.append(key_df)
+            
+        elif n <= small_threshold:
+            # Small group: Take 1-2 for holdout
+            holdout_cnt = max(1, int(n * 0.15))
+            split_idx = n - holdout_cnt
+            dev_dfs.append(key_df.iloc[:split_idx])
+            holdout_dfs.append(key_df.iloc[split_idx:])
+            
+        else:
+            # Normal: Last 20% as holdout
+            holdout_cnt = int(n * holdout_pct)
+            split_idx = n - holdout_cnt
+            dev_dfs.append(key_df.iloc[:split_idx])
+            holdout_dfs.append(key_df.iloc[split_idx:])
+    
+    dev_df = pd.concat(dev_dfs, ignore_index=True)
+    holdout_df = pd.concat(holdout_dfs, ignore_index=True) if holdout_dfs else pd.DataFrame()
+    
+    return dev_df, holdout_df
+
+# -----------------------------------------------------------------------------
+# 7. SMART UPSAMPLING
+# -----------------------------------------------------------------------------
+
+def smart_upsample(train_df, stratify_col='StratifyKey',date_col='Sampling_Date'):
+    """
+    Upsample only sparse groups to minimum threshold.
+    
+    Improvements over blanket upsampling:
+    1. Only upsample groups below target (preserves natural distribution)
+    2. Add noise to biomass targets (prevents exact duplicates → overfitting)
+    3. Mark synthetic samples for monitoring
+    
+    Why this matters:
+    - Prevents overwhelming large groups (e.g., Ryegrass_Clover)
+    - Reduces overfitting on repeated samples
+    - Balances class distribution without destroying signal
+    """
+    if not UPSAMPLE_CONFIG['enabled']:
+        return train_df
+    
+    target_min = UPSAMPLE_CONFIG['target_min_samples']
+    noise_scale = UPSAMPLE_CONFIG['noise_scale']
+    
+    groups = []
+    
+    for key in train_df[stratify_col].unique():
+        key_df = train_df[train_df[stratify_col] == key].copy()
+        n = len(key_df)
+        
+        if n >= target_min:
+            # Already sufficient
+            key_df['is_synthetic'] = False
+            groups.append(key_df)
+        else:
+            # Upsample to target_min
+            n_needed = target_min - n
+            upsampled = key_df.sample(n=n_needed, replace=True, random_state=42).copy()
+            
+            # Add noise to biomass targets (avoid exact duplicates)
+            biomass_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+            for col in biomass_cols:
+                if col in upsampled.columns:
+                    noise = np.random.normal(0, upsampled[col].std() * noise_scale, size=len(upsampled))
+                    upsampled[col] = np.maximum(0, upsampled[col] + noise)  # Ensure non-negative
+            
+            # Mark samples
+            upsampled['is_synthetic'] = True
+            key_df['is_synthetic'] = False
+            
+            groups.append(pd.concat([key_df, upsampled], ignore_index=True))
+    
+    result_df = pd.concat(groups, ignore_index=True)
+    result_df = result_df.sample(frac=1, random_state=42).reset_index(drop=True)  # Shuffle
+    result_df = result_df.sort_values(by=[date_col]).reset_index(drop=True)
+    return result_df
+
+# -----------------------------------------------------------------------------
+# 8. FUNCTIONAL GROUP ASSIGNMENT (For Model Features)
+# -----------------------------------------------------------------------------
+
+def assign_functional_groups(df):
+    """
+    Classifies samples into biological categories for model learning.
+    Note: This is NOT used for stratification anymore (we use State+Species).
+    """
+    col_legumes = [f'Species_{x}' for x in GROUP_DEFINITIONS['legume'] if f'Species_{x}' in df.columns]
+    col_grasses = [f'Species_{x}' for x in GROUP_DEFINITIONS['grass']  if f'Species_{x}' in df.columns]
+    col_weeds   = [f'Species_{x}' for x in GROUP_DEFINITIONS['weed']   if f'Species_{x}' in df.columns]
+
+    s_legume = df[col_legumes].sum(axis=1)
+    s_grass  = df[col_grasses].sum(axis=1)
+    s_weed   = df[col_weeds].sum(axis=1)
+
+    groups = []
+    for l, g, w in zip(s_legume, s_grass, s_weed):
+        # Hierarchy: Weed > Legume > Grass (Prioritize rare groups in ties/mixes)
+        if w > 0 and w >= g and w >= l:
+            groups.append('weed')
+        elif l >= g: 
+            groups.append('legume')
+        else: 
+            groups.append('grass')
+
+    df['FunctionalGroup'] = groups
+    return df
+
+# -----------------------------------------------------------------------------
+# 9. LEGACY UPSAMPLING (Keep for backward compatibility)
+# -----------------------------------------------------------------------------
+
+def upsample_minority_classes(df, target_col='FunctionalGroup', date_col='Sampling_Date'):
+    """
+    OLD upsampling strategy using temporal neighbors.
+    Kept for backward compatibility but NOT recommended.
+    Use smart_upsample() instead.
+    """
+    if target_col == 'FunctionalGroup':
+        df = assign_functional_groups(df)
+        
     counts = df[target_col].value_counts()
-    target = int(counts.max())
+    target_count = int(counts.max())
+    
     dfs = [df]
     
     for cls, count in counts.items():
-        if count < target:
-            n_needed = target - count
+        if count < target_count:
+            n_needed = target_count - count
+            
             cls_mask = df[target_col] == cls
             cls_df = df[cls_mask].copy()
+            
             existing_dates = set(cls_df[date_col].dt.date)
             candidates = []
             
             for _, row in cls_df.iterrows():
-                # Check neighbors
                 for offset in [-1, 1]:
                     d_new = row[date_col] + pd.Timedelta(days=offset)
                     if d_new.date() not in existing_dates:
@@ -383,13 +510,13 @@ def upsample_minority_classes(df, target_col= None, date_col='Sampling_Date'):
                         dfs.append(cls_df.sample(n=rem, replace=True, random_state=42))
             else:
                 dfs.append(cls_df.sample(n=n_needed, replace=True, random_state=42))
-    dfs =pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
-    # sort to keep temportal order
+
+    dfs = pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
     dfs = dfs.sort_values(by=[date_col]).reset_index(drop=True)
-    return 
+    return dfs
 
 # -----------------------------------------------------------------------------
-# 7. METRICS & UTILS
+# 10. METRICS & UTILS
 # -----------------------------------------------------------------------------
 
 def calculate_global_weighted_r2(y_true, y_pred, weights):
@@ -414,7 +541,7 @@ def calculate_global_weighted_r2(y_true, y_pred, weights):
     return 1 - (ss_res / ss_tot)
 
 # -----------------------------------------------------------------------------
-# 8. SEED SETTING
+# 11. SEED SETTING
 # -----------------------------------------------------------------------------
 def set_seed(seed: Optional[int] = 42, logger=None) -> None:
     if seed is not None:
@@ -423,141 +550,29 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         torch.cuda.manual_seed_all(seed)
         if logger: logger.info(f"Seed set to {seed}")
 
-
 # -----------------------------------------------------------------------------
-# 9. FUNCTIONAL GROUP LOGIC 
-# -----------------------------------------------------------------------------
-
-def assign_functional_groups(df):
-    """
-    Classifies samples based on config definitions.
-    """
-    # Use definitions from configs.py
-    col_legumes = [f'Species_{x}' for x in GROUP_DEFINITIONS['legume'] if f'Species_{x}' in df.columns]
-    col_grasses = [f'Species_{x}' for x in GROUP_DEFINITIONS['grass']  if f'Species_{x}' in df.columns]
-    col_weeds   = [f'Species_{x}' for x in GROUP_DEFINITIONS['weed']   if f'Species_{x}' in df.columns]
-
-    s_legume = df[col_legumes].sum(axis=1)
-    s_grass  = df[col_grasses].sum(axis=1)
-    s_weed   = df[col_weeds].sum(axis=1)
-
-    groups = []
-    for l, g, w in zip(s_legume, s_grass, s_weed):
-        # Hierarchy: Weed > Legume > Grass (Prioritize rare groups in ties/mixes)
-        if w > 0 and w >= g and w >= l:
-            groups.append('weed')
-        elif l >= g: 
-            groups.append('legume')
-        else: 
-            groups.append('grass')
-
-    df['FunctionalGroup'] = groups
-    return df
-
-# -----------------------------------------------------------------------------
-# 10. FUNCTIONAL GROUP UPSAMPLING LOGIC
-# -----------------------------------------------------------------------------
-def upsample_minority_classes(df, target_col='FunctionalGroup', date_col='Sampling_Date'):
-    """
-    Upsampling Strategy:
-    1. Assigns Functional Groups (Grass/Legume/Weed).
-    2. Upsamples based on these groups .
-    3. Uses 'Temporal Neighbors' (D-1, D+1) to create variety instead of exact duplicates.
-    """
-    # 1. Assign Groups if not present (or if target_col is 'FunctionalGroup')
-    if target_col == 'FunctionalGroup':
-        df = assign_functional_groups(df)
-        
-    # 2. Calculate Targets
-    counts = df[target_col].value_counts()
-    target_count = int(counts.max())
-    
-    dfs = [df]
-    
-    # 3. Iterate Minority Classes
-    for cls, count in counts.items():
-        if count < target_count:
-            n_needed = target_count - count
-            
-            # Get minority data
-            cls_mask = df[target_col] == cls
-            cls_df = df[cls_mask].copy()
-            
-            # --- Temporal Neighbor Search ---
-            existing_dates = set(cls_df[date_col].dt.date)
-            candidates = []
-            
-            for _, row in cls_df.iterrows():
-                # Look for D-1 and D+1
-                for offset in [-1, 1]:
-                    d_new = row[date_col] + pd.Timedelta(days=offset)
-                    # Only add if this specific date isn't already in the training set for this class
-                    # (Prevents data leakage if we actually had data that day, though rare here)
-                    if d_new.date() not in existing_dates:
-                        new_row = row.copy()
-                        new_row[date_col] = d_new
-                        # We keep the same Image ID. 
-                        # Rationale: "This image COULD have been taken yesterday."
-                        candidates.append(new_row)
-            
-            # --- Selection Logic ---
-            cand_df = pd.DataFrame(candidates) if candidates else pd.DataFrame()
-            
-            if len(cand_df) > 0:
-                if len(cand_df) >= n_needed:
-                    # We have enough temporal neighbors to fill the gap completely!
-                    dfs.append(cand_df.sample(n=n_needed, replace=False, random_state=42))
-                else:
-                    # Use all temporal neighbors
-                    dfs.append(cand_df)
-                    # Fill remainder with standard duplicates
-                    rem = n_needed - len(cand_df)
-                    if rem > 0:
-                        dfs.append(cls_df.sample(n=rem, replace=True, random_state=42))
-            else:
-                # No temporal neighbors found, fallback to standard duplication
-                dfs.append(cls_df.sample(n=n_needed, replace=True, random_state=42))
-
-    # 5 Shuffle and then sort to keep temporal order
-    dfs = pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
-    dfs = dfs.sort_values(by=[date_col]).reset_index(drop=True)
-    return dfs
-
-
-# -----------------------------------------------------------------------------
-# 11. SAVE BATCH IMAGES
+# 12. SAVE BATCH IMAGES
 # -----------------------------------------------------------------------------
 def save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=5):
     """
     Save a batch of images as a grid to disk.
-    
-    Args:
-        images: Tensor of shape (B, C, H, W)
-        fold: Current fold number
-        batch_idx: Current batch index
-        session_dir: Root session directory
-        max_batches_to_save: Only save first N batches per epoch to avoid too many files
     """
     if batch_idx >= max_batches_to_save:
         return
     
-    # Create directory structure: session_dir/images/fold<N>/
     images_dir = os.path.join(session_dir, 'images', f'fold{fold}')
     os.makedirs(images_dir, exist_ok=True)
     
-    # Denormalize images if they were normalized
-    # Assuming ImageNet normalization: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(images.device)
     std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(images.device)
     images_denorm = images * std + mean
     images_denorm = torch.clamp(images_denorm, 0, 1)
     
-    # Save as grid
     save_path = os.path.join(images_dir, f'batch_{batch_idx:03d}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
 
 # -----------------------------------------------------------------------------
-# 12. TAXONOMY TARGET GENERATION
+# 13. TAXONOMY TARGET GENERATION (For Model)
 # -----------------------------------------------------------------------------
 def get_taxonomy_targets(species_vec):
     """
@@ -566,12 +581,8 @@ def get_taxonomy_targets(species_vec):
     
     Uses indices defined in configs.py to ensure consistency with CORE_SPECIES.
     """
-    # Sum probabilities of constituent species for each group
-    # shape: (Batch, 1) for each group
     legume_prob = species_vec[:, TAXONOMY_IDXS['legume']].sum(dim=1, keepdim=True)
     grass_prob  = species_vec[:, TAXONOMY_IDXS['grass']].sum(dim=1, keepdim=True)
     weed_prob   = species_vec[:, TAXONOMY_IDXS['weed']].sum(dim=1, keepdim=True)
     
-    # shape: (Batch, 3)
     return torch.cat([legume_prob, grass_prob, weed_prob], dim=1)
-

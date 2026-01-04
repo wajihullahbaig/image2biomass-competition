@@ -23,7 +23,7 @@ WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/efficientnetv2_rw_s.ra2_in1k'  
 MIN_TRAIN_SAMPLES = 80 # Skip folds with too little data
-BACKBONE_FREEZE_THRESHOLD = 180 # Keep backbone frozen until we have this many samples
+BACKBONE_FREEZE_THRESHOLD = 120 # Keep backbone frozen until we have this many samples
 
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']

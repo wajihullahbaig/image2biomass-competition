@@ -21,13 +21,13 @@ class BiomassUnifiedModel(nn.Module):
             
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         
-        # Backbone Freezing Logic
-        if FREEZE_BACKBONE:
-            all_params = list(self.backbone.parameters())
-            freeze_until = int(len(all_params) * BACKBONE_FREEZE_FRACTION)
-            for i, p in enumerate(all_params):
-                if i < freeze_until: p.requires_grad = False
-                else: p.requires_grad = True
+        # # Backbone Freezing Logic
+        # if FREEZE_BACKBONE:
+        #     all_params = list(self.backbone.parameters())
+        #     freeze_until = int(len(all_params) * BACKBONE_FREEZE_FRACTION)
+        #     for i, p in enumerate(all_params):
+        #         if i < freeze_until: p.requires_grad = False
+        #         else: p.requires_grad = True
             
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(

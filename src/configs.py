@@ -15,16 +15,16 @@ IMAGE_HEIGHT = 256
 IMAGE_WIDTH = 512
 
 # Training Hyperparameters
-BATCH_SIZE = 64 
-LEARNING_RATE = 1e-4 
+BATCH_SIZE = 32 
+LEARNING_RATE = 2e-4 
 N_FOLDS = 5
 EPOCHS = 40 
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
-MIN_TRAIN_SAMPLES = 20 # Skip folds with too little data
-BACKBONE_FREEZE_THRESHOLD = 50 # Keep backbone frozen until we have this many samples
-MAX_GRAD_NORM = 1.0 # Gradient clipping
+MIN_TRAIN_SAMPLES = 200 # Skip folds with too little data
+BACKBONE_FREEZE_THRESHOLD = 2000 # Keep backbone frozen until we have this many samples
+MAX_GRAD_NORM = 1.5 # Gradient clipping
 BACKBONE_LR_FACTOR = 0.80 # Fine-tune backbone at the BACKBONE_LR_FACTOR*LR of LR
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']

@@ -42,4 +42,5 @@ old_src/
 
 analysis_results/
 inference_images/
-inference_images_routed
+inference_images_routed/
+tiling_visualizations/

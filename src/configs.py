@@ -35,6 +35,7 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 # training settings
 FREEZE_BACKBONE = False
 BACKBONE_FREEZE_FRACTION = 0.7
+USE_TTA = True
 # --- Augmentation & Tiling Settings ---
 TILE_PROB = 0.8        # Prob of applying tiling (Mode 1 or 2)
 MIXUP_PROB = 0.10      # Prob of applying MixUp

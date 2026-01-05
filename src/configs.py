@@ -22,8 +22,8 @@ EPOCHS = 40
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
-MIN_TRAIN_SAMPLES = 150 # Skip folds with too little data
-BACKBONE_FREEZE_THRESHOLD = 250 # Keep backbone frozen until we have this many samples
+MIN_TRAIN_SAMPLES = 100 # Skip folds with too little data
+BACKBONE_FREEZE_THRESHOLD = 200 # Keep backbone frozen until we have this many samples
 MAX_GRAD_NORM = 1.0 # Gradient clipping
 BACKBONE_LR_FACTOR = 0.1 # Fine-tune backbone at 1/10th of head LR
 

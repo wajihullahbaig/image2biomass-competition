@@ -1,4 +1,5 @@
 # train_holdout.py
+# train_holdout_tiled.py - Enhanced Training with Tile Augmentation
 import os
 import logging
 import torch
@@ -8,14 +9,11 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.model_selection import StratifiedKFold, TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
 import json
-import math
-import torchvision.transforms.functional as TF
-from torchvision import transforms
 
 # Local Imports
 import configs
@@ -32,27 +30,21 @@ from configs import (
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2, smart_upsample,
-    upsample_minority_classes, get_taxonomy_targets,
+    get_taxonomy_targets,
     rotate_crop_resize, smart_temporal_split
 )
 from log_and_plots import (
     setup_logging, plot_training_history, 
     log_fold_details
 )
-from dataset import BiomassDataset, MixupDataset
+
+from dataset import TiledBiomassDataset, TiledMixupDataset
 from models import BiomassUnifiedModel
-
-
-
-
 from torchvision.utils import save_image
-from configs import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+
 
 def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
-    """
-    Save TTA-augmented images for visualization.
-    Only saves for the first batch of the first epoch of the first fold.
-    """
+    """Save TTA-augmented images for visualization."""
     if fold != 0 or epoch != 0 or batch_idx > 0:
         return
         
@@ -60,8 +52,8 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     os.makedirs(save_dir, exist_ok=True)
     
     # Denormalize
-    mean = torch.tensor(IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
-    std = torch.tensor(IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
+    mean = torch.tensor(configs.IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
+    std = torch.tensor(configs.IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
     images_denorm = images * std + mean
     images_denorm = torch.clamp(images_denorm, 0, 1)
     
@@ -70,9 +62,9 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
 
 
 # -----------------------------------------------------------------------------
-# TRAINING ENGINE
+# TRAINING ENGINE (No changes needed - works with tiled data automatically)
 # -----------------------------------------------------------------------------
-def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, device, epoch, session_dir=None):
+def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, device, epoch, session_dir=None, logger=None):
     model.train()
     metrics = defaultdict(float)
     scaler = torch.amp.GradScaler('cuda')
@@ -87,7 +79,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
         
         # Proactive Safety Check
         if torch.isnan(targets_g).any():
-            logger.warning(f"NaN TARGETS DETECTED in batch {batch_idx}. Skipping.")
+            if logger:
+                logger.warning(f"NaN TARGETS DETECTED in batch {batch_idx}. Skipping.")
             continue
 
         targets_log = torch.log1p(targets_g)
@@ -95,7 +88,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
         species_vec = batch['species_id'].to(device)
         
         if epoch == 0 and batch_idx < 5 and session_dir:
-            save_batch_images(images, "train", batch_idx, session_dir, max_batches_to_save=5)
+            save_batch_images(images, fold=0, batch_idx=batch_idx, session_dir=session_dir, max_batches_to_save=5)
         
         taxonomy_targets = get_taxonomy_targets(species_vec)
 
@@ -120,13 +113,14 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
             total_loss = loss_bio + loss_aux + loss_sp + loss_tax + loss_phy
         
         if torch.isnan(total_loss):
-            logger.warning(f"!!! NAN TOTAL LOSS at Ep {epoch}, batch {batch_idx} !!!")
-            optimizer.zero_grad() # Clear any bad gradients
+            if logger:
+                logger.warning(f"!!! NAN TOTAL LOSS at Ep {epoch}, batch {batch_idx} !!!")
+            optimizer.zero_grad()
             continue
 
         scaler.scale(total_loss).backward()
         
-        # Gradient Clipping (Unscale first)
+        # Gradient Clipping
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
         
@@ -193,9 +187,6 @@ def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', u
         
         if use_tta:
             # Accumulate TTA outputs in Linear Space
-            batch_preds_linear = []
-            batch_aux_list = []
-            
             accum_bio_linear = 0
             accum_aux = 0
             accum_sp_probs = 0
@@ -222,17 +213,14 @@ def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', u
             avg_sp_probs = accum_sp_probs / len(tta_views)
             avg_tax_probs = accum_tax_probs / len(tta_views)
             
-            # Reconstruct (Pseudo) Logits/Log-Space for Loss
-            # Note: This is an approximation for Loss, but perfect for R2
+            # Reconstruct for Loss
             biomass_out = torch.log1p(avg_bio_linear)
             aux_out = avg_aux 
-            # For CrossEntropy, we need logits. Log(Average Prob) is a decent proxy.
             species_logits = torch.log(avg_sp_probs + 1e-9)
             taxonomy_logits = torch.log(avg_tax_probs + 1e-9)
             
         else:
             biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
-        
         
         loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
         loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
@@ -288,7 +276,8 @@ def save_metadata(session_dir, species_list, target_cols):
         'image_height': configs.IMAGE_HEIGHT,
         'image_width': configs.IMAGE_WIDTH,
         'num_species': len(species_list),
-        'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'tile_augmentation': 'enabled'
     }
     with open(os.path.join(session_dir, 'metadata.json'), 'w') as f:
         json.dump(metadata, f, indent=4)
@@ -298,15 +287,21 @@ def save_metadata(session_dir, species_list, target_cols):
 # MAIN EXECUTION
 # -----------------------------------------------------------------------------
 def main():
-    session_dir = setup_logging(file_name_part="stratified_holdout")
+    session_dir = setup_logging(file_name_part="tiled_stratified_holdout")
     logger = logging.getLogger("System Logger")
     set_seed(42, logger)
+    
+    logger.info("="*70)
+    logger.info("TILE-BASED AUGMENTATION ENABLED")
+    logger.info("Each training sample generates 6 views:")
+    logger.info("  1x Original + 1x Stitched + 4x Divided Tiles")
+    logger.info("Effective Training Set Size: N_samples × 6")
+    logger.info("="*70)
+    
     logger.info(config_str())
     
     # 1. Load Data
     df = load_data(logger)
-    
-    # CRITICAL: Sort by date for strict temporal splitting
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
     logger.info("Data sorted by Sampling_Date.")
     
@@ -317,19 +312,10 @@ def main():
     splits_dir = os.path.join(session_dir, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
     
-    # -------------------------------------------------------------------------
-    # DATA SPLIT Strategy: 
-    # 1. Global Holdout (Last 15% of EACH SPECIES) - Stratified Temporal
-    # 2. Development Set (First 85% of EACH SPECIES)
-    #    User requested StratifiedKFold on Dev Set (FunctionalGroup).
-    # -------------------------------------------------------------------------
-    
-    # 1. Smart Temporal Split (No Leakage + Group Representation)
-    # This uses the new hybrid logic in common.py to find a safe global date.
+    # 2. Smart Temporal Split
     stratification_col = 'StratifyKey'
     dev_df, global_holdout_df = smart_temporal_split(df, stratify_col=stratification_col)
     
-    # 2. Re-assemble and Re-sort by Date to maintain global temporal flow
     dev_df = dev_df.sort_values('Sampling_Date').reset_index(drop=True)
     global_holdout_df = global_holdout_df.sort_values('Sampling_Date').reset_index(drop=True)
     
@@ -342,26 +328,27 @@ def main():
     logger.info(f"Development Set: {len(dev_df)} ({dev_df['Sampling_Date'].min().date()} -> {dev_df['Sampling_Date'].max().date()})")
     logger.info(f"Global Holdout:  {len(global_holdout_df)} ({global_holdout_df['Sampling_Date'].min().date()} -> {global_holdout_df['Sampling_Date'].max().date()})")
     
-    # Log Species distribution in Holdout to confirm coverage
     hol_sp_counts = global_holdout_df['StratifyKey'].value_counts().head(5)
     logger.info(f"Top 5 Species in Holdout:\n{hol_sp_counts}")
     
     global_holdout_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
     
-    # Prepare Data Transforms
+    # 3. Prepare Data Transforms
     train_transform, val_transform = get_image_data_transforms()
     
-    # Holdout Dataset (Constant across folds)
-    holdout_ds = BiomassDataset(global_holdout_df, transform=val_transform)
+    # 4. Holdout Dataset (NO TILING)
+    holdout_ds = TiledBiomassDataset(
+        global_holdout_df, 
+        transform=val_transform,
+        mode='holdout',  # Disables tiling
+        tile_prob=0.0
+    )
     holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
     
-    # TIME-SERIES SPLIT on Development Set (Expanding Window)
-    # Ensures zero temporal leakage while maintaining global order
+    # 5. Time-Series Split on Development Set
     tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
     best_overall_score = -float('inf')
-    
-    # StratifyKey is used for upsampling within each fold window
     stratification_col = 'StratifyKey'
     
     for fold, (train_idx, val_idx) in enumerate(tscv.split(dev_df)):
@@ -369,56 +356,68 @@ def main():
         val_df = dev_df.iloc[val_idx].copy()
         raw_n_train = len(train_df)
         
-       
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
-        
-        # Log Temporal Ranges
         logger.info(f"Train: {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)})")
         logger.info(f"Val:   {val_df['Sampling_Date'].min().date()} -> {val_df['Sampling_Date'].max().date()} (n={len(val_df)})")
         
-        log_fold_details(logger, train_df, val_df) 
+        log_fold_details(logger, train_df, val_df)
 
-        # Knowledge Anchor - Skip folds that are too small for stable training
         if raw_n_train < MIN_TRAIN_SAMPLES:
             logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({raw_n_train} < {MIN_TRAIN_SAMPLES})")
             continue
  
-        # Upsampling (Train Only)
-        #train_df = upsample_minority_classes(train_df, target_col='FunctionalGroup')
-        # Detailed logging of upsampling
+        # Upsampling
         logger.info("\nUpsampling Train Set")
         logger.info(f"Before Upsampling: {train_df['StratifyKey'].value_counts()}")
         train_df = smart_upsample(train_df, stratify_col='StratifyKey')
         logger.info(f"After Upsampling: {train_df['StratifyKey'].value_counts()}")
         
+        # Calculate effective training size with tiling
+        effective_train_size = len(train_df) * 6  # 6 views per sample
+        logger.info(f"\n{'='*40}")
+        logger.info(f"EFFECTIVE TRAINING SIZE WITH TILING")
+        logger.info(f"Base Samples: {len(train_df)}")
+        logger.info(f"With 6x Tile Augmentation: {effective_train_size}")
+        logger.info(f"{'='*40}\n")
+        
         # Save Fold Splits
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
         val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
         
-        # Datasets
-        train_ds_base = BiomassDataset(train_df, transform=train_transform)        
-        train_ds = MixupDataset(train_ds_base, prob=0.10, alpha=0.25)        
-        val_ds = BiomassDataset(val_df, transform=val_transform)
+        # ===== KEY CHANGE: Use TiledBiomassDataset =====
+        train_ds_base = TiledBiomassDataset(
+            train_df, 
+            transform=train_transform,
+            mode='training',  # Enables tiling
+            tile_prob=0.8     # 80% of samples get tiled
+        )
+        train_ds = TiledMixupDataset(train_ds_base, prob=0.10, alpha=0.25)
         
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+        val_ds = TiledBiomassDataset(
+            val_df, 
+            transform=val_transform,
+            mode='validation',  # Disables tiling
+            tile_prob=0.0
+        )
+        
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
         # Model
-        dummy_ds = BiomassDataset(train_df[:1], transform=train_transform)
-        n_aux = dummy_ds[0]['aux_feats'].shape[0]        
-        # 2. Dynamic Backbone Protection
-        # CRITICAL: We use raw_n_train (pre-upsampling) so we don't trick ourselves with duplicates
-        model = BiomassUnifiedModel(num_species=len(species_list), num_aux=n_aux).to(DEVICE)       
+        dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation')
+        n_aux = dummy_ds[0]['aux_feats'].shape[0]
         
-        if raw_n_train < BACKBONE_FREEZE_THRESHOLD:
-            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (raw_n={raw_n_train} < {BACKBONE_FREEZE_THRESHOLD})")
-            # Freeze all parameters in the backbone for absolute safety
+        model = BiomassUnifiedModel(num_species=len(species_list), num_aux=n_aux).to(DEVICE)
+        
+        # Backbone Protection Logic
+        n_upsampled = len(train_df)
+        if n_upsampled < BACKBONE_FREEZE_THRESHOLD:
+            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n_upsampled={n_upsampled} < {BACKBONE_FREEZE_THRESHOLD})")
             for param in model.backbone.parameters():
                 param.requires_grad = False
         else:
-            # Data is sufficient - we now apply the intended strategy from configs.py
             if FREEZE_BACKBONE:
-                logger.info(f"STRATEGY: Applying Partial Freeze ({BACKBONE_FREEZE_FRACTION*100}%) for Fold {fold+1} (raw_n={raw_n_train})")
+                logger.info(f"STRATEGY: Applying Partial Freeze ({BACKBONE_FREEZE_FRACTION*100}%) for Fold {fold+1} (n_upsampled={n_upsampled})")
                 all_params = list(model.backbone.parameters())
                 freeze_until = int(len(all_params) * BACKBONE_FREEZE_FRACTION)
                 for i, p in enumerate(all_params):
@@ -428,9 +427,7 @@ def main():
                 for param in model.backbone.parameters():
                     param.requires_grad = True
         
-        # 3. Differential Learning Rates
-        # Backbone gets BACKBONE_LR_FACTOR * LEARNING_RATE for gentle fine-tuning
-        # Everything else gets full LEARNING_RATE
+        # Differential Learning Rates
         backbone_params = list(model.backbone.parameters())
         head_params = [p for n, p in model.named_parameters() if 'backbone' not in n]
         
@@ -445,7 +442,7 @@ def main():
         criterion_reg = nn.MSELoss() 
         criterion_ce = nn.CrossEntropyLoss()
         
-        history = defaultdict(list)        
+        history = defaultdict(list)
         best_fold_score = -float('inf')
         best_fold_v_r2 = -float('inf')
         best_fold_h_r2 = -float('inf')
@@ -453,23 +450,23 @@ def main():
         patience_counter = 0
         
         for epoch in range(EPOCHS):
-            # 1. Train
+            # Train
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, criterion_reg, criterion_ce, 
-                DEVICE, epoch, session_dir=session_dir
+                DEVICE, epoch, session_dir=session_dir, logger=logger
             )
             
-            # 2. Validate (Fold Validation - NO TTA for Speed)
+            # Validate
             val_metrics = validate(model, val_loader, criterion_reg, criterion_ce, DEVICE, prefix='val', use_tta=False)
             
-            # 3. Holdout (Global Future - YES TTA if Configured)
+            # Holdout
             hol_metrics = validate(
                 model, holdout_loader, criterion_reg, criterion_ce, DEVICE, 
                 prefix='holdout', use_tta=USE_TTA,
                 epoch=epoch, fold=fold, session_dir=session_dir
             )
             
-            # 4. Custom Score (Minimizing the Weakest Link)
+            # Custom Score
             v_r2 = val_metrics['val_r2']
             h_r2 = hol_metrics['holdout_r2']
             
@@ -478,7 +475,6 @@ def main():
             current_score = avg_r2 - consistency_penalty
             
             score_gap = abs(v_r2 - h_r2)
-            # Scheduler Step (Maximize Score)
             scheduler.step(current_score)
             
             log_msg = (f"Ep {epoch} | T_Loss: {train_metrics['train_loss']:.3f} | V_Loss: {val_metrics['val_loss']:.3f} | H_Loss: {hol_metrics['holdout_loss']:.3f} | "
@@ -523,5 +519,5 @@ def main():
         logger.info(f"Best Holdout R2: {best_fold_h_r2:.4f}")
         logger.info("-" * 40)
 
-if __name__ == '__main__':    
+if __name__ == '__main__':
     main()

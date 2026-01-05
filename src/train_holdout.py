@@ -32,7 +32,7 @@ from common import (
     load_data, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2, smart_upsample,
     get_taxonomy_targets,
-    rotate_crop_resize, smart_temporal_split
+    rotate_crop_resize, smart_temporal_split, triple_moving_time_series_split
 )
 from log_and_plots import (
     setup_logging, plot_training_history, 
@@ -310,56 +310,34 @@ def main():
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     save_metadata(session_dir, species_list, target_cols)
 
+    # Sort full df by Sampling_Date
+    df = df.sort_values('Sampling_Date').reset_index(drop=True)
+    
     splits_dir = os.path.join(session_dir, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
     
-    # 2. Smart Temporal Split
-    stratification_col = 'StratifyKey'
-    dev_df, global_holdout_df = smart_temporal_split(df, stratify_col=stratification_col)
-    
-    dev_df = dev_df.sort_values('Sampling_Date').reset_index(drop=True)
-    global_holdout_df = global_holdout_df.sort_values('Sampling_Date').reset_index(drop=True)
-    
-    total_len = len(df)
-    
-    logger.info(f"\n{'='*40}")
-    logger.info(f"SPECIES-STRATIFIED TEMPORAL HOLDOUT")
-    logger.info(f"{'='*40}")
-    logger.info(f"Total Samples: {total_len}")
-    logger.info(f"Development Set: {len(dev_df)} ({dev_df['Sampling_Date'].min().date()} -> {dev_df['Sampling_Date'].max().date()})")
-    logger.info(f"Global Holdout:  {len(global_holdout_df)} ({global_holdout_df['Sampling_Date'].min().date()} -> {global_holdout_df['Sampling_Date'].max().date()})")
-    
-    hol_sp_counts = global_holdout_df['StratifyKey'].value_counts().head(5)
-    logger.info(f"Top 5 Species in Holdout:\n{hol_sp_counts}")
-    
-    global_holdout_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
-    
-    # 3. Prepare Data Transforms
+    # 2. Prepare Data Transforms
     train_transform, val_transform = get_image_data_transforms()
-    
-    # 4. Holdout Dataset (NO TILING)
-    holdout_ds = TiledBiomassDataset(
-        global_holdout_df, 
-        transform=val_transform,
-        mode='holdout',  # Disables tiling
-        tile_prob=0.0
-    )
-    holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
-    
-    # 5. Time-Series Split on Development Set
-    tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
     best_overall_score = -float('inf')
     stratification_col = 'StratifyKey'
     
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(dev_df)):
-        train_df = dev_df.iloc[train_idx].copy()
-        val_df = dev_df.iloc[val_idx].copy()
+    # 3. Triple Moving Window Split
+    for fold, (train_idx, val_idx, hold_idx) in enumerate(triple_moving_time_series_split(df, n_splits=N_FOLDS)):
+        train_df = df.iloc[train_idx].copy()
+        val_df = df.iloc[val_idx].copy()
+        hold_df = df.iloc[hold_idx].copy()
+        
         raw_n_train = len(train_df)
         
-        logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")
-        logger.info(f"Train: {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)})")
-        logger.info(f"Val:   {val_df['Sampling_Date'].min().date()} -> {val_df['Sampling_Date'].max().date()} (n={len(val_df)})")
+        logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} (Triple Moving Window) {'='*20}")
+        logger.info(f"Train:   {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)}, sessions={train_df['SessionID'].nunique()})")
+        logger.info(f"Val:     {val_df['Sampling_Date'].min().date()} -> {val_df['Sampling_Date'].max().date()} (n={len(val_df)}, sessions={val_df['SessionID'].nunique()})")
+        logger.info(f"Holdout: {hold_df['Sampling_Date'].min().date()} -> {hold_df['Sampling_Date'].max().date()} (n={len(hold_df)}, sessions={hold_df['SessionID'].nunique()})")
+        
+        logger.info(f"States in Train: {train_df['State'].unique().tolist()}")
+        logger.info(f"States in Val:   {val_df['State'].unique().tolist()}")
+        logger.info(f"States in Hold:  {hold_df['State'].unique().tolist()}")
         
         log_fold_details(logger, train_df, val_df)
 
@@ -403,6 +381,14 @@ def main():
         
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+        
+        holdout_ds = TiledBiomassDataset(
+            hold_df, 
+            transform=val_transform,
+            mode='holdout',  # Disables tiling
+            tile_prob=0.0
+        )
+        holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
         # Model
         dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation')
@@ -504,6 +490,8 @@ def main():
                 if best_fold_score > best_overall_score:
                     best_overall_score = best_fold_score
                     torch.save(model.state_dict(), os.path.join(session_dir, "best_model_overall.pth"))
+                    # Log high priority save
+                    logger.info(f"!!!!! NEW OVERALL BEST MODEL: Fold {fold+1}, Score {best_overall_score:.4f} !!!!!")
             else:
                 patience_counter += 1
                 

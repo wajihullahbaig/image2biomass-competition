@@ -259,8 +259,12 @@ def load_data(logger):
     # Assign functional groups (for model features)
     wide = assign_functional_groups(wide)
     
-    # === NEW: Region-Aware Stratification ===
+    # Region-Aware Stratification & Session ID ===
     wide['StratifyKey'] = wide.apply(get_stratify_key, axis=1)
+    
+    # Session ID for leakage protection: State + Date
+    # Multiple quadrats taken on the same day in the same state = 1 session
+    wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
     
     # Log distribution
     logger.info("\n" + "="*70)
@@ -350,9 +354,16 @@ def smart_temporal_split(df, stratify_col='StratifyKey'):
     # Final Choice: Use the later of the two dates to satisfy both constraints
     final_cutoff = max(target_cutoff_date, safe_cutoff_date)
     
+    # Session Guard: Ensure the final cutoff doesn't split a session
+    # (Though typically sessions are all on the same date, this is safer)
+    session_at_cutoff = df[df['Sampling_Date'] == final_cutoff]['SessionID'].unique()
+    
     # Split
     dev_df = df[df['Sampling_Date'] <= final_cutoff].copy()
     holdout_df = df[df['Sampling_Date'] > final_cutoff].copy()
+    
+    # Verification: If the last session in dev_df is also in holdout_df, move it entirely to one side
+    # But with strict temporal sorting, this shouldn't happen unless dates are identical.
     
     # Emergency fallback: If holdout is empty (rare), take the last 5% regardless
     if len(holdout_df) == 0:
@@ -361,6 +372,56 @@ def smart_temporal_split(df, stratify_col='StratifyKey'):
         holdout_df = df.iloc[split_idx:].copy()
         
     return dev_df, holdout_df
+
+def triple_moving_time_series_split(df, n_splits=5):
+    """
+    Implements a Triple Moving Window TimeSeriesSplit:
+    For each fold:
+    1. Train Set: Expanding window (0 to T)
+    2. Validation Set: Next session (T+1)
+    3. Holdout Set: Following session (T+2)
+    
+    This ensures we evaluate 'horizon + 1' and 'horizon + 2' consistently.
+    """
+    from sklearn.model_selection import TimeSeriesSplit
+    
+    # Get unique sessions and their dates
+    session_info = df.groupby('SessionID')['Sampling_Date'].min().sort_values()
+    sessions = session_info.index.tolist()
+    
+    if len(sessions) < n_splits + 2:
+        # Fallback if too few sessions: Reduce n_splits
+        n_splits = max(1, len(sessions) - 2)
+    
+    # We use TimeSeriesSplit but we need to ensure we have a 'buffer' for the holdout
+    # So we split on sessions[0 : -1] and then take the next one as holdout manually
+    # Actually, a cleaner way is manual indexing
+    
+    n_sessions = len(sessions)
+    for i in range(n_splits):
+        # Calculate indices based on n_splits
+        # We want the last split to have at least one session for Val and one for Holdout
+        # Simple heuristic for expanding window:
+        # Fold 0: Train[:base], Val[base], Hold[base+1]
+        # Fold last: Train[:-2], Val[-2], Hold[-1]
+        
+        # Determine the cutoff for this fold
+        # We need (n_splits + 2) chunks total.
+        # But TimeSeriesSplit is better for proportional growth.
+        # Let's use manual logic to ensure Val and Holdout are always 1 session each (minimum)
+        
+        val_idx_in_sessions = n_sessions - (n_splits - i) - 1
+        hold_idx_in_sessions = n_sessions - (n_splits - i) 
+        
+        train_sessions = sessions[:val_idx_in_sessions]
+        val_sessions = [sessions[val_idx_in_sessions]]
+        hold_sessions = [sessions[hold_idx_in_sessions]]
+        
+        train_indices = df[df['SessionID'].isin(train_sessions)].index.tolist()
+        val_indices = df[df['SessionID'].isin(val_sessions)].index.tolist()
+        hold_indices = df[df['SessionID'].isin(hold_sessions)].index.tolist()
+        
+        yield train_indices, val_indices, hold_indices
 
 # -----------------------------------------------------------------------------
 # 7. SEASONAL HELPERS & SMART UPSAMPLING

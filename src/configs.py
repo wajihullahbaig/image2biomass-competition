@@ -22,10 +22,10 @@ EPOCHS = 40
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
-MIN_TRAIN_SAMPLES = 100 # Skip folds with too little data
-BACKBONE_FREEZE_THRESHOLD = 200 # Keep backbone frozen until we have this many samples
+MIN_TRAIN_SAMPLES = 20 # Skip folds with too little data
+BACKBONE_FREEZE_THRESHOLD = 50 # Keep backbone frozen until we have this many samples
 MAX_GRAD_NORM = 1.0 # Gradient clipping
-BACKBONE_LR_FACTOR = 0.1 # Fine-tune backbone at 1/10th of head LR
+BACKBONE_LR_FACTOR = 0.80 # Fine-tune backbone at 1/10th of head LR
 
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -131,6 +131,9 @@ UPSAMPLE_CONFIG = {
     'target_min_samples': 20,  # Minimum samples per stratify key
     'method': 'smart',  # Only upsample sparse groups
     'noise_scale': 0.05,  # Add 5% noise to biomass targets (prevents overfitting)
+    'seasonal_drift': True,  # Apply season-aware target adjustments
+    'day_shift_prob': 0.7,   # Probability to shift ±1 day when synthesizing
+    'drift_strength': 0.15   # Base amplitude for seasonal drift multipliers
 }
 
 # ===== TEMPORAL SPLIT STRATEGY =====
@@ -138,6 +141,41 @@ SPLIT_CONFIG = {
     'holdout_pct': 0.15,  # 20% holdout for groups with enough data
     'sparse_threshold': 4,  # Groups ≤4 samples: keep all in training
     'small_threshold': 6,   # Groups 5-9: take 1-2 for holdout
+}
+
+# ====================== AUSTRALIAN SEASONS ======================
+# Meteorological seasons for Australia
+# Summer: Dec-Feb, Autumn: Mar-May, Winter: Jun-Aug, Spring: Sep-Nov
+SEASON_MONTH_MAP = {
+    1: 'summer', 2: 'summer', 12: 'summer',
+    3: 'autumn', 4: 'autumn', 5: 'autumn',
+    6: 'winter', 7: 'winter', 8: 'winter',
+    9: 'spring', 10: 'spring', 11: 'spring',
+}
+
+# Target-wise drift tendencies by season.
+# Values denote directional tendency (signed) that will be scaled by UPSAMPLE_CONFIG['drift_strength']
+SEASONAL_DRIFT = {
+    'spring': {
+        'Dry_Green_g': +1.0,   # greenness increases
+        'Dry_Dead_g':  -0.6,   # dead material decreases
+        'Dry_Clover_g': +0.6,  # clover often flushes in spring
+    },
+    'summer': {
+        'Dry_Green_g': +0.4,   # early/mid-summer growth pulses
+        'Dry_Dead_g':  +0.2,   # some senescence toward late summer
+        'Dry_Clover_g': +0.2,
+    },
+    'autumn': {
+        'Dry_Green_g': -0.6,   # greenness recedes
+        'Dry_Dead_g':  +0.8,   # dead material builds
+        'Dry_Clover_g': -0.2,
+    },
+    'winter': {
+        'Dry_Green_g': -0.8,   # minimal green biomass
+        'Dry_Dead_g':  +1.0,   # dead biomass peaks
+        'Dry_Clover_g': -0.2,
+    },
 }
 
 # return a string representation of the configuration
@@ -170,6 +208,8 @@ def config_str():
         f"STRATIFY: State + Dominant Species (Region-Aware)",
         f"UPSAMPLE: Enabled={UPSAMPLE_CONFIG['enabled']} (target={UPSAMPLE_CONFIG['target_min_samples']})",
         f"SPLIT: Adaptive temporal (sparse_threshold={SPLIT_CONFIG['sparse_threshold']})",
+        f"SEASONS: AU (Summer/Autumn/Winter/Spring)",
+        f"SEASONAL_DRIFT: {UPSAMPLE_CONFIG['seasonal_drift']} (strength={UPSAMPLE_CONFIG['drift_strength']})",
         f"MIN_TRAIN_SAMPLES: {MIN_TRAIN_SAMPLES}",
         f"BACKBONE_FREEZE_THRESHOLD: {BACKBONE_FREEZE_THRESHOLD}",
         f"MAX_GRAD_NORM: {MAX_GRAD_NORM}",

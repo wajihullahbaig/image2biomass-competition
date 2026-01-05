@@ -19,7 +19,7 @@ from configs import (
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, 
     IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES, GROUP_DEFINITIONS, 
     N_FOLDS, TAXONOMY_IDXS, get_stratify_key, 
-    UPSAMPLE_CONFIG, SPLIT_CONFIG
+    UPSAMPLE_CONFIG, SPLIT_CONFIG, SEASON_MONTH_MAP, SEASONAL_DRIFT
 )
 
 # -----------------------------------------------------------------------------
@@ -363,8 +363,60 @@ def smart_temporal_split(df, stratify_col='StratifyKey'):
     return dev_df, holdout_df
 
 # -----------------------------------------------------------------------------
-# 7. SMART UPSAMPLING
+# 7. SEASONAL HELPERS & SMART UPSAMPLING
 # -----------------------------------------------------------------------------
+
+def get_season(date_val):
+    """
+    Map a timestamp to Australian meteorological seasons.
+    Returns one of: 'summer','autumn','winter','spring'.
+    """
+    if pd.isna(date_val):
+        return 'spring'
+    month = int(pd.to_datetime(date_val).month)
+    return SEASON_MONTH_MAP.get(month, 'spring')
+
+def apply_seasonal_drift(row: pd.Series, season: str, drift_strength: float) -> pd.Series:
+    """
+    Adjust biomass targets according to seasonal tendencies.
+    - Applies multiplicative drift to selected components.
+    - Recomputes `Dry_Total_g` as Clover + Dead + Green.
+    - Scales `GDM_g` proportionally to total change when possible.
+    """
+    tendencies = SEASONAL_DRIFT.get(season, {})
+    # Copy to avoid mutating original during pandas operations
+    new_row = row.copy()
+
+    # Components potentially present
+    components = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+    for comp in components:
+        if comp in new_row.index:
+            base = float(new_row.get(comp, 0.0))
+            t = float(tendencies.get(comp, 0.0))
+            # Randomize magnitude slightly to avoid monotony
+            mag = np.random.uniform(0.5, 1.0)
+            factor = 1.0 + (t * drift_strength * mag)
+            # Clamp factor to reasonable bounds
+            factor = max(0.5, min(1.5, factor))
+            new_row[comp] = max(0.0, base * factor)
+
+    # Recompute total
+    if all(c in new_row.index for c in components):
+        total_old = float(row.get('Dry_Total_g', 0.0))
+        total_new = float(new_row['Dry_Clover_g']) + float(new_row['Dry_Dead_g']) + float(new_row['Dry_Green_g'])
+        new_row['Dry_Total_g'] = max(0.0, total_new)
+
+        # Scale GDM proportionally if present
+        if 'GDM_g' in new_row.index:
+            if total_old > 0:
+                scale = total_new / total_old
+                new_row['GDM_g'] = max(0.0, float(new_row['GDM_g']) * scale)
+            else:
+                # fallback: track green dominance
+                g = float(new_row['Dry_Green_g'])
+                new_row['GDM_g'] = max(0.0, g)
+
+    return new_row
 
 def smart_upsample(train_df, stratify_col='StratifyKey',date_col='Sampling_Date'):
     """
@@ -385,6 +437,9 @@ def smart_upsample(train_df, stratify_col='StratifyKey',date_col='Sampling_Date'
     
     target_min = UPSAMPLE_CONFIG['target_min_samples']
     noise_scale = UPSAMPLE_CONFIG['noise_scale']
+    use_seasonal = UPSAMPLE_CONFIG.get('seasonal_drift', False)
+    day_shift_prob = UPSAMPLE_CONFIG.get('day_shift_prob', 0.0)
+    drift_strength = UPSAMPLE_CONFIG.get('drift_strength', 0.0)
     
     groups = []
     
@@ -401,6 +456,43 @@ def smart_upsample(train_df, stratify_col='StratifyKey',date_col='Sampling_Date'
             n_needed = target_min - n
             upsampled = key_df.sample(n=n_needed, replace=True, random_state=42).copy()
             
+            # Optionally shift dates by ±1 day (vectorized) and apply seasonal drift
+            if day_shift_prob > 0:
+                shift_mask = np.random.rand(len(upsampled)) < day_shift_prob
+                if shift_mask.any():
+                    offsets = np.random.choice([-1, 1], size=int(shift_mask.sum()))
+                    shifted_dates = pd.to_datetime(upsampled.loc[shift_mask, date_col]) + pd.to_timedelta(offsets, unit='D')
+                    upsampled.loc[shift_mask, date_col] = shifted_dates
+
+            if use_seasonal:
+                seasons = upsampled[date_col].apply(get_season)
+                rand_mag = np.random.uniform(0.5, 1.0, size=len(upsampled))
+                components = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+                for comp in components:
+                    if comp in upsampled.columns:
+                        t_series = seasons.map(lambda s: SEASONAL_DRIFT.get(s, {}).get(comp, 0.0)).astype(float)
+                        factors = np.clip(1.0 + t_series.values * drift_strength * rand_mag, 0.5, 1.5)
+                        base = upsampled[comp].astype(float).values
+                        upsampled[comp] = np.maximum(0.0, base * factors)
+
+                # Recompute totals and adjust GDM proportionally
+                if all(c in upsampled.columns for c in components):
+                    total_new = (
+                        upsampled['Dry_Clover_g'].astype(float).values +
+                        upsampled['Dry_Dead_g'].astype(float).values +
+                        upsampled['Dry_Green_g'].astype(float).values
+                    )
+                    if 'Dry_Total_g' in upsampled.columns:
+                        upsampled['Dry_Total_g'] = np.maximum(0.0, total_new)
+                    if 'GDM_g' in upsampled.columns:
+                        total_old = upsampled['Dry_Total_g'].astype(float).values if 'Dry_Total_g' in upsampled.columns else np.zeros_like(total_new)
+                        scale = np.divide(total_new, total_old, out=np.ones_like(total_new), where=total_old > 0)
+                        gdm = upsampled['GDM_g'].astype(float).values
+                        gdm_scaled = np.maximum(0.0, gdm * scale)
+                        # Fallback to green component where old total is zero
+                        gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
+                        upsampled['GDM_g'] = gdm_final
+
             # Add noise to biomass targets (avoid exact duplicates)
             biomass_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
             for col in biomass_cols:

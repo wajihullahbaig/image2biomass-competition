@@ -366,6 +366,16 @@ def smart_temporal_split(df, stratify_col='StratifyKey'):
 # 7. SEASONAL HELPERS & SMART UPSAMPLING
 # -----------------------------------------------------------------------------
 
+def add_cv_group(df: pd.DataFrame, date_col: str = 'Sampling_Date') -> pd.DataFrame:
+    """
+    Add a group identifier combining State and Sampling_Date (YYYY-MM-DD) to avoid leakage
+    across splits when the same state-date appears.
+    """
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df['cv_group'] = df['State'].astype(str) + "_" + df[date_col].dt.strftime('%Y-%m-%d')
+    return df
+
 def get_season(date_val):
     """
     Map a timestamp to Australian meteorological seasons.

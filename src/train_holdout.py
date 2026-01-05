@@ -32,7 +32,7 @@ from common import (
     load_data, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2, smart_upsample,
     get_taxonomy_targets,
-    rotate_crop_resize, smart_temporal_split
+    rotate_crop_resize, add_cv_group
 )
 from log_and_plots import (
     setup_logging, plot_training_history, 
@@ -304,7 +304,8 @@ def main():
     # 1. Load Data
     df = load_data(logger)
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
-    logger.info("Data sorted by Sampling_Date.")
+    df = add_cv_group(df)
+    logger.info("Data sorted by Sampling_Date and grouped by State+Date (cv_group).")
     
     species_list = CORE_SPECIES
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -313,25 +314,27 @@ def main():
     splits_dir = os.path.join(session_dir, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
     
-    # 2. Smart Temporal Split
-    stratification_col = 'StratifyKey'
-    dev_df, global_holdout_df = smart_temporal_split(df, stratify_col=stratification_col)
-    
-    dev_df = dev_df.sort_values('Sampling_Date').reset_index(drop=True)
-    global_holdout_df = global_holdout_df.sort_values('Sampling_Date').reset_index(drop=True)
-    
-    total_len = len(df)
-    
+    # 2. Strict temporal holdout by State+Date group (cv_group)
+    unique_groups = (
+        df[['cv_group', 'Sampling_Date']]
+        .drop_duplicates()
+        .sort_values('Sampling_Date')
+        .reset_index(drop=True)
+    )
+    cutoff_gidx = int(len(unique_groups) * (1.0 - configs.SPLIT_CONFIG.get('holdout_pct', 0.15)))
+    dev_groups = set(unique_groups.iloc[:cutoff_gidx]['cv_group'])
+    holdout_groups = set(unique_groups.iloc[cutoff_gidx:]['cv_group'])
+
+    dev_df = df[df['cv_group'].isin(dev_groups)].copy().reset_index(drop=True)
+    global_holdout_df = df[df['cv_group'].isin(holdout_groups)].copy().reset_index(drop=True)
+
     logger.info(f"\n{'='*40}")
-    logger.info(f"SPECIES-STRATIFIED TEMPORAL HOLDOUT")
+    logger.info("STRICT TEMPORAL HOLDOUT (grouped by State+Date)")
     logger.info(f"{'='*40}")
-    logger.info(f"Total Samples: {total_len}")
+    logger.info(f"Total Samples: {len(df)}")
     logger.info(f"Development Set: {len(dev_df)} ({dev_df['Sampling_Date'].min().date()} -> {dev_df['Sampling_Date'].max().date()})")
     logger.info(f"Global Holdout:  {len(global_holdout_df)} ({global_holdout_df['Sampling_Date'].min().date()} -> {global_holdout_df['Sampling_Date'].max().date()})")
-    
-    hol_sp_counts = global_holdout_df['StratifyKey'].value_counts().head(5)
-    logger.info(f"Top 5 Species in Holdout:\n{hol_sp_counts}")
-    
+
     global_holdout_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
     
     # 3. Prepare Data Transforms
@@ -346,15 +349,24 @@ def main():
     )
     holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
     
-    # 5. Time-Series Split on Development Set
+    # 5. Group-wise Time-Series Split on Development Set
+    group_index_df = (
+        dev_df[['cv_group', 'Sampling_Date']]
+        .drop_duplicates()
+        .sort_values('Sampling_Date')
+        .reset_index(drop=True)
+    )
     tscv = TimeSeriesSplit(n_splits=N_FOLDS)
     
     best_overall_score = -float('inf')
     stratification_col = 'StratifyKey'
     
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(dev_df)):
-        train_df = dev_df.iloc[train_idx].copy()
-        val_df = dev_df.iloc[val_idx].copy()
+    for fold, (g_train_idx, g_val_idx) in enumerate(tscv.split(group_index_df)):
+        train_groups = set(group_index_df.iloc[g_train_idx]['cv_group'])
+        val_groups = set(group_index_df.iloc[g_val_idx]['cv_group'])
+        
+        train_df = dev_df[dev_df['cv_group'].isin(train_groups)].copy().reset_index(drop=True)
+        val_df = dev_df[dev_df['cv_group'].isin(val_groups)].copy().reset_index(drop=True)
         raw_n_train = len(train_df)
         
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} {'='*20}")

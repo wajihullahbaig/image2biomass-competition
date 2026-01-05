@@ -22,8 +22,8 @@ EPOCHS = 40
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/efficientnetv2_rw_s.ra2_in1k'  
-MIN_TRAIN_SAMPLES = 120 # Skip folds with too little data
-BACKBONE_FREEZE_THRESHOLD = 180 # Keep backbone frozen until we have this many samples
+MIN_TRAIN_SAMPLES = 150 # Skip folds with too little data
+BACKBONE_FREEZE_THRESHOLD = 250 # Keep backbone frozen until we have this many samples
 MAX_GRAD_NORM = 1.0 # Gradient clipping
 BACKBONE_LR_FACTOR = 0.1 # Fine-tune backbone at 1/10th of head LR
 
@@ -35,7 +35,10 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 # training settings
 FREEZE_BACKBONE = False
 BACKBONE_FREEZE_FRACTION = 0.7
-USE_TTA = True
+# --- Augmentation & Tiling Settings ---
+TILE_PROB = 0.8        # Prob of applying tiling (Mode 1 or 2)
+MIXUP_PROB = 0.10      # Prob of applying MixUp
+MIXUP_ALPHA = 0.25     # Mixing distribution alpha parameter
 
 # --- Model Settings ---
 FUSION_DIM = 256
@@ -154,6 +157,9 @@ def config_str():
         f"FREEZE_BACKBONE: {FREEZE_BACKBONE}",
         f"BACKBONE_FREEZE_FRACTION: {BACKBONE_FREEZE_FRACTION}",
         f"USE_TTA: {USE_TTA}",
+        f"TILE_PROB: {TILE_PROB}",
+        f"MIXUP_PROB: {MIXUP_PROB}",
+        f"MIXUP_ALPHA: {MIXUP_ALPHA}",
         f"FUSION_DIM: {FUSION_DIM}",
         f"AUX_FEAT_WEIGHT: {AUX_FEAT_WEIGHT}",
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",

@@ -22,10 +22,10 @@ from configs import (
     EARLY_STOP_PATIENCE, N_FOLDS,
     BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
     OFFICIAL_WEIGHTS, config_str,
-    CORE_SPECIES, USE_TTA,
     MIN_TRAIN_SAMPLES, BACKBONE_FREEZE_THRESHOLD,
     FREEZE_BACKBONE, BACKBONE_FREEZE_FRACTION,
-    MAX_GRAD_NORM, BACKBONE_LR_FACTOR
+    MAX_GRAD_NORM, BACKBONE_LR_FACTOR,
+    TILE_PROB, MIXUP_PROB, MIXUP_ALPHA
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
@@ -389,9 +389,9 @@ def main():
             train_df, 
             transform=train_transform,
             mode='training',  # Enables tiling
-            tile_prob=0.8     # 80% of samples get tiled
+            tile_prob=TILE_PROB
         )
-        train_ds = TiledMixupDataset(train_ds_base, prob=0.10, alpha=0.25)
+        train_ds = TiledMixupDataset(train_ds_base, prob=MIXUP_PROB, alpha=MIXUP_ALPHA)
         
         val_ds = TiledBiomassDataset(
             val_df, 

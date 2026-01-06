@@ -167,12 +167,41 @@ def setup_logging(logger_name="System Logger", log_dir='logs', file_name_part=No
     
     return session_dir
 
-def log_fold_details(logger, train_df, val_df):
-    def get_basic_stats(df):
+def get_basic_stats(df):
         if len(df) == 0: return "EMPTY", "EMPTY"
         dates = f"{df['Sampling_Date'].min().date()} -> {df['Sampling_Date'].max().date()}"
         states = sorted(df['State'].unique().tolist())
         return dates, states
+    
+def log_dataframe_details(logger, df, name="DataFrame"):
+    t_dates, t_states = get_basic_stats(df)
+    # Species Table
+    sp_counts = df['Species'].value_counts()
+    all_species = sorted(sp_counts.index.tolist())
+    table_msg = f"{'Species':<30} | {'Count':>8}"
+    table_msg += "\n    " + "-" * 40
+    total_count = 0
+    for sp in all_species:
+        count = sp_counts.get(sp, 0)
+        table_msg += f"\n    {str(sp)[:30]:<30} | {count:>8}"
+        total_count += count
+    table_msg += "\n    " + "-" * 40
+    table_msg += f"\n    {'TOTAL':<30} | {total_count:>8}"
+    msg = f"""
+    \n    -----------------------------------------------------------------
+    {name} DETAILS
+    -----------------------------------------------------------------
+    Dates:  {t_dates}
+    States: {t_states}
+    SPECIES DISTRIBUTION:
+    {table_msg}
+    -----------------------------------------------------------------
+    """
+    logger.info(msg)
+    
+    
+def log_fold_details(logger, train_df, val_df):
+    
 
     t_dates, t_states = get_basic_stats(train_df)
     v_dates, v_states = get_basic_stats(val_df)

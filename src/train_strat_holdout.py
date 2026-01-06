@@ -1,5 +1,5 @@
-# train_holdout.py
-# train_holdout_tiled.py - Enhanced Training with Tile Augmentation
+# train_strat_holdout.py
+# Stratified train/validation with temporal holdout
 import os
 import logging
 import torch
@@ -9,7 +9,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import StratifiedKFold
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -29,13 +29,13 @@ from configs import (
     TILE_PROB, MIXUP_PROB, MIXUP_ALPHA
 )
 from common import (
-    load_data, get_image_data_transforms, save_batch_images, 
+    load_data, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2, smart_upsample,
     get_taxonomy_targets,
-    rotate_crop_resize, smart_temporal_split, triple_moving_time_series_split
+    rotate_crop_resize
 )
 from log_and_plots import (
-    log_dataframe_details, setup_logging, plot_training_history, 
+    log_dataframe_details, log_dataframe_details, setup_logging, plot_training_history,
     log_fold_details
 )
 
@@ -63,7 +63,7 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
 
 
 # -----------------------------------------------------------------------------
-# TRAINING ENGINE (No changes needed - works with tiled data automatically)
+# TRAINING ENGINE (reused from tiled training)
 # -----------------------------------------------------------------------------
 def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, device, epoch, session_dir=None, logger=None):
     model.train()
@@ -269,6 +269,7 @@ def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', u
     
     return final_metrics
 
+
 def save_metadata(session_dir, species_list, target_cols):
     metadata = {
         'species_list': species_list,
@@ -288,15 +289,13 @@ def save_metadata(session_dir, species_list, target_cols):
 # MAIN EXECUTION
 # -----------------------------------------------------------------------------
 def main():
-    session_dir = setup_logging(file_name_part="tiled_stratified_holdout")
+    session_dir = setup_logging(file_name_part="stratified_holdout")
     logger = logging.getLogger("System Logger")
     set_seed(42, logger)
     
     logger.info("="*70)
-    logger.info("TILE-BASED AUGMENTATION ENABLED")
-    logger.info("Each training sample generates 6 views:")
-    logger.info("  1x Original + 1x Stitched + 4x Divided Tiles")
-    logger.info("Effective Training Set Size: N_samples × 6")
+    logger.info("STRATIFIED TRAIN/VAL + TEMPORAL HOLDOUT")
+    logger.info("Tile-based augmentation enabled for training.")
     logger.info("="*70)
     
     logger.info(config_str())
@@ -310,50 +309,64 @@ def main():
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     save_metadata(session_dir, species_list, target_cols)
 
-    # Sort full df by Sampling_Date
-    df = df.sort_values('Sampling_Date').reset_index(drop=True)
-    
     splits_dir = os.path.join(session_dir, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
     
     # 2. Prepare Data Transforms
     train_transform, val_transform = get_image_data_transforms()
     
-    best_overall_score = -float('inf')
-    stratification_col = 'StratifyKey'
+    # 3. Temporal holdout by latest fraction
+    holdout_pct = configs.SPLIT_CONFIG.get('holdout_pct', 0.15)
+    cutoff_idx = int(len(df) * (1.0 - holdout_pct))
+    dev_df = df.iloc[:cutoff_idx].copy().reset_index(drop=True)
+    hold_df = df.iloc[cutoff_idx:].copy().reset_index(drop=True)
     
-    # 3. Triple Moving Window Split
-    for fold, (train_idx, val_idx, hold_idx) in enumerate(triple_moving_time_series_split(df, n_splits=N_FOLDS)):
-        train_df = df.iloc[train_idx].copy()
-        val_df = df.iloc[val_idx].copy()
-        hold_df = df.iloc[hold_idx].copy()
+    log_dataframe_details(logger, dev_df, name="Development Set")
+    log_dataframe_details(logger, hold_df, name="Temporal Holdout Set")
+    
+    logger.info(f"Total Samples: {len(df)}")
+    logger.info(f"Development Set: {len(dev_df)} ({dev_df['Sampling_Date'].min().date()} -> {dev_df['Sampling_Date'].max().date()})")
+    logger.info(f"Temporal Holdout: {len(hold_df)} ({hold_df['Sampling_Date'].min().date()} -> {hold_df['Sampling_Date'].max().date()})")
+    hold_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
+    
+    # 4. Stratified K-Fold on dev set (by StratifyKey)
+    if 'StratifyKey' not in dev_df.columns:
+        raise ValueError("StratifyKey column not found in dataframe. Ensure preprocessing populates it.")
+    
+    best_overall_score = -float('inf')
+    
+    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    
+    for fold, (train_idx, val_idx) in enumerate(skf.split(dev_df, dev_df['StratifyKey'])):
+        train_df = dev_df.iloc[train_idx].copy().reset_index(drop=True)
+        val_df = dev_df.iloc[val_idx].copy().reset_index(drop=True)
         
         raw_n_train = len(train_df)
         
-        logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} (Triple Moving Window) {'='*20}")
-        logger.info(f"Train:   {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)}, sessions={train_df['SessionID'].nunique()})")
-        logger.info(f"Val:     {val_df['Sampling_Date'].min().date()} -> {val_df['Sampling_Date'].max().date()} (n={len(val_df)}, sessions={val_df['SessionID'].nunique()})")
-        logger.info(f"Holdout: {hold_df['Sampling_Date'].min().date()} -> {hold_df['Sampling_Date'].max().date()} (n={len(hold_df)}, sessions={hold_df['SessionID'].nunique()})")
+        logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} (Stratified KFold) {'='*20}")
+        logger.info(f"Train:   {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)}, sessions={train_df['SessionID'].nunique() if 'SessionID' in train_df.columns else 'N/A'})")
+        logger.info(f"Val:     {val_df['Sampling_Date'].min().date()} -> {val_df['Sampling_Date'].max().date()} (n={len(val_df)}, sessions={val_df['SessionID'].nunique() if 'SessionID' in val_df.columns else 'N/A'})")
+        logger.info(f"Holdout: {hold_df['Sampling_Date'].min().date()} -> {hold_df['Sampling_Date'].max().date()} (n={len(hold_df)}, sessions={hold_df['SessionID'].nunique() if 'SessionID' in hold_df.columns else 'N/A'})")
         
-        logger.info(f"States in Train: {train_df['State'].unique().tolist()}")
-        logger.info(f"States in Val:   {val_df['State'].unique().tolist()}")
-        logger.info(f"States in Hold:  {hold_df['State'].unique().tolist()}")
+        if 'State' in train_df.columns:
+            logger.info(f"States in Train: {train_df['State'].unique().tolist()}")
+            logger.info(f"States in Val:   {val_df['State'].unique().tolist()}")
+            logger.info(f"States in Hold:  {hold_df['State'].unique().tolist()}")
         
-        log_dataframe_details(logger, hold_df, name="Holdout Set")
         log_fold_details(logger, train_df, val_df)
 
         if raw_n_train < MIN_TRAIN_SAMPLES:
             logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({raw_n_train} < {MIN_TRAIN_SAMPLES})")
             continue
- 
-        # Upsampling
-        logger.info("\nUpsampling Train Set")
+        
+        # 5. Upsample training set only
+        logger.info("\nUpsampling Train Set (per-fold)")
         logger.info(f"Before Upsampling: {train_df['StratifyKey'].value_counts()}")
         train_df = smart_upsample(train_df, stratify_col='StratifyKey')
         logger.info(f"After Upsampling: {train_df['StratifyKey'].value_counts()}")
         
-        # Calculate effective training size with tiling
-        effective_train_size = len(train_df) * 6  # 6 views per sample
+        # Effective train size with tiling
+        effective_train_size = len(train_df) * 6
         logger.info(f"\n{'='*40}")
         logger.info(f"EFFECTIVE TRAINING SIZE WITH TILING")
         logger.info(f"Base Samples: {len(train_df)}")
@@ -364,31 +377,32 @@ def main():
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
         val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
         
-        # ===== KEY CHANGE: Use TiledBiomassDataset =====
+        # Datasets
         train_ds_base = TiledBiomassDataset(
-            train_df, 
+            train_df,
             transform=train_transform,
-            mode='training',  # Enables tiling
+            mode='training',
             tile_prob=TILE_PROB
         )
         train_ds = TiledMixupDataset(train_ds_base, prob=MIXUP_PROB, alpha=MIXUP_ALPHA)
         
         val_ds = TiledBiomassDataset(
-            val_df, 
+            val_df,
             transform=val_transform,
-            mode='validation',  # Disables tiling
+            mode='validation',
             tile_prob=0.0
         )
-        
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
-        val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
         holdout_ds = TiledBiomassDataset(
-            hold_df, 
+            hold_df,
             transform=val_transform,
-            mode='holdout',  # Disables tiling
+            mode='holdout',
             tile_prob=0.0
         )
+        
+        # Loaders (shuffle=True for train)
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
+        val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
         # Model
@@ -427,7 +441,7 @@ def main():
         optimizer = AdamW(param_groups, weight_decay=WEIGHT_DECAY)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, threshold=1e-3, min_lr=1e-6)
         
-        criterion_reg = nn.MSELoss() 
+        criterion_reg = nn.MSELoss()
         criterion_ce = nn.CrossEntropyLoss()
         
         history = defaultdict(list)
@@ -440,7 +454,7 @@ def main():
         for epoch in range(EPOCHS):
             # Train
             train_metrics = train_one_epoch(
-                model, train_loader, optimizer, criterion_reg, criterion_ce, 
+                model, train_loader, optimizer, criterion_reg, criterion_ce,
                 DEVICE, epoch, session_dir=session_dir, logger=logger
             )
             
@@ -449,7 +463,7 @@ def main():
             
             # Holdout
             hol_metrics = validate(
-                model, holdout_loader, criterion_reg, criterion_ce, DEVICE, 
+                model, holdout_loader, criterion_reg, criterion_ce, DEVICE,
                 prefix='holdout', use_tta=USE_TTA,
                 epoch=epoch, fold=fold, session_dir=session_dir
             )
@@ -491,7 +505,6 @@ def main():
                 if best_fold_score > best_overall_score:
                     best_overall_score = best_fold_score
                     torch.save(model.state_dict(), os.path.join(session_dir, "best_model_overall.pth"))
-                    # Log high priority save
                     logger.info(f"!!!!! NEW OVERALL BEST MODEL: Fold {fold+1}, Score {best_overall_score:.4f} !!!!!")
             else:
                 patience_counter += 1

@@ -15,18 +15,17 @@ IMAGE_HEIGHT = 256
 IMAGE_WIDTH = 512
 
 # Training Hyperparameters
-BATCH_SIZE = 16 
-LEARNING_RATE = 1e-4 
-N_FOLDS = 3
+BATCH_SIZE = 32 
+LEARNING_RATE = 2e-4 
+N_FOLDS = 5
 EPOCHS = 40 
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
-MIN_TRAIN_SAMPLES = 20 # Skip folds with too little data
-BACKBONE_FREEZE_THRESHOLD = 50 # Keep backbone frozen until we have this many samples
-MAX_GRAD_NORM = 1.0 # Gradient clipping
-BACKBONE_LR_FACTOR = 0.80 # Fine-tune backbone at 1/10th of head LR
-
+MIN_TRAIN_SAMPLES = 50 # Skip folds with too little data
+BACKBONE_FREEZE_THRESHOLD = 200 # Unfreeze earlier to allow domain adaptation
+MAX_GRAD_NORM = 1.5 # Gradient clipping
+BACKBONE_LR_FACTOR = 0.80 # Fine-tune backbone at the BACKBONE_LR_FACTOR*LR of LR
 # Use Official Weights for Loss Calculation
 TARGET_COLS = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
 # Official Weights: Clover, Dead, Green, Total, GDM
@@ -39,13 +38,13 @@ USE_TTA = True
 # --- Augmentation & Tiling Settings ---
 TILE_PROB = 0.8        # Prob of applying tiling (Mode 1 or 2)
 MIXUP_PROB = 0.10      # Prob of applying MixUp
-MIXUP_ALPHA = 0.25     # Mixing distribution alpha parameter
+MIXUP_ALPHA = 0.40     # Higher alpha for more aggressive regularization on small data
 
 # --- Model Settings ---
 FUSION_DIM = 256
 # Balanced Weights: Scaling optimized for Gram-scale Log-space
 # Reduced Biomass weight slightly to prevent exploding gradients during unfreeze
-BIOMASS_FEAT_WEIGHT = 50.0 
+BIOMASS_FEAT_WEIGHT = 80.0 
 AUX_FEAT_WEIGHT = 15.0
 SPECIES_FEAT_WEIGHT = 20.0
 TAXONOMY_FEAT_WEIGHT = 25.0

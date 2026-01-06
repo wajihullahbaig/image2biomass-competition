@@ -259,8 +259,12 @@ def load_data(logger):
     # Assign functional groups (for model features)
     wide = assign_functional_groups(wide)
     
-    # === NEW: Region-Aware Stratification ===
+    # Region-Aware Stratification & Session ID ===
     wide['StratifyKey'] = wide.apply(get_stratify_key, axis=1)
+    
+    # Session ID for leakage protection: State + Date
+    # Multiple quadrats taken on the same day in the same state = 1 session
+    wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
     
     # Log distribution
     logger.info("\n" + "="*70)
@@ -350,9 +354,16 @@ def smart_temporal_split(df, stratify_col='StratifyKey'):
     # Final Choice: Use the later of the two dates to satisfy both constraints
     final_cutoff = max(target_cutoff_date, safe_cutoff_date)
     
+    # Session Guard: Ensure the final cutoff doesn't split a session
+    # (Though typically sessions are all on the same date, this is safer)
+    session_at_cutoff = df[df['Sampling_Date'] == final_cutoff]['SessionID'].unique()
+    
     # Split
     dev_df = df[df['Sampling_Date'] <= final_cutoff].copy()
     holdout_df = df[df['Sampling_Date'] > final_cutoff].copy()
+    
+    # Verification: If the last session in dev_df is also in holdout_df, move it entirely to one side
+    # But with strict temporal sorting, this shouldn't happen unless dates are identical.
     
     # Emergency fallback: If holdout is empty (rare), take the last 5% regardless
     if len(holdout_df) == 0:
@@ -361,6 +372,68 @@ def smart_temporal_split(df, stratify_col='StratifyKey'):
         holdout_df = df.iloc[split_idx:].copy()
         
     return dev_df, holdout_df
+
+def triple_moving_time_series_split(df, n_splits=5, window_pct=0.25):
+    """
+    Implements a Triple Moving Window TimeSeriesSplit with MULTI-SESSION windows.
+    Each fold:
+    1. Val Set: Window of sessions (~window_pct of total).
+    2. Holdout Set: Subsequent window of sessions (~window_pct of total).
+    3. Train Set: All sessions before the Val window.
+    """
+    # Get unique sessions and their dates
+    session_info = df.groupby('SessionID')['Sampling_Date'].min().sort_values()
+    sessions = session_info.index.tolist()
+    n_sessions = len(sessions)
+    
+    # Calculate window size (at least 1 session)
+    window_size = max(1, int(n_sessions * window_pct))
+    
+    # We want the LAST fold to have Holdout as the very latest sessions
+    # and Val as the sessions just before those.
+    # Total eval sessions per fold = 2 * window_size
+    # Total sessions required to 'move' across n_splits: 
+    # Let's use a simpler proportional shift
+    
+    # Calculate indices for the windows
+    # For fold i, the holdout ends at some index.
+    # To ensure we utilize the whole dataset, let's fix the windows for the LATEST fold
+    # and move them backwards for earlier folds.
+    
+    for i in range(n_splits):
+        # Shift the eval windows backwards from the end
+        # Fold (n_splits-1) should have holdout ending at n_sessions
+        # Fold i should have holdout ending at (n_sessions - (n_splits - 1 - i))
+        
+        end_idx = n_sessions - (n_splits - 1 - i)
+        hold_start = end_idx - window_size
+        val_start = hold_start - window_size
+        
+        # Guard against index overflow/underflow
+        if val_start < 1: 
+             # Not enough data for this n_splits/window_size combo
+             # Adjust val_start to at least 1 session for train
+             val_start = max(1, i + 1) # Ensure train grows by at least 1 session per fold
+             hold_start = val_start + window_size
+             end_idx = hold_start + window_size
+             
+             if end_idx > n_sessions:
+                 # Last resort fallback if total sessions < required
+                 # Divide remaining sessions between Val and Hold
+                 remaining = n_sessions - val_start
+                 w = max(1, remaining // 2)
+                 hold_start = val_start + w
+                 end_idx = n_sessions
+
+        train_sessions = sessions[:val_start]
+        val_sessions = sessions[val_start:hold_start]
+        hold_sessions = sessions[hold_start:end_idx]
+        
+        train_indices = df[df['SessionID'].isin(train_sessions)].index.tolist()
+        val_indices = df[df['SessionID'].isin(val_sessions)].index.tolist()
+        hold_indices = df[df['SessionID'].isin(hold_sessions)].index.tolist()
+        
+        yield train_indices, val_indices, hold_indices
 
 # -----------------------------------------------------------------------------
 # 7. SEASONAL HELPERS & SMART UPSAMPLING

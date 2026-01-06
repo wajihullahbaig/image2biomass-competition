@@ -22,8 +22,8 @@ EPOCHS = 40
 WEIGHT_DECAY = 0.05
 EARLY_STOP_PATIENCE = 20
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
-MIN_TRAIN_SAMPLES = 200 # Skip folds with too little data
-BACKBONE_FREEZE_THRESHOLD = 500 # Unfreeze earlier to allow domain adaptation
+MIN_TRAIN_SAMPLES = 50 # Skip folds with too little data
+BACKBONE_FREEZE_THRESHOLD = 200 # Unfreeze earlier to allow domain adaptation
 MAX_GRAD_NORM = 1.5 # Gradient clipping
 BACKBONE_LR_FACTOR = 0.80 # Fine-tune backbone at the BACKBONE_LR_FACTOR*LR of LR
 # Use Official Weights for Loss Calculation

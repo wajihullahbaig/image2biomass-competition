@@ -373,7 +373,7 @@ def smart_temporal_split(df, stratify_col='StratifyKey'):
         
     return dev_df, holdout_df
 
-def triple_moving_time_series_split(df, n_splits=5, window_pct=0.15):
+def triple_moving_time_series_split(df, n_splits=5, window_pct=0.25):
     """
     Implements a Triple Moving Window TimeSeriesSplit with MULTI-SESSION windows.
     Each fold:

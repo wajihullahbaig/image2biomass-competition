@@ -29,7 +29,7 @@ from configs import (
     TILE_PROB, MIXUP_PROB, MIXUP_ALPHA
 )
 from common import (
-    load_data, get_image_data_transforms, save_batch_images,
+    get_season, load_data, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2, smart_upsample,
     get_taxonomy_targets,
     rotate_crop_resize
@@ -303,6 +303,7 @@ def main():
     # 1. Load Data
     df = load_data(logger)
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
+    df['Season'] = df['Sampling_Date'].apply(get_season)
     logger.info("Data sorted by Sampling_Date.")
     
     species_list = CORE_SPECIES
@@ -315,11 +316,23 @@ def main():
     # 2. Prepare Data Transforms
     train_transform, val_transform = get_image_data_transforms()
     
-    # 3. Temporal holdout by latest fraction
+    # 3. Species-stratified temporal holdout (last X% per species)
     holdout_pct = configs.SPLIT_CONFIG.get('holdout_pct', 0.15)
-    cutoff_idx = int(len(df) * (1.0 - holdout_pct))
-    dev_df = df.iloc[:cutoff_idx].copy().reset_index(drop=True)
-    hold_df = df.iloc[cutoff_idx:].copy().reset_index(drop=True)
+    species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
+    if species_col is None:
+        raise ValueError("No species column found (expected 'species_id' or 'Species').")
+    
+    # df is already sorted by Sampling_Date; select last fraction per species
+    hold_idx = []
+    for sp, g in df.groupby(species_col):
+        n = len(g)
+        k = max(1, int(np.ceil(n * holdout_pct)))
+        hold_idx.extend(g.index[-k:])
+    
+    hold_df = df.loc[hold_idx].copy().reset_index(drop=True)
+    dev_df = df.drop(hold_idx).copy().reset_index(drop=True)
+    hold_df = hold_df.sort_values('Sampling_Date').reset_index(drop=True)
+    dev_df = dev_df.sort_values('Sampling_Date').reset_index(drop=True)
     
     log_dataframe_details(logger, dev_df, name="Development Set")
     log_dataframe_details(logger, hold_df, name="Temporal Holdout Set")
@@ -335,7 +348,7 @@ def main():
     
     best_overall_score = -float('inf')
     
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=False)
     
     for fold, (train_idx, val_idx) in enumerate(skf.split(dev_df, dev_df['StratifyKey'])):
         train_df = dev_df.iloc[train_idx].copy().reset_index(drop=True)

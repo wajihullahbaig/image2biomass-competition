@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/stratified_holdout_20260104_104702'
+MODEL_DIR = './logs/groupkfold_holdout_20260106_174233'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -38,6 +38,7 @@ IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 32
 
 # FEATURE FLAGS
+USE_TTA = True              # Enable/Disable Test-Time Augmentation
 SAVE_IMAGES = True          # Save augmented images for debugging
 MAX_IMAGES_TO_SAVE = 10     # Only save first N batches to avoid disk fill
 
@@ -490,5 +491,4 @@ def run_inference(USE_TTA=True):
     print("="*80)
 
 if __name__ == '__main__':
-    USE_TTA = True  
     run_inference(USE_TTA)

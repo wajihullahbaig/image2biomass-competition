@@ -33,7 +33,7 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 
 # training settings
 FREEZE_BACKBONE = False
-BACKBONE_FREEZE_FRACTION = 0.7
+BACKBONE_FREEZE_FRACTION = 0.5
 USE_TTA = True
 # --- Augmentation & Tiling Settings ---
 TILE_PROB = 0.8        # Prob of applying tiling (Mode 1 or 2)
@@ -42,7 +42,7 @@ MIXUP_ALPHA = 0.40     # Higher alpha for more aggressive regularization on smal
 
 # --- Sampling Balance (optional) ---
 # If True, training uses WeightedRandomSampler (by StratifyKey) instead of dataframe upsampling
-USE_WEIGHTED_SAMPLER = True
+USE_WEIGHTED_SAMPLER = False
 # Cap extreme weights at this quantile to avoid over-sampling very rare groups
 SAMPLER_CAP_Q = 0.95
 

@@ -373,49 +373,61 @@ def smart_temporal_split(df, stratify_col='StratifyKey'):
         
     return dev_df, holdout_df
 
-def triple_moving_time_series_split(df, n_splits=5):
+def triple_moving_time_series_split(df, n_splits=5, window_pct=0.15):
     """
-    Implements a Triple Moving Window TimeSeriesSplit:
-    For each fold:
-    1. Train Set: Expanding window (0 to T)
-    2. Validation Set: Next session (T+1)
-    3. Holdout Set: Following session (T+2)
-    
-    This ensures we evaluate 'horizon + 1' and 'horizon + 2' consistently.
+    Implements a Triple Moving Window TimeSeriesSplit with MULTI-SESSION windows.
+    Each fold:
+    1. Val Set: Window of sessions (~window_pct of total).
+    2. Holdout Set: Subsequent window of sessions (~window_pct of total).
+    3. Train Set: All sessions before the Val window.
     """
-    from sklearn.model_selection import TimeSeriesSplit
-    
     # Get unique sessions and their dates
     session_info = df.groupby('SessionID')['Sampling_Date'].min().sort_values()
     sessions = session_info.index.tolist()
-    
-    if len(sessions) < n_splits + 2:
-        # Fallback if too few sessions: Reduce n_splits
-        n_splits = max(1, len(sessions) - 2)
-    
-    # We use TimeSeriesSplit but we need to ensure we have a 'buffer' for the holdout
-    # So we split on sessions[0 : -1] and then take the next one as holdout manually
-    # Actually, a cleaner way is manual indexing
-    
     n_sessions = len(sessions)
+    
+    # Calculate window size (at least 1 session)
+    window_size = max(1, int(n_sessions * window_pct))
+    
+    # We want the LAST fold to have Holdout as the very latest sessions
+    # and Val as the sessions just before those.
+    # Total eval sessions per fold = 2 * window_size
+    # Total sessions required to 'move' across n_splits: 
+    # Let's use a simpler proportional shift
+    
+    # Calculate indices for the windows
+    # For fold i, the holdout ends at some index.
+    # To ensure we utilize the whole dataset, let's fix the windows for the LATEST fold
+    # and move them backwards for earlier folds.
+    
     for i in range(n_splits):
-        # Calculate indices based on n_splits
-        # We want the last split to have at least one session for Val and one for Holdout
-        # Simple heuristic for expanding window:
-        # Fold 0: Train[:base], Val[base], Hold[base+1]
-        # Fold last: Train[:-2], Val[-2], Hold[-1]
+        # Shift the eval windows backwards from the end
+        # Fold (n_splits-1) should have holdout ending at n_sessions
+        # Fold i should have holdout ending at (n_sessions - (n_splits - 1 - i))
         
-        # Determine the cutoff for this fold
-        # We need (n_splits + 2) chunks total.
-        # But TimeSeriesSplit is better for proportional growth.
-        # Let's use manual logic to ensure Val and Holdout are always 1 session each (minimum)
+        end_idx = n_sessions - (n_splits - 1 - i)
+        hold_start = end_idx - window_size
+        val_start = hold_start - window_size
         
-        val_idx_in_sessions = n_sessions - (n_splits - i) - 1
-        hold_idx_in_sessions = n_sessions - (n_splits - i) 
-        
-        train_sessions = sessions[:val_idx_in_sessions]
-        val_sessions = [sessions[val_idx_in_sessions]]
-        hold_sessions = [sessions[hold_idx_in_sessions]]
+        # Guard against index overflow/underflow
+        if val_start < 1: 
+             # Not enough data for this n_splits/window_size combo
+             # Adjust val_start to at least 1 session for train
+             val_start = max(1, i + 1) # Ensure train grows by at least 1 session per fold
+             hold_start = val_start + window_size
+             end_idx = hold_start + window_size
+             
+             if end_idx > n_sessions:
+                 # Last resort fallback if total sessions < required
+                 # Divide remaining sessions between Val and Hold
+                 remaining = n_sessions - val_start
+                 w = max(1, remaining // 2)
+                 hold_start = val_start + w
+                 end_idx = n_sessions
+
+        train_sessions = sessions[:val_start]
+        val_sessions = sessions[val_start:hold_start]
+        hold_sessions = sessions[hold_start:end_idx]
         
         train_indices = df[df['SessionID'].isin(train_sessions)].index.tolist()
         val_indices = df[df['SessionID'].isin(val_sessions)].index.tolist()

@@ -44,6 +44,21 @@ from models import BiomassUnifiedModel
 from torchvision.utils import save_image
 
 
+def build_weighted_sampler_from_df(df, key='StratifyKey', cap_quantile=0.95):
+    if key not in df.columns or len(df) == 0:
+        return None
+    counts = df[key].value_counts()
+    if counts.empty:
+        return None
+    w_map = (1.0 / counts).to_dict()
+    weights = df[key].map(w_map).astype(float).values
+    cap = np.quantile(weights, cap_quantile) if len(weights) > 4 else None
+    if cap is not None and np.isfinite(cap):
+        weights = np.minimum(weights, cap)
+    w_tensor = torch.as_tensor(weights, dtype=torch.double)
+    sampler = torch.utils.data.WeightedRandomSampler(w_tensor, num_samples=len(df), replacement=True)
+    return sampler
+
 def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     """Save TTA-augmented images for visualization."""
     if fold != 0 or epoch != 0 or batch_idx > 0:
@@ -346,11 +361,15 @@ def main():
             logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({raw_n_train} < {MIN_TRAIN_SAMPLES})")
             continue
  
-        # Upsampling
-        logger.info("\nUpsampling Train Set")
-        logger.info(f"Before Upsampling: {train_df['StratifyKey'].value_counts()}")
-        train_df = smart_upsample(train_df, stratify_col='StratifyKey')
-        logger.info(f"After Upsampling: {train_df['StratifyKey'].value_counts()}")
+        # Balance: upsample OR weighted sampler
+        use_sampler = getattr(configs, 'USE_WEIGHTED_SAMPLER', False)
+        if use_sampler:
+            logger.info("\nUsing WeightedRandomSampler for training balance (no dataframe upsampling).")
+        else:
+            logger.info("\nUpsampling Train Set")
+            logger.info(f"Before Upsampling: {train_df['StratifyKey'].value_counts()}")
+            train_df = smart_upsample(train_df, stratify_col='StratifyKey')
+            logger.info(f"After Upsampling: {train_df['StratifyKey'].value_counts()}")
         
         # Calculate effective training size with tiling
         effective_train_size = len(train_df) * 6  # 6 views per sample
@@ -380,7 +399,12 @@ def main():
             tile_prob=0.0
         )
         
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
+        if getattr(configs, 'USE_WEIGHTED_SAMPLER', False):
+            cap_q = getattr(configs, 'SAMPLER_CAP_Q', 0.95)
+            sampler = build_weighted_sampler_from_df(train_df, key='StratifyKey', cap_quantile=cap_q)
+            train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=0, pin_memory=True)
+        else:
+            train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
         holdout_ds = TiledBiomassDataset(

@@ -40,6 +40,12 @@ TILE_PROB = 0.8        # Prob of applying tiling (Mode 1 or 2)
 MIXUP_PROB = 0.10      # Prob of applying MixUp
 MIXUP_ALPHA = 0.40     # Higher alpha for more aggressive regularization on small data
 
+# --- Sampling Balance (optional) ---
+# If True, training uses WeightedRandomSampler (by StratifyKey) instead of dataframe upsampling
+USE_WEIGHTED_SAMPLER = True
+# Cap extreme weights at this quantile to avoid over-sampling very rare groups
+SAMPLER_CAP_Q = 0.95
+
 # --- Model Settings ---
 FUSION_DIM = 256
 # Balanced Weights: Scaling optimized for Gram-scale Log-space
@@ -198,6 +204,8 @@ def config_str():
         f"TILE_PROB: {TILE_PROB}",
         f"MIXUP_PROB: {MIXUP_PROB}",
         f"MIXUP_ALPHA: {MIXUP_ALPHA}",
+        f"USE_WEIGHTED_SAMPLER: {USE_WEIGHTED_SAMPLER}",
+        f"SAMPLER_CAP_Q: {SAMPLER_CAP_Q}",
         f"FUSION_DIM: {FUSION_DIM}",
         f"AUX_FEAT_WEIGHT: {AUX_FEAT_WEIGHT}",
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",

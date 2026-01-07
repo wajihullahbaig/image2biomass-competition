@@ -916,3 +916,24 @@ def get_taxonomy_targets(species_vec):
     weed_prob   = species_vec[:, TAXONOMY_IDXS['weed']].sum(dim=1, keepdim=True)
     
     return torch.cat([legume_prob, grass_prob, weed_prob], dim=1)
+
+# -----------------------------------------------------------------------------
+# 14. Save TTA Images
+# -----------------------------------------------------------------------------
+
+def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
+    """Save TTA-augmented images for visualization."""
+    if fold != 0 or epoch != 0 or batch_idx > 0:
+        return
+        
+    save_dir = os.path.join(session_dir, 'tta_debug', f'fold{fold+1}_ep{epoch}')
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Denormalize
+    mean = torch.tensor(configs.IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
+    std = torch.tensor(configs.IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
+    images_denorm = images * std + mean
+    images_denorm = torch.clamp(images_denorm, 0, 1)
+    
+    save_path = os.path.join(save_dir, f'batch{batch_idx}_{view_name}.png')
+    save_image(images_denorm, save_path, nrow=4, padding=2)

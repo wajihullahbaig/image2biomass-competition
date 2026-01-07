@@ -31,7 +31,7 @@ from configs import (
 from common import (
     load_data, engineer_features, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2,
-    get_taxonomy_targets,
+    get_taxonomy_targets,save_tta_images,
     rotate_crop_resize, smart_temporal_split, triple_moving_time_series_split
 )
 

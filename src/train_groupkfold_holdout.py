@@ -32,7 +32,8 @@ from common import (
     get_season, load_data, engineer_features, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
-    rotate_crop_resize
+    rotate_crop_resize,
+    save_tta_images
 )
 
 from log_and_plots import (
@@ -45,41 +46,6 @@ from models import BiomassUnifiedModel
 from torchvision.utils import save_image
 
 
-def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
-    """Save TTA-augmented images for visualization."""
-    if fold != 0 or epoch != 0 or batch_idx > 0:
-        return
-        
-    save_dir = os.path.join(session_dir, 'tta_debug', f'fold{fold+1}_ep{epoch}')
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Denormalize
-    mean = torch.tensor(configs.IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
-    std = torch.tensor(configs.IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
-    images_denorm = images * std + mean
-    images_denorm = torch.clamp(images_denorm, 0, 1)
-    
-    save_path = os.path.join(save_dir, f'batch{batch_idx}_{view_name}.png')
-    save_image(images_denorm, save_path, nrow=4, padding=2)
-
-
-# -----------------------------------------------------------------------------
-# TRAINING ENGINE (reused from tiled training)
-# -----------------------------------------------------------------------------
-def build_weighted_sampler_from_df(df, key='StratifyKey', cap_quantile=0.95):
-    if key not in df.columns or len(df) == 0:
-        return None
-    counts = df[key].value_counts()
-    if counts.empty:
-        return None
-    w_map = (1.0 / counts).to_dict()
-    weights = df[key].map(w_map).astype(float).values
-    cap = np.quantile(weights, cap_quantile) if len(weights) > 4 else None
-    if cap is not None and np.isfinite(cap):
-        weights = np.minimum(weights, cap)
-    w_tensor = torch.as_tensor(weights, dtype=torch.double)
-    sampler = torch.utils.data.WeightedRandomSampler(w_tensor, num_samples=len(df), replacement=True)
-    return sampler
 
 def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, device, epoch, session_dir=None, logger=None):
     model.train()
@@ -462,14 +428,8 @@ def main():
             mode='holdout',
             tile_prob=0.0
         )
-        
-        # Loaders (sampler or shuffle=True for train)
-        if getattr(configs, 'USE_WEIGHTED_SAMPLER', False):
-            cap_q = getattr(configs, 'SAMPLER_CAP_Q', 0.95)
-            sampler = build_weighted_sampler_from_df(train_df, key='StratifyKey', cap_quantile=cap_q)
-            train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=0, pin_memory=True)
-        else:
-            train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
+                
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         

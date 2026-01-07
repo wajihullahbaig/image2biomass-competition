@@ -262,6 +262,15 @@ def load_data(logger):
     # Region-Aware Stratification & Session ID ===
     wide['StratifyKey'] = wide.apply(get_stratify_key, axis=1)
     
+    # Apply upsampling with enhanced NDVI and Height noise
+    logger.info("Applying smart upsampling with NDVI and Height augmentation...")
+    wide = apply_smart_upsample_with_features(wide, logger)
+    
+    # Recalculate derived features after upsampling to ensure synthetic samples have proper values
+    wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'])
+    wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
+    wide['Interaction_Add'] = wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']
+    
     # Session ID for leakage protection: State + Date
     # Multiple quadrats taken on the same day in the same state = 1 session
     wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
@@ -594,6 +603,115 @@ def smart_upsample(train_df, stratify_col='StratifyKey',date_col='Sampling_Date'
     result_df = pd.concat(groups, ignore_index=True)
     result_df = result_df.sample(frac=1, random_state=42).reset_index(drop=True)  # Shuffle
     result_df = result_df.sort_values(by=[date_col]).reset_index(drop=True)
+    return result_df
+
+def apply_smart_upsample_with_features(wide_df, logger):
+    """
+    Apply smart upsampling with enhanced feature augmentation.
+    Includes proper noise for NDVI (bounded 0-1) and Height (cm scale) in linear space.
+    This should be called before any log transformations.
+    """
+    if not UPSAMPLE_CONFIG['enabled']:
+        logger.info("Upsampling disabled, skipping...")
+        return wide_df
+    
+    target_min = UPSAMPLE_CONFIG['target_min_samples']
+    noise_scale = UPSAMPLE_CONFIG['noise_scale']
+    use_seasonal = UPSAMPLE_CONFIG.get('seasonal_drift', False)
+    day_shift_prob = UPSAMPLE_CONFIG.get('day_shift_prob', 0.0)
+    drift_strength = UPSAMPLE_CONFIG.get('drift_strength', 0.0)
+    
+    groups = []
+    original_count = len(wide_df)
+    
+    for key in wide_df['StratifyKey'].unique():
+        key_df = wide_df[wide_df['StratifyKey'] == key].copy()
+        n = len(key_df)
+        
+        if n >= target_min:
+            # Already sufficient
+            key_df['is_synthetic'] = False
+            groups.append(key_df)
+            logger.info(f"  {key}: {n} samples (sufficient, no upsampling)")
+        else:
+            # Upsample to target_min
+            n_needed = target_min - n
+            upsampled = key_df.sample(n=n_needed, replace=True, random_state=42).copy()
+            logger.info(f"  {key}: {n} → {target_min} samples (added {n_needed})")
+            
+            # Optionally shift dates by ±1 day (vectorized) and apply seasonal drift
+            if day_shift_prob > 0:
+                shift_mask = np.random.rand(len(upsampled)) < day_shift_prob
+                if shift_mask.any():
+                    offsets = np.random.choice([-1, 1], size=int(shift_mask.sum()))
+                    shifted_dates = pd.to_datetime(upsampled.loc[shift_mask, 'Sampling_Date']) + pd.to_timedelta(offsets, unit='D')
+                    upsampled.loc[shift_mask, 'Sampling_Date'] = shifted_dates
+
+            if use_seasonal:
+                seasons = upsampled['Sampling_Date'].apply(get_season)
+                rand_mag = np.random.uniform(0.5, 1.0, size=len(upsampled))
+                components = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+                for comp in components:
+                    if comp in upsampled.columns:
+                        t_series = seasons.map(lambda s: SEASONAL_DRIFT.get(s, {}).get(comp, 0.0)).astype(float)
+                        factors = np.clip(1.0 + t_series.values * drift_strength * rand_mag, 0.5, 1.5)
+                        base = upsampled[comp].astype(float).values
+                        upsampled[comp] = np.maximum(0.0, base * factors)
+
+                # Recompute totals and adjust GDM proportionally
+                if all(c in upsampled.columns for c in components):
+                    total_new = (
+                        upsampled['Dry_Clover_g'].astype(float).values +
+                        upsampled['Dry_Dead_g'].astype(float).values +
+                        upsampled['Dry_Green_g'].astype(float).values
+                    )
+                    if 'Dry_Total_g' in upsampled.columns:
+                        upsampled['Dry_Total_g'] = np.maximum(0.0, total_new)
+                    if 'GDM_g' in upsampled.columns:
+                        total_old = upsampled['Dry_Total_g'].astype(float).values if 'Dry_Total_g' in upsampled.columns else np.zeros_like(total_new)
+                        scale = np.divide(total_new, total_old, out=np.ones_like(total_new), where=total_old > 0)
+                        gdm = upsampled['GDM_g'].astype(float).values
+                        gdm_scaled = np.maximum(0.0, gdm * scale)
+                        # Fallback to green component where old total is zero
+                        gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
+                        upsampled['GDM_g'] = gdm_final
+
+            # Add noise to biomass targets (existing logic)
+            biomass_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+            for col in biomass_cols:
+                if col in upsampled.columns:
+                    s = upsampled[col].std()
+                    if np.isnan(s) or s == 0: s = upsampled[col].mean() # Fallback if std is undefined
+                    noise = np.random.normal(0, s * noise_scale, size=len(upsampled))
+                    upsampled[col] = np.maximum(0, upsampled[col] + noise)  # Ensure non-negative
+            
+            # NEW: Add noise to NDVI (bounded 0-1) and Height (cm scale) in linear space
+            if 'Pre_GSHH_NDVI' in upsampled.columns:
+                ndvi_noise_std = 0.015  # Fixed small noise for NDVI
+                ndvi_noise = np.random.normal(0, ndvi_noise_std, size=len(upsampled))
+                upsampled['Pre_GSHH_NDVI'] = np.clip(upsampled['Pre_GSHH_NDVI'] + ndvi_noise, 0.0, 1.0)
+                
+            if 'Height_Ave_cm' in upsampled.columns:
+                height_std = upsampled['Height_Ave_cm'].std()
+                if np.isnan(height_std) or height_std == 0: height_std = upsampled['Height_Ave_cm'].mean()
+                height_noise_std = height_std * 0.03  # 3% relative noise for height
+                height_noise = np.random.normal(0, height_noise_std, size=len(upsampled))
+                upsampled['Height_Ave_cm'] = np.maximum(0.1, upsampled['Height_Ave_cm'] + height_noise)  # Minimum 0.1 cm
+            
+            # Mark samples
+            upsampled['is_synthetic'] = True
+            key_df['is_synthetic'] = False
+            
+            groups.append(pd.concat([key_df, upsampled], ignore_index=True))
+    
+    result_df = pd.concat(groups, ignore_index=True)
+    result_df = result_df.sample(frac=1, random_state=42).reset_index(drop=True)  # Shuffle
+    result_df = result_df.sort_values(by=['Sampling_Date']).reset_index(drop=True)
+    
+    synthetic_count = len(result_df[result_df.get('is_synthetic', False)])
+    total_count = len(result_df)
+    logger.info(f"Upsampling complete: {original_count} → {total_count} samples ({synthetic_count} synthetic)")
+    
     return result_df
 
 # -----------------------------------------------------------------------------

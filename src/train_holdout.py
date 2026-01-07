@@ -30,7 +30,7 @@ from configs import (
 )
 from common import (
     load_data, get_image_data_transforms, save_batch_images, 
-    set_seed, calculate_global_weighted_r2, smart_upsample,
+    set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
     rotate_crop_resize, smart_temporal_split, triple_moving_time_series_split
 )
@@ -361,15 +361,9 @@ def main():
             logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({raw_n_train} < {MIN_TRAIN_SAMPLES})")
             continue
  
-        # Balance: upsample OR weighted sampler
-        use_sampler = getattr(configs, 'USE_WEIGHTED_SAMPLER', False)
-        if use_sampler:
-            logger.info("\nUsing WeightedRandomSampler for training balance (no dataframe upsampling).")
-        else:
-            logger.info("\nUpsampling Train Set")
-            logger.info(f"Before Upsampling: {train_df['StratifyKey'].value_counts()}")
-            train_df = smart_upsample(train_df, stratify_col='StratifyKey')
-            logger.info(f"After Upsampling: {train_df['StratifyKey'].value_counts()}")
+        # Upsampling is now handled in load_data function
+        logger.info(f"Training set size: {len(train_df)} (upsampling applied in load_data)")
+        logger.info(f"Training set distribution: {train_df['StratifyKey'].value_counts()}")
         
         # Calculate effective training size with tiling
         effective_train_size = len(train_df) * 6  # 6 views per sample

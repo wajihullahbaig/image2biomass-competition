@@ -6,7 +6,8 @@ import os
 # Add src to path
 sys.path.append(os.path.join(os.getcwd(), 'src'))
 
-from common import load_data, triple_moving_time_series_split
+from common import load_data, engineer_features, triple_moving_time_series_split
+
 import logging
 
 def verify_regime():
@@ -16,6 +17,8 @@ def verify_regime():
     print("1. Loading data...")
     # Mock logger to avoid too much output
     df = load_data(logger)
+    df = engineer_features(df, logger)
+
     
     if 'SessionID' not in df.columns:
         print("FAILED: SessionID not found in dataframe")

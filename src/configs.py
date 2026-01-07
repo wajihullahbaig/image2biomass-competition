@@ -20,7 +20,7 @@ LEARNING_RATE = 2e-4
 N_FOLDS = 3
 EPOCHS = 40 
 WEIGHT_DECAY = 0.05
-EARLY_STOP_PATIENCE = 20
+EARLY_STOP_PATIENCE = 10
 BACKBONE = 'timm/tf_efficientnet_b3.ns_jft_in1k'  
 MIN_TRAIN_SAMPLES = 50 # Skip folds with too little data
 BACKBONE_FREEZE_THRESHOLD = 200 # Unfreeze earlier to allow domain adaptation
@@ -33,11 +33,11 @@ OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.5, 0.2]
 
 # training settings
 FREEZE_BACKBONE = False
-BACKBONE_FREEZE_FRACTION = 0.5
+BACKBONE_FREEZE_FRACTION = 0.7
 USE_TTA = True
 # --- Augmentation & Tiling Settings ---
 TILE_PROB = 0.25        # Prob of applying tiling (Mode 1 or 2)
-MIXUP_PROB = 0.10      # Prob of applying MixUp
+MIXUP_PROB = 0.05      # Prob of applying MixUp
 MIXUP_ALPHA = 0.40     # Higher alpha for more aggressive regularization on small data
 
 # --- Feature Engineering Toggles ---

@@ -8,7 +8,8 @@ if 'src' not in sys.path:
     sys.path.append(os.path.join(os.getcwd(), 'src'))
 
 import common
-from common import load_data
+from common import load_data, engineer_features
+
 
 def verify():
     # Setup basic logging to catch load_data info
@@ -18,7 +19,9 @@ def verify():
     print("Loading data...")
     try:
         df = load_data(logger)
+        df = engineer_features(df, logger)
     except FileNotFoundError:
+
         print("Error: train.csv not found. Make sure to run from project root.")
         return
 

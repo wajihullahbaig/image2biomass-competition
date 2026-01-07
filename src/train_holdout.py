@@ -29,11 +29,12 @@ from configs import (
     TILE_PROB, MIXUP_PROB, MIXUP_ALPHA
 )
 from common import (
-    load_data, get_image_data_transforms, save_batch_images, 
+    load_data, engineer_features, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
     rotate_crop_resize, smart_temporal_split, triple_moving_time_series_split
 )
+
 from log_and_plots import (
     log_dataframe_details, setup_logging, plot_training_history, 
     log_fold_details
@@ -318,6 +319,8 @@ def main():
     
     # 1. Load Data
     df = load_data(logger)
+    df = engineer_features(df, logger)
+
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
     logger.info("Data sorted by Sampling_Date.")
     

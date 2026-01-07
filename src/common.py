@@ -200,8 +200,8 @@ def get_image_data_transforms():
 
 def load_data(logger):
     """
-    Load and preprocess train.csv with improved region-aware stratification.
-    This creates wide.csv with all features and the new StratifyKey.
+    Load and preprocess train.csv.
+    This creates the initial wide dataframe with all raw features and targets.
     """
     logger.info("Loading and Pivoting Data...")
     if not os.path.exists('train.csv'):
@@ -234,30 +234,37 @@ def load_data(logger):
     # Parse Dates
     wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'], format='mixed', dayfirst=False)
     
-    # Feature Engineering (Auxiliary Inputs)
+    # Basic numeric conversion
     wide['Height_Ave_cm'] = pd.to_numeric(wide['Height_Ave_cm'], errors='coerce').fillna(0)
     wide['Pre_GSHH_NDVI'] = pd.to_numeric(wide['Pre_GSHH_NDVI'], errors='coerce').fillna(0)
-    wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'])
-    wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
-    wide['Interaction_Add'] = wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']
     
     wide = wide.rename(columns={'clean_id': 'sample_id'})
     wide[target_cols] = wide[target_cols].astype(float)
 
+    logger.info(f"Data Loaded. Rows: {len(wide)}")
+    return wide
+
+def engineer_features(wide, logger):
+    """
+    Perform feature engineering on the wide dataframe.
+    This includes species parsing, upsampling, and derived features.
+    """
+    logger.info("Engineering Features...")
+    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+
     logger.info("Parsing species to vectors...")
-    
     # Initialize columns for each core species
     wide['Species'] = wide['Species'].str.lower()
     for sp in CORE_SPECIES:
         wide[f'Species_{sp}'] = 0.0
 
-    # Apply species parsing (uses parse_species_to_vector from section 5)
+    # Apply species parsing
     species_vectors = wide['Species'].apply(parse_species_to_vector)
     species_matrix = np.stack(species_vectors.values)
     for i, sp in enumerate(CORE_SPECIES):
         wide[f'Species_{sp}'] = species_matrix[:, i]
 
-    # Assign functional groups (for model features)
+    # Assign functional groups
     wide = assign_functional_groups(wide)
     
     # Region-Aware Stratification & Session ID ===
@@ -267,23 +274,21 @@ def load_data(logger):
     logger.info("Applying smart upsampling with NDVI and Height augmentation...")
     wide = apply_smart_upsample_with_features(wide, logger)
     
-    # Recalculate derived features after upsampling to ensure synthetic samples have proper values
+    # Feature Engineering (Auxiliary Inputs)
     wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'])
     wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
     wide['Interaction_Add'] = wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']
 
-    # Species richness (per-sample count) AFTER upsampling so synthetic rows have it too
+    # Species richness (per-sample count)
     if USE_SPECIES_COUNT_FEATURE:
-        # Exclude the generic 'clover' bucket to avoid double-counting clover subtypes
+        # Exclude the generic 'clover' bucket
         richness_cols = [f'Species_{sp}' for sp in CORE_SPECIES if sp != 'clover' and f'Species_{sp}' in wide.columns]
         if len(richness_cols) > 0:
             wide['Species_Count'] = wide[richness_cols].sum(axis=1).astype(float)
 
-    # Quantile Bin Features (computed in linear space)
-    # NDVI bins: use linear NDVI (0-1), Height bins: use linear cm.
+    # Quantile Bin Features
     if USE_BIN_FEATURES:
         try:
-            # Ordinal bins [0..n_bins-1]
             ndvi_bins_ord = None
             height_bins_ord = None
             if 'Pre_GSHH_NDVI' in wide.columns:
@@ -297,7 +302,6 @@ def load_data(logger):
                 if height_bins_ord is not None:
                     wide['Height_Bin_Ordinal'] = height_bins_ord.astype(float)
             elif BIN_ENCODING == 'onehot':
-                # Create one-hot columns NDVI_Bin_OH_0..3 and Height_Bin_OH_0..3
                 if ndvi_bins_ord is not None:
                     for k in range(4):
                         wide[f'NDVI_Bin_OH_{k}'] = (ndvi_bins_ord == k).astype(float)
@@ -305,7 +309,6 @@ def load_data(logger):
                     for k in range(4):
                         wide[f'Height_Bin_OH_{k}'] = (height_bins_ord == k).astype(float)
         except Exception:
-            # Graceful fallback on low variance
             if BIN_ENCODING == 'ordinal':
                 if 'Pre_GSHH_NDVI' in wide.columns and 'NDVI_Bin_Ordinal' not in wide.columns:
                     wide['NDVI_Bin_Ordinal'] = 1.0
@@ -316,22 +319,22 @@ def load_data(logger):
                     wide[f'NDVI_Bin_OH_{k}'] = 1.0 if k == 1 else 0.0
                     wide[f'Height_Bin_OH_{k}'] = 1.0 if k == 1 else 0.0
     
-    # Session ID for leakage protection: State + Date
-    # Multiple quadrats taken on the same day in the same state = 1 session
+    # Session ID
     wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
     
     # Log distribution
     logger.info("\n" + "="*70)
-    logger.info("STRATIFICATION KEY DISTRIBUTION (State + Dominant Species)")
+    logger.info("STRATIFICATION KEY DISTRIBUTION")
     logger.info("="*70)
     key_counts = wide['StratifyKey'].value_counts().sort_index()
     for key, count in key_counts.items():
         logger.info(f"  {key:<30}: {count:>3} samples")
     logger.info("="*70 + "\n")
         
-    logger.info(f"Data Loaded and Parsed. Rows: {len(wide)}")
+    logger.info(f"Feature Engineering Complete. Rows: {len(wide)}")
     wide.to_csv('wide.csv', index=False)
     return wide
+
 
 # -----------------------------------------------------------------------------
 # 5. SPECIES PARSING (Existing Logic)

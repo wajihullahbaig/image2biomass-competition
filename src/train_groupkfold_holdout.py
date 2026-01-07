@@ -29,11 +29,12 @@ from configs import (
     TILE_PROB, MIXUP_PROB, MIXUP_ALPHA
 )
 from common import (
-    get_season, load_data, get_image_data_transforms, save_batch_images,
+    get_season, load_data, engineer_features, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
     rotate_crop_resize
 )
+
 from log_and_plots import (
     log_dataframe_details, setup_logging, plot_training_history,
     log_fold_details
@@ -317,6 +318,8 @@ def main():
     
     # 1. Load Data
     df = load_data(logger)
+    df = engineer_features(df, logger)
+
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
     df['Season'] = df['Sampling_Date'].apply(get_season)
     

@@ -9,6 +9,7 @@ if 'src' not in sys.path:
 
 import common
 from common import load_data, engineer_features
+from config.loader import cfg
 
 
 def verify():
@@ -43,8 +44,9 @@ def verify():
         n_samples = len(sp_df)
         if n_samples == 0: continue
             
-        # 15% Holdout
-        holdout_cnt = int(n_samples * 0.20)
+        # Holdout PCT from config
+        holdout_pct = cfg.split.holdout_pct
+        holdout_cnt = int(n_samples * holdout_pct)
         
         if n_samples < 2:
             dev_dfs.append(sp_df)

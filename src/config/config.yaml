@@ -1,0 +1,125 @@
+# Configuration for Image2Biomass competition
+
+preprocessing:
+  imagenet_mean: [0.485, 0.456, 0.406]
+  imagenet_std: [0.229, 0.224, 0.225]
+  image_height: 256
+  image_width: 512
+
+hyperparameters:
+  batch_size: 32
+  learning_rate: 0.0002
+  n_folds: 3
+  epochs: 40
+  weight_decay: 0.05
+  early_stop_patience: 10
+  backbone: "timm/tf_efficientnet_b3.ns_jft_in1k"
+  min_train_samples: 50
+  backbone_freeze_threshold: 200
+  max_grad_norm: 2.0
+  backbone_lr_factor: 0.85
+
+training:
+  freeze_backbone: false
+  backbone_freeze_fraction: 0.7
+  use_tta: true
+  fusion_dim: 256
+  biomass_feat_weight: 80.0
+  aux_feat_weight: 15.0
+  species_feat_weight: 20.0
+  taxonomy_feat_weight: 25.0
+  physics_feat_weight: 30.0
+
+augmentation:
+  tile_prob: 0.25
+  mixup_prob: 0.05
+  mixup_alpha: 0.40
+
+features:
+  use_bin_features: true
+  bin_encoding: "ordinal"
+  use_species_count_feature: true
+
+targets:
+  cols: ["Dry_Clover_g", "Dry_Dead_g", "Dry_Green_g", "Dry_Total_g", "GDM_g"]
+  official_weights: [0.1, 0.1, 0.1, 0.5, 0.2]
+  biomass_clamp: 400.0 # grams
+
+species_taxonomy:
+  core_species:
+    [
+      "clover",
+      "whiteclover",
+      "subcloverdalkeith",
+      "subcloverlosa",
+      "ryegrass",
+      "phalaris",
+      "fescue",
+      "lucerne",
+      "barleygrass",
+      "silvergrass",
+      "speargrass",
+      "bromegrass",
+      "capeweed",
+      "crumbweed",
+    ]
+  groups:
+    legume:
+      ["clover", "whiteclover", "subcloverdalkeith", "subcloverlosa", "lucerne"]
+    grass:
+      [
+        "ryegrass",
+        "phalaris",
+        "fescue",
+        "barleygrass",
+        "silvergrass",
+        "speargrass",
+        "bromegrass",
+      ]
+    weed: ["capeweed", "crumbweed"]
+
+upsample:
+  enabled: true
+  target_min_samples: 25
+  method: "smart"
+  noise_scale: 0.025
+  seasonal_drift: true
+  day_shift_prob: 0.6
+  drift_strength: 0.15
+
+split:
+  holdout_pct: 0.10
+  sparse_threshold: 4
+  small_threshold: 6
+
+seasons:
+  month_map:
+    1: "summer"
+    2: "summer"
+    12: "summer"
+    3: "autumn"
+    4: "autumn"
+    5: "autumn"
+    6: "winter"
+    7: "winter"
+    8: "winter"
+    9: "spring"
+    10: "spring"
+    11: "spring"
+  drift:
+    spring:
+      Dry_Green_g: 1.0
+      Dry_Dead_g: -0.4
+      Dry_Clover_g: 0.4
+    summer:
+      Dry_Green_g: 0.4
+      Dry_Dead_g: 0.2
+      Dry_Clover_g: 0.2
+    autumn:
+      Dry_Green_g: -0.2
+      Dry_Dead_g: 0.2
+      Dry_Clover_g: -0.2
+    winter:
+      Dry_Green_g: -0.2
+      Dry_Dead_g: 1.0
+      Dry_Clover_g: -0.2

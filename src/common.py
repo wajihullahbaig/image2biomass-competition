@@ -14,14 +14,39 @@ from torchvision import transforms
 from torchvision.utils import save_image
 from PIL import ImageFilter
 
-# Local Imports
-from configs import (
-    IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, 
-    IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES, GROUP_DEFINITIONS, 
-    N_FOLDS, TAXONOMY_IDXS, get_stratify_key, 
-    UPSAMPLE_CONFIG, SPLIT_CONFIG, SEASON_MONTH_MAP, SEASONAL_DRIFT,
-    USE_BIN_FEATURES, BIN_ENCODING, USE_SPECIES_COUNT_FEATURE
-)
+from config.loader import cfg
+
+IMAGENET_DEFAULT_MEAN = cfg.preprocessing.imagenet_mean
+IMAGENET_DEFAULT_STD = cfg.preprocessing.imagenet_std
+IMAGE_HEIGHT = cfg.preprocessing.image_height
+IMAGE_WIDTH = cfg.preprocessing.image_width
+CORE_SPECIES = cfg.species_taxonomy.core_species
+GROUP_DEFINITIONS = cfg.species_taxonomy.groups
+N_FOLDS = cfg.hyperparameters.n_folds
+TAXONOMY_IDXS = cfg.species_taxonomy.taxonomy_idxs
+UPSAMPLE_CONFIG = {
+    'enabled': cfg.upsample.enabled,
+    'target_min_samples': cfg.upsample.target_min_samples,
+    'method': cfg.upsample.method,
+    'noise_scale': cfg.upsample.noise_scale,
+    'seasonal_drift': cfg.upsample.seasonal_drift,
+    'day_shift_prob': cfg.upsample.day_shift_prob,
+    'drift_strength': cfg.upsample.drift_strength
+}
+SPLIT_CONFIG = {
+    'holdout_pct': cfg.split.holdout_pct,
+    'sparse_threshold': cfg.split.sparse_threshold,
+    'small_threshold': cfg.split.small_threshold,
+}
+SEASON_MONTH_MAP = cfg.seasons.month_map
+SEASONAL_DRIFT = cfg.seasons.drift
+USE_BIN_FEATURES = cfg.features.use_bin_features
+BIN_ENCODING = cfg.features.bin_encoding
+USE_SPECIES_COUNT_FEATURE = cfg.features.use_species_count_feature
+
+# Note: get_stratify_key is imported from configs if needed, 
+# but we can also define it here or keep it in configs.py bridge.
+from configs import get_stratify_key
 
 # -----------------------------------------------------------------------------
 # 1. MATH & GEOMETRY HELPERS (The Core of the Strategy)

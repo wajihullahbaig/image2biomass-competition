@@ -16,18 +16,33 @@ from collections import defaultdict
 import json
 
 # Local Imports
-import configs
-from configs import (
-    DEVICE, BATCH_SIZE, EPOCHS, LEARNING_RATE, TAXONOMY_FEAT_WEIGHT, WEIGHT_DECAY,
-    EARLY_STOP_PATIENCE, N_FOLDS,
-    BIOMASS_FEAT_WEIGHT, AUX_FEAT_WEIGHT, SPECIES_FEAT_WEIGHT, PHYSICS_FEAT_WEIGHT,
-    OFFICIAL_WEIGHTS, config_str,
-    CORE_SPECIES, USE_TTA,
-    MIN_TRAIN_SAMPLES, BACKBONE_FREEZE_THRESHOLD,
-    FREEZE_BACKBONE, BACKBONE_FREEZE_FRACTION,
-    MAX_GRAD_NORM, BACKBONE_LR_FACTOR,
-    TILE_PROB, MIXUP_PROB, MIXUP_ALPHA
-)
+from config.loader import cfg
+from configs import config_str
+
+DEVICE = cfg.device
+BATCH_SIZE = cfg.hyperparameters.batch_size
+EPOCHS = cfg.hyperparameters.epochs
+LEARNING_RATE = cfg.hyperparameters.learning_rate
+TAXONOMY_FEAT_WEIGHT = cfg.training.taxonomy_feat_weight
+WEIGHT_DECAY = cfg.hyperparameters.weight_decay
+EARLY_STOP_PATIENCE = cfg.hyperparameters.early_stop_patience
+N_FOLDS = cfg.hyperparameters.n_folds
+BIOMASS_FEAT_WEIGHT = cfg.training.biomass_feat_weight
+AUX_FEAT_WEIGHT = cfg.training.aux_feat_weight
+SPECIES_FEAT_WEIGHT = cfg.training.species_feat_weight
+PHYSICS_FEAT_WEIGHT = cfg.training.physics_feat_weight
+OFFICIAL_WEIGHTS = cfg.targets.official_weights
+CORE_SPECIES = cfg.species_taxonomy.core_species
+USE_TTA = cfg.training.use_tta
+MIN_TRAIN_SAMPLES = cfg.hyperparameters.min_train_samples
+BACKBONE_FREEZE_THRESHOLD = cfg.hyperparameters.backbone_freeze_threshold
+FREEZE_BACKBONE = cfg.training.freeze_backbone
+BACKBONE_FREEZE_FRACTION = cfg.training.backbone_freeze_fraction
+MAX_GRAD_NORM = cfg.hyperparameters.max_grad_norm
+BACKBONE_LR_FACTOR = cfg.hyperparameters.backbone_lr_factor
+TILE_PROB = cfg.augmentation.tile_prob
+MIXUP_PROB = cfg.augmentation.mixup_prob
+MIXUP_ALPHA = cfg.augmentation.mixup_alpha
 from common import (
     get_season, load_data, engineer_features, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2,
@@ -256,9 +271,9 @@ def save_metadata(session_dir, species_list, target_cols):
     metadata = {
         'species_list': species_list,
         'target_cols': target_cols,
-        'backbone': configs.BACKBONE,
-        'image_height': configs.IMAGE_HEIGHT,
-        'image_width': configs.IMAGE_WIDTH,
+        'backbone': cfg.hyperparameters.backbone,
+        'image_height': cfg.preprocessing.image_height,
+        'image_width': cfg.preprocessing.image_width,
         'num_species': len(species_list),
         'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         'tile_augmentation': 'enabled'
@@ -310,7 +325,7 @@ def main():
     train_transform, val_transform = get_image_data_transforms()
     
     # 3. Species-stratified temporal holdout (last X% per species)
-    holdout_pct = configs.SPLIT_CONFIG.get('holdout_pct', 0.15)
+    holdout_pct = cfg.split.holdout_pct
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
     if species_col is None:
         raise ValueError("No species column found (expected 'species_id' or 'Species').")
@@ -437,7 +452,7 @@ def main():
         dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation')
         n_aux = dummy_ds[0]['aux_feats'].shape[0]
         
-        model = BiomassUnifiedModel(num_species=len(species_list), num_aux=n_aux).to(DEVICE)
+        model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(DEVICE)
         
         # Backbone Protection Logic
         n_upsampled = len(train_df)

@@ -21,6 +21,7 @@ torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
+
 # ====================== CONFIGURATION ======================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -148,14 +149,17 @@ class BiomassUnifiedModel(nn.Module):
             
         combined_feats = torch.cat([img_feats, aux_out, species_probs, taxonomy_probs], dim=1)
         
+        # Biomass Prediction
         log_preds_raw = self.biomass_head(combined_feats)
-        log_preds = nn.functional.softplus(log_preds_raw)
+        # softplus ensures positivity, clamp ensures we don't blow up expm1 (6.0 ~= 400g)
+        log_preds = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, 6.0)
         
         log_c = log_preds[:, 0:1]
         log_d = log_preds[:, 1:2]
         log_g = log_preds[:, 2:3]
         log_t = log_preds[:, 3:4]
         
+        # Derived GDM
         c = torch.expm1(log_c)
         g = torch.expm1(log_g)
         log_gdm = torch.log1p(c + g + 1e-8)
@@ -255,8 +259,8 @@ def apply_tta(model, image, batch_idx=0):
             lin_bio = torch.expm1(log_bio)
             
             # PHYSICS BARRIER: Clamp to realistic range
-            # Anything above 2000g (2kg) in a 70cm plot is unrealistic
-            lin_bio = torch.clamp(lin_bio, min=0.0, max=2500.0)
+            # 400g clamp
+            lin_bio = torch.clamp(lin_bio, min=0.0, max=400.0)
             
             all_biomass_linear.append(lin_bio)
             

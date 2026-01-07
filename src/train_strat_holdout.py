@@ -408,7 +408,7 @@ def main():
             train_df,
             transform=train_transform,
             mode='training',
-            tile_prob=0.1
+            tile_prob=TILE_PROB
         )
         train_ds = TiledMixupDataset(train_ds_base, prob=MIXUP_PROB, alpha=MIXUP_ALPHA)
         
@@ -423,7 +423,7 @@ def main():
             hold_df,
             transform=val_transform,
             mode='train',
-            tile_prob=0.85
+            tile_prob=0.0
         )
         
         # Loaders (sampler or shuffle=True for train)

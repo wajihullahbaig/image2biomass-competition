@@ -36,7 +36,7 @@ FREEZE_BACKBONE = False
 BACKBONE_FREEZE_FRACTION = 0.5
 USE_TTA = True
 # --- Augmentation & Tiling Settings ---
-TILE_PROB = 0.8        # Prob of applying tiling (Mode 1 or 2)
+TILE_PROB = 0.25        # Prob of applying tiling (Mode 1 or 2)
 MIXUP_PROB = 0.10      # Prob of applying MixUp
 MIXUP_ALPHA = 0.40     # Higher alpha for more aggressive regularization on small data
 

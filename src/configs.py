@@ -40,6 +40,14 @@ TILE_PROB = 0.8        # Prob of applying tiling (Mode 1 or 2)
 MIXUP_PROB = 0.10      # Prob of applying MixUp
 MIXUP_ALPHA = 0.40     # Higher alpha for more aggressive regularization on small data
 
+# --- Feature Engineering Toggles ---
+# Controls whether NDVI/Height quantile bins are computed in preprocessing
+USE_BIN_FEATURES = True
+# Encoding for bins: 'ordinal' (0-3) or 'onehot'
+BIN_ENCODING = 'ordinal'
+# Controls whether per-sample species richness count is added as an aux feature
+USE_SPECIES_COUNT_FEATURE = True
+
 # --- Sampling Balance (optional) ---
 # If True, training uses WeightedRandomSampler (by StratifyKey) instead of dataframe upsampling
 USE_WEIGHTED_SAMPLER = False

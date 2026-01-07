@@ -19,7 +19,8 @@ from configs import (
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, 
     IMAGE_HEIGHT, IMAGE_WIDTH, CORE_SPECIES, GROUP_DEFINITIONS, 
     N_FOLDS, TAXONOMY_IDXS, get_stratify_key, 
-    UPSAMPLE_CONFIG, SPLIT_CONFIG, SEASON_MONTH_MAP, SEASONAL_DRIFT
+    UPSAMPLE_CONFIG, SPLIT_CONFIG, SEASON_MONTH_MAP, SEASONAL_DRIFT,
+    USE_BIN_FEATURES, BIN_ENCODING, USE_SPECIES_COUNT_FEATURE
 )
 
 # -----------------------------------------------------------------------------
@@ -270,6 +271,50 @@ def load_data(logger):
     wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'])
     wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
     wide['Interaction_Add'] = wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']
+
+    # Species richness (per-sample count) AFTER upsampling so synthetic rows have it too
+    if USE_SPECIES_COUNT_FEATURE:
+        # Exclude the generic 'clover' bucket to avoid double-counting clover subtypes
+        richness_cols = [f'Species_{sp}' for sp in CORE_SPECIES if sp != 'clover' and f'Species_{sp}' in wide.columns]
+        if len(richness_cols) > 0:
+            wide['Species_Count'] = wide[richness_cols].sum(axis=1).astype(float)
+
+    # Quantile Bin Features (computed in linear space)
+    # NDVI bins: use linear NDVI (0-1), Height bins: use linear cm.
+    if USE_BIN_FEATURES:
+        try:
+            # Ordinal bins [0..n_bins-1]
+            ndvi_bins_ord = None
+            height_bins_ord = None
+            if 'Pre_GSHH_NDVI' in wide.columns:
+                ndvi_bins_ord = pd.qcut(wide['Pre_GSHH_NDVI'], q=4, labels=False, duplicates='drop').astype(int)
+            if 'Height_Ave_cm' in wide.columns:
+                height_bins_ord = pd.qcut(wide['Height_Ave_cm'], q=4, labels=False, duplicates='drop').astype(int)
+
+            if BIN_ENCODING == 'ordinal':
+                if ndvi_bins_ord is not None:
+                    wide['NDVI_Bin_Ordinal'] = ndvi_bins_ord.astype(float)
+                if height_bins_ord is not None:
+                    wide['Height_Bin_Ordinal'] = height_bins_ord.astype(float)
+            elif BIN_ENCODING == 'onehot':
+                # Create one-hot columns NDVI_Bin_OH_0..3 and Height_Bin_OH_0..3
+                if ndvi_bins_ord is not None:
+                    for k in range(4):
+                        wide[f'NDVI_Bin_OH_{k}'] = (ndvi_bins_ord == k).astype(float)
+                if height_bins_ord is not None:
+                    for k in range(4):
+                        wide[f'Height_Bin_OH_{k}'] = (height_bins_ord == k).astype(float)
+        except Exception:
+            # Graceful fallback on low variance
+            if BIN_ENCODING == 'ordinal':
+                if 'Pre_GSHH_NDVI' in wide.columns and 'NDVI_Bin_Ordinal' not in wide.columns:
+                    wide['NDVI_Bin_Ordinal'] = 1.0
+                if 'Height_Ave_cm' in wide.columns and 'Height_Bin_Ordinal' not in wide.columns:
+                    wide['Height_Bin_Ordinal'] = 1.0
+            elif BIN_ENCODING == 'onehot':
+                for k in range(4):
+                    wide[f'NDVI_Bin_OH_{k}'] = 1.0 if k == 1 else 0.0
+                    wide[f'Height_Bin_OH_{k}'] = 1.0 if k == 1 else 0.0
     
     # Session ID for leakage protection: State + Date
     # Multiple quadrats taken on the same day in the same state = 1 session

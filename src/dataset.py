@@ -43,6 +43,19 @@ class TiledBiomassDataset(Dataset):
         
         self.core_species = CORE_SPECIES
         self.species_cols = [f'Species_{sp}' for sp in self.core_species]
+
+        # Auto-include bin features if present (computed in preprocessing)
+        extra_aux = []
+        ordinal_cols = ['NDVI_Bin_Ordinal', 'Height_Bin_Ordinal']
+        onehot_cols = [f'NDVI_Bin_OH_{k}' for k in range(4)] + [f'Height_Bin_OH_{k}' for k in range(4)]
+        for c in ordinal_cols + onehot_cols:
+            if c in self.df.columns:
+                extra_aux.append(c)
+        # Include species richness if computed
+        if 'Species_Count' in self.df.columns:
+            extra_aux.append('Species_Count')
+        if extra_aux:
+            self.aux_cols = self.aux_cols + extra_aux
         
         # Validation check
         if not all(c in self.df.columns for c in self.species_cols):

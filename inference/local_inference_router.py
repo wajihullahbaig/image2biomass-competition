@@ -212,13 +212,6 @@ def no_tta(model, image, batch_idx=0):
     
     with torch.no_grad():
         log_bio, aux, sp, tax_logits = model(image)
-        
-        # Convert to Linear Grams
-        lin_bio = torch.expm1(log_bio)
-        
-        # Convert back to Log Space
-        log_bio = torch.log1p(lin_bio)
-        
         # Extract Confidence
         probs = torch.softmax(tax_logits, dim=1)
         conf, _ = torch.max(probs, dim=1)

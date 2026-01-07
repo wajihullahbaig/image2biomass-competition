@@ -345,6 +345,11 @@ def main():
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
     if species_col is None:
         raise ValueError("No species column found (expected 'species_id' or 'Species').")
+
+    # GroupKey = State + Species + Sampling_Date (date-str)
+    df['DateStr'] = df['Sampling_Date'].dt.strftime('%Y-%m-%d')
+    df['GroupKey'] = df['State'].astype(str) + '|' + df[species_col].astype(str) + '|' + df['DateStr']
+    logger.info("Grouping for GroupKFold set to 'GroupKey' = State|Species|Sampling_Date")
     
     hold_idx = []
     for sp, g in df.groupby(species_col):
@@ -372,7 +377,7 @@ def main():
     best_overall_score = -float('inf')
     
     gkf = GroupKFold(n_splits=N_FOLDS)
-    groups = dev_df['SessionID'].values
+    groups = dev_df['GroupKey'].values
     
     for fold, (train_idx, val_idx) in enumerate(gkf.split(dev_df, y=dev_df['StratifyKey'], groups=groups)):
         train_df = dev_df.iloc[train_idx].copy().reset_index(drop=True)
@@ -393,10 +398,10 @@ def main():
         if unseen_species:
             logger.warning(f"Fold {fold+1}: Species present in val but not train: {sorted(unseen_species)}")
         
-        # Leak check: SessionID overlap (should be none by design)
-        overlap_sessions = set(train_df['SessionID']).intersection(set(val_df['SessionID']))
-        if overlap_sessions:
-            logger.error(f"Fold {fold+1}: SessionID overlap between train and val detected: {sorted(list(overlap_sessions))[:5]}")
+        # Leak check: GroupKey overlap (should be none by design)
+        overlap_groups = set(train_df['GroupKey']).intersection(set(val_df['GroupKey']))
+        if overlap_groups:
+            logger.error(f"Fold {fold+1}: GroupKey overlap between train and val detected: {sorted(list(overlap_groups))[:5]}")
         
         logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} (GroupKFold) {'='*20}")
         logger.info(f"Train:   {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)}, sessions={train_df['SessionID'].nunique()})")

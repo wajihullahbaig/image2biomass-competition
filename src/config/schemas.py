@@ -1,5 +1,6 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Tuple, Any
+import json
 
 @dataclass
 class PreprocessingConfig:
@@ -98,3 +99,6 @@ class Config:
     split: SplitConfig
     seasons: SeasonsConfig
     device: str = "cpu" # Default, will be updated during loading
+
+    def __str__(self):
+        return json.dumps(asdict(self), indent=4)

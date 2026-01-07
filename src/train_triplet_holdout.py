@@ -317,7 +317,7 @@ def save_metadata(session_dir, species_list, target_cols):
 # MAIN EXECUTION
 # -----------------------------------------------------------------------------
 def main():
-    session_dir = setup_logging(file_name_part="tiled_stratified_holdout")
+    session_dir = setup_logging(file_name_part="triplet_holdout")
     logger = logging.getLogger("System Logger")
     set_seed(42, logger)
     
@@ -327,7 +327,6 @@ def main():
     logger.info("  1x Original + 1x Stitched + 4x Divided Tiles")
     logger.info("Effective Training Set Size: N_samples × 6")
     logger.info("="*70)
-    
     logger.info(cfg)
     
     # 1. Load Data

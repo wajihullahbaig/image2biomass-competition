@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/stratified_holdout_20260107_105418'
+MODEL_DIR = './logs/stratified_holdout_20260107_205817'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -37,6 +37,7 @@ FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 32
+BIOMASS_CLAMP = 3000.0
 
 # FEATURE FLAGS
 USE_TTA = True            # Enable/Disable Test-Time Augmentation
@@ -67,7 +68,7 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
     save_image(images_denorm, save_path, nrow=4, padding=2)
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name, num_aux=4, num_species=14, pretrained=False):
+    def __init__(self, backbone_name, num_aux=7, num_species=14, pretrained=False):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
@@ -122,7 +123,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
         )
         
-        self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
+        self.log_clamp = torch.log1p(torch.tensor(BIOMASS_CLAMP))
 
         self._init_biomass_head()
         
@@ -168,6 +169,7 @@ class BiomassUnifiedModel(nn.Module):
         biomass_out = torch.cat([log_c, log_d, log_g, log_t, log_gdm], dim=1)
         
         return biomass_out, aux_out, species_logits, taxonomy_logits
+
 
 # ====================== TTA HELPERS ======================
 def get_largest_rotated_crop(h, w, angle):
@@ -304,7 +306,7 @@ def get_inference_transforms(h, w):
         transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
     ])
 
-def load_model(fold_path, device, num_species, backbone_name, num_aux=4):
+def load_model(fold_path, device, num_species, backbone_name, num_aux=7):
     model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species, num_aux=num_aux).to(device)
     state_dict = torch.load(fold_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
@@ -352,7 +354,8 @@ def run_inference(use_tta=False):
     backbone_name = metadata.get('backbone')
     img_h = metadata.get('image_height', IMAGE_HEIGHT)
     img_w = metadata.get('image_width', IMAGE_WIDTH)
-    print(f"Config: {backbone_name} | {img_w}x{img_h}")
+    num_aux = metadata.get('num_aux', 7)  # Fallback to 7 for current checkpoints
+    print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux}")
 
     # 3. DISCOVER MODELS
     found_folds = []
@@ -377,8 +380,9 @@ def run_inference(use_tta=False):
     final_clean_ids = []
     
     for i, model_path in enumerate(found_folds):
-        print(f"-> Model {i+1}/{len(found_folds)}: {os.path.basename(model_path)}")
-        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=4)
+        fold_name = os.path.basename(model_path)
+        print(f"-> Processing {fold_name}...")
+        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=num_aux)
         
         fold_preds = []
         with torch.no_grad():

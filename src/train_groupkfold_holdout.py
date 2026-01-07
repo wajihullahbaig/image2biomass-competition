@@ -267,10 +267,11 @@ def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', u
     return final_metrics
 
 
-def save_metadata(session_dir, species_list, target_cols):
+def save_metadata(session_dir, species_list, target_cols, num_aux):
     metadata = {
         'species_list': species_list,
         'target_cols': target_cols,
+        'num_aux': num_aux,
         'backbone': cfg.hyperparameters.backbone,
         'image_height': cfg.preprocessing.image_height,
         'image_width': cfg.preprocessing.image_width,
@@ -316,7 +317,6 @@ def main():
     
     species_list = CORE_SPECIES
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-    save_metadata(session_dir, species_list, target_cols)
 
     splits_dir = os.path.join(session_dir, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
@@ -453,6 +453,9 @@ def main():
         n_aux = dummy_ds[0]['aux_feats'].shape[0]
         
         model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(DEVICE)
+        
+        if fold == 0:
+            save_metadata(session_dir, CORE_SPECIES, cfg.targets.cols, n_aux)
         
         # Backbone Protection Logic
         n_upsampled = len(train_df)

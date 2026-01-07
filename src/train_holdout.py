@@ -396,12 +396,7 @@ def main():
             tile_prob=0.0
         )
         
-        if getattr(configs, 'USE_WEIGHTED_SAMPLER', False):
-            cap_q = getattr(configs, 'SAMPLER_CAP_Q', 0.95)
-            sampler = build_weighted_sampler_from_df(train_df, key='StratifyKey', cap_quantile=cap_q)
-            train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler, shuffle=False, num_workers=0, pin_memory=True)
-        else:
-            train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
         
         holdout_ds = TiledBiomassDataset(

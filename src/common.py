@@ -930,8 +930,8 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     os.makedirs(save_dir, exist_ok=True)
     
     # Denormalize
-    mean = torch.tensor(configs.IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
-    std = torch.tensor(configs.IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
+    mean = torch.tensor(IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
+    std = torch.tensor(IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
     images_denorm = images * std + mean
     images_denorm = torch.clamp(images_denorm, 0, 1)
     

@@ -332,7 +332,7 @@ def main():
     train_transform, val_transform = get_image_data_transforms()
     
     # 3. Species-stratified temporal holdout (last X% per species)
-    holdout_pct = configs.SPLIT_CONFIG.get('holdout_pct', 0.15)
+    holdout_pct = configs.SPLIT_CONFIG.get('holdout_pct', 0.20)
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
     if species_col is None:
         raise ValueError("No species column found (expected 'species_id' or 'Species').")
@@ -408,7 +408,7 @@ def main():
             train_df,
             transform=train_transform,
             mode='training',
-            tile_prob=TILE_PROB
+            tile_prob=0.1
         )
         train_ds = TiledMixupDataset(train_ds_base, prob=MIXUP_PROB, alpha=MIXUP_ALPHA)
         
@@ -416,14 +416,14 @@ def main():
             val_df,
             transform=val_transform,
             mode='train',
-            tile_prob=0.2
+            tile_prob=0.5
         )
         
         holdout_ds = TiledBiomassDataset(
             hold_df,
             transform=val_transform,
             mode='train',
-            tile_prob=0.1
+            tile_prob=0.5
         )
         
         # Loaders (sampler or shuffle=True for train)

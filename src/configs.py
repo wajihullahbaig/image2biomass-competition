@@ -133,7 +133,7 @@ def get_stratify_key(row):
 # ===== UPSAMPLING STRATEGY =====
 UPSAMPLE_CONFIG = {
     'enabled': True,
-    'target_min_samples': 20,  # Minimum samples per stratify key
+    'target_min_samples': 50,  # Minimum samples per stratify key
     'method': 'smart',  # Only upsample sparse groups
     'noise_scale': 0.05,  # Add 5% noise to biomass targets (prevents overfitting)
     'seasonal_drift': True,  # Apply season-aware target adjustments

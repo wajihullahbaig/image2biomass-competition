@@ -82,20 +82,20 @@ class BiomassUnifiedModel(nn.Module):
         
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 128),
-            nn.LayerNorm(128),
+            nn.Linear(self.backbone_dim, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_aux)
+            nn.Dropout(0.6),
+            nn.Linear(64, num_aux)
         )
         
         # 3. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),
+            nn.Linear(self.backbone_dim, 32),
+            nn.LayerNorm(32),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(64, num_species)
+            nn.Dropout(0.6),
+            nn.Linear(32, num_species)
         )
 
         # 4. Taxonomy Head (Coarse-Grained: 3 classes - Legume, Grass, Weed)
@@ -115,11 +115,14 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(input_dim, FUSION_DIM),
             nn.LayerNorm(FUSION_DIM),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.6),
+            # Transition to 128
             nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
             nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
         )
+        
+        self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
 
         self._init_biomass_head()
         
@@ -149,8 +152,8 @@ class BiomassUnifiedModel(nn.Module):
         
         # Biomass Prediction
         log_preds_raw = self.biomass_head(combined_feats)
-        # softplus ensures positivity, clamp ensures we don't blow up expm1 (6.0 ~= 400g)
-        log_preds = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, 6.0)
+        # softplus ensures positivity, clamp ensures we don't blow up expm1
+        log_preds = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
         
         log_c = log_preds[:, 0:1]
         log_d = log_preds[:, 1:2]
@@ -212,17 +215,14 @@ def no_tta(model, image, batch_idx=0):
         # Convert to Linear Grams
         lin_bio = torch.expm1(log_bio)
         
-        # PHYSICS BARRIER: Clamp to realistic range
-        lin_bio = torch.clamp(lin_bio, min=0.0, max=2500.0)
-        
         # Convert back to Log Space
-        log_bio_clamped = torch.log1p(lin_bio)
+        log_bio = torch.log1p(lin_bio)
         
         # Extract Confidence
         probs = torch.softmax(tax_logits, dim=1)
         conf, _ = torch.max(probs, dim=1)
         
-    return log_bio_clamped, conf
+    return log_bio, conf
 
 def apply_tta(model, image, batch_idx=0):
     """
@@ -255,10 +255,6 @@ def apply_tta(model, image, batch_idx=0):
             
             # Convert to Linear Grams
             lin_bio = torch.expm1(log_bio)
-            
-            # PHYSICS BARRIER: Clamp to realistic range
-            # 400g clamp
-            lin_bio = torch.clamp(lin_bio, min=0.0, max=400.0)
             
             all_biomass_linear.append(lin_bio)
             

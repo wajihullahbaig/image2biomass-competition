@@ -72,12 +72,8 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
         )
 
-        # Store clamp value in log space
-        if config:
-             self.log_clamp = torch.log1p(torch.tensor(config.targets.biomass_clamp))
-        else:
-             self.log_clamp = 6.0 # Default ~400g
-
+        self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
+        
         self._init_biomass_head()
         
     def _init_biomass_head(self):

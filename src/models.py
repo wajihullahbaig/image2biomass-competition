@@ -1,4 +1,4 @@
-# models.py - FIXED VERSION
+# models.py 
 import torch
 import torch.nn as nn
 import timm
@@ -6,29 +6,20 @@ from config.loader import cfg
 
 class BiomassUnifiedModel(nn.Module):
     def __init__(self, 
-                 backbone_name=None, 
-                 num_aux=3, 
-                 num_species=None, 
-                 pretrained=True,
-                 fusion_dim=256,
                  config=None):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
         # Use config if provided, else use passed arguments or defaults
         if config:
-            backbone_name = backbone_name or config.hyperparameters.backbone
-            num_species = num_species or len(config.species_taxonomy.core_species)
+            backbone_name = config.hyperparameters.backbone
+            num_species = len(config.species_taxonomy.core_species)
             fusion_dim = config.training.fusion_dim
             img_h = config.preprocessing.image_height
             img_w = config.preprocessing.image_width
         else:
-            # Fallback to defaults or passed values
-            backbone_name = backbone_name or "timm/tf_efficientnet_b3.ns_jft_in1k"
-            num_species = num_species or 14
-            img_h = 256
-            img_w = 512
-
+            raise ValueError("Config must be provided")
+        
         self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0, global_pool='')
         
         with torch.no_grad():

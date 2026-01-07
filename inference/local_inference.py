@@ -80,8 +80,6 @@ class BiomassUnifiedModel(nn.Module):
             
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         
-        # Backbone Freezing Logic (Not used in inference but kept for consistency)
-        
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 128),

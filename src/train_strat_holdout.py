@@ -415,15 +415,15 @@ def main():
         val_ds = TiledBiomassDataset(
             val_df,
             transform=val_transform,
-            mode='train',
-            tile_prob=0.5
+            mode='validation',
+            tile_prob=0.0
         )
         
         holdout_ds = TiledBiomassDataset(
             hold_df,
             transform=val_transform,
             mode='train',
-            tile_prob=0.5
+            tile_prob=0.85
         )
         
         # Loaders (sampler or shuffle=True for train)

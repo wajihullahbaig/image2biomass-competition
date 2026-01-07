@@ -16,7 +16,7 @@ hyperparameters:
   backbone: "timm/tf_efficientnet_b3.ns_jft_in1k"
   min_train_samples: 50
   backbone_freeze_threshold: 200
-  max_grad_norm: 2.0
+  max_grad_norm: 6.0
   backbone_lr_factor: 0.85
 
 training:

@@ -1,4 +1,4 @@
-# models.py 
+# models.py - FIXED VERSION
 import torch
 import torch.nn as nn
 import timm
@@ -6,24 +6,26 @@ from config.loader import cfg
 
 class BiomassUnifiedModel(nn.Module):
     def __init__(self, 
+                 num_aux=3, 
                  config=None):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
         # Use config if provided, else use passed arguments or defaults
         if config:
-            backbone_name = config.hyperparameters.backbone
-            num_species = len(config.species_taxonomy.core_species)
-            fusion_dim = config.training.fusion_dim
-            img_h = config.preprocessing.image_height
-            img_w = config.preprocessing.image_width
+            self.backbone_name = config.hyperparameters.backbone
+            self.num_species = len(config.species_taxonomy.core_species)
+            self.fusion_dim = config.training.fusion_dim
+            self.img_h = config.preprocessing.image_height
+            self.img_w = config.preprocessing.image_width
+            self.num_aux = num_aux
         else:
             raise ValueError("Config must be provided")
         
-        self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0, global_pool='')
+        self.backbone = timm.create_model(self.backbone_name, pretrained=True, num_classes=0, global_pool='')
         
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, img_h, img_w)
+            dummy_input = torch.randn(1, 3, self.img_h, self.img_w)
             feats = self.backbone(dummy_input)
             self.backbone_dim = feats.shape[1]
             
@@ -31,20 +33,20 @@ class BiomassUnifiedModel(nn.Module):
         
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 128),
-            nn.LayerNorm(128),
+            nn.Linear(self.backbone_dim, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_aux)
+            nn.Dropout(0.6),
+            nn.Linear(64,self.num_aux)
         )
         
         # 3. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),
+            nn.Linear(self.backbone_dim, 32),
+            nn.LayerNorm(32),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(64, num_species)
+            nn.Dropout(0.6),
+            nn.Linear(32, self.num_species)
         )
 
         # 4. Taxonomy Head (Coarse-Grained: 3 classes - Legume, Grass, Weed)
@@ -58,14 +60,14 @@ class BiomassUnifiedModel(nn.Module):
         
         # 5. Biomass Head
         # Inputs: Backbone + Aux(3) + Species(14) + Taxonomy(3)
-        input_dim = self.backbone_dim + num_aux + num_species + 3
+        input_dim = self.backbone_dim + self.num_aux + self.num_species + 3
                 
         self.biomass_head = nn.Sequential(
-            nn.Linear(input_dim, fusion_dim),
-            nn.LayerNorm(fusion_dim),
+            nn.Linear(input_dim, self.fusion_dim),
+            nn.LayerNorm(self.fusion_dim),
             nn.ReLU(),
-            nn.Dropout(0.4),
-            nn.Linear(fusion_dim, 128),
+            nn.Dropout(0.6),
+            nn.Linear(self.fusion_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
         )

@@ -977,3 +977,22 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     
     save_path = os.path.join(save_dir, f'batch{batch_idx}_{view_name}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
+
+
+# -----------------------------------------------------------------------------
+# 15. Build Weighted Sampler from DataFrame
+# -----------------------------------------------------------------------------
+def build_weighted_sampler_from_df(df, key='StratifyKey', cap_quantile=0.95):
+    if key not in df.columns or len(df) == 0:
+        return None
+    counts = df[key].value_counts()
+    if counts.empty:
+        return None
+    w_map = (1.0 / counts).to_dict()
+    weights = df[key].map(w_map).astype(float).values
+    cap = np.quantile(weights, cap_quantile) if len(weights) > 4 else None
+    if cap is not None and np.isfinite(cap):
+        weights = np.minimum(weights, cap)
+    w_tensor = torch.as_tensor(weights, dtype=torch.double)
+    sampler = torch.utils.data.WeightedRandomSampler(w_tensor, num_samples=len(df), replacement=True)
+    return sampler

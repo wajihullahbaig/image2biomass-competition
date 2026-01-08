@@ -17,37 +17,6 @@ import json
 
 # Local Imports
 from config.loader import cfg
-
-DEVICE = cfg.device
-BATCH_SIZE = cfg.hyperparameters.batch_size
-EPOCHS = cfg.hyperparameters.epochs
-LEARNING_RATE = cfg.hyperparameters.learning_rate
-TAXONOMY_FEAT_WEIGHT = cfg.training.taxonomy_feat_weight
-WEIGHT_DECAY = cfg.hyperparameters.weight_decay
-EARLY_STOP_PATIENCE = cfg.hyperparameters.early_stop_patience
-N_FOLDS = cfg.hyperparameters.n_folds
-BIOMASS_FEAT_WEIGHT = cfg.training.biomass_feat_weight
-AUX_FEAT_WEIGHT = cfg.training.aux_feat_weight
-SPECIES_FEAT_WEIGHT = cfg.training.species_feat_weight
-PHYSICS_FEAT_WEIGHT = cfg.training.physics_feat_weight
-OFFICIAL_WEIGHTS = cfg.targets.official_weights
-CORE_SPECIES = cfg.species_taxonomy.core_species
-USE_TTA = cfg.training.use_tta
-MIN_TRAIN_SAMPLES = cfg.hyperparameters.min_train_samples
-BACKBONE_FREEZE_THRESHOLD = cfg.hyperparameters.backbone_freeze_threshold
-FREEZE_BACKBONE = cfg.training.freeze_backbone
-BACKBONE_FREEZE_FRACTION = cfg.training.backbone_freeze_fraction
-MAX_GRAD_NORM = cfg.hyperparameters.max_grad_norm
-BACKBONE_LR_FACTOR = cfg.hyperparameters.backbone_lr_factor
-TILE_PROB = cfg.augmentation.tile_prob
-MIXUP_PROB = cfg.augmentation.mixup_prob
-MIXUP_ALPHA = cfg.augmentation.mixup_alpha
-
-# Loss configuration from YAML
-USE_STANDARDIZED_LOSS = cfg.loss.use_standardized_loss
-USE_WEIGHTED_REGRESSION_LOSS = cfg.loss.use_weighted_regression_loss
-REG_LOSS_TYPE = cfg.loss.reg_loss_type  # 'smoothl1' or 'mse'
-OFFICIAL_WEIGHTS_T = None  # initialized in main() with device
 from common import (
     load_data, engineer_features, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2,
@@ -65,20 +34,7 @@ from models import BiomassUnifiedModel
 from torchvision.utils import save_image
 
 
-def build_weighted_sampler_from_df(df, key='StratifyKey', cap_quantile=0.95):
-    if key not in df.columns or len(df) == 0:
-        return None
-    counts = df[key].value_counts()
-    if counts.empty:
-        return None
-    w_map = (1.0 / counts).to_dict()
-    weights = df[key].map(w_map).astype(float).values
-    cap = np.quantile(weights, cap_quantile) if len(weights) > 4 else None
-    if cap is not None and np.isfinite(cap):
-        weights = np.minimum(weights, cap)
-    w_tensor = torch.as_tensor(weights, dtype=torch.double)
-    sampler = torch.utils.data.WeightedRandomSampler(w_tensor, num_samples=len(df), replacement=True)
-    return sampler
+
 
 def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     """Save TTA-augmented images for visualization."""
@@ -99,10 +55,10 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
 
 
 # -----------------------------------------------------------------------------
-# TRAINING ENGINE (No changes needed - works with tiled data automatically)
+# TRAINING ENGINE 
 # -----------------------------------------------------------------------------
-def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, criterion_tax, device, epoch, session_dir=None, logger=None,
-                    bio_mean=None, bio_std=None, aux_mean=None, aux_std=None):
+def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, criterion_tax, cfg, epoch, session_dir=None, logger=None,
+                    bio_mean=None, bio_std=None, aux_mean=None, aux_std=None, official_weights_t=None):
     model.train()
     metrics = defaultdict(float)
     scaler = torch.amp.GradScaler('cuda')
@@ -112,8 +68,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
     
     pbar = tqdm(loader, desc=f"Train Ep {epoch}", leave=False)
     for batch_idx, batch in enumerate(pbar):
-        images = batch['image'].to(device)
-        targets_g = batch['targets'].to(device)
+        images = batch['image'].to(cfg.device)
+        targets_g = batch['targets'].to(cfg.device)
         
         # Proactive Safety Check
         if torch.isnan(targets_g).any():
@@ -122,8 +78,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             continue
 
         targets_log = torch.log1p(targets_g)
-        aux_feats = batch['aux_feats'].to(device)
-        species_vec = batch['species_id'].to(device)
+        aux_feats = batch['aux_feats'].to(cfg.device)
+        species_vec = batch['species_id'].to(cfg.device)
         
         if epoch == 0 and batch_idx < 5 and session_dir:
             save_batch_images(images, fold=0, batch_idx=batch_idx, session_dir=session_dir, max_batches_to_save=5)
@@ -140,40 +96,40 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             # Biomass loss (optionally standardized + per-target weighted)
             bio_out_for_loss = biomass_out
             targ_for_loss = targets_log
-            if USE_STANDARDIZED_LOSS and bio_mean is not None and bio_std is not None:
+            if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
                 bio_out_for_loss = (biomass_out - bio_mean) / (bio_std + 1e-9)
                 targ_for_loss = (targets_log - bio_mean) / (bio_std + 1e-9)
 
-            if USE_WEIGHTED_REGRESSION_LOSS and OFFICIAL_WEIGHTS_T is not None:
-                if REG_LOSS_TYPE == 'smoothl1':
+            if cfg.loss.use_weighted_regression_loss and official_weights_t is not None:
+                if cfg.loss.reg_loss_type == 'smoothl1':
                     per_el = F.smooth_l1_loss(bio_out_for_loss, targ_for_loss, reduction='none')  # [B,5]
                 else:
                     per_el = F.mse_loss(bio_out_for_loss, targ_for_loss, reduction='none')  # [B,5]
                 # Mean over batch, weight across targets, sum → scalar
                 per_target_mean = per_el.mean(dim=0)  # [5]
-                loss_bio = (per_target_mean * OFFICIAL_WEIGHTS_T).sum() * BIOMASS_FEAT_WEIGHT
+                loss_bio = (per_target_mean * official_weights_t).sum() * cfg.training.biomass_feat_weight
             else:
-                loss_bio = criterion_reg(bio_out_for_loss, targ_for_loss) * BIOMASS_FEAT_WEIGHT
+                loss_bio = criterion_reg(bio_out_for_loss, targ_for_loss) * cfg.training.biomass_feat_weight
 
-            if USE_STANDARDIZED_LOSS and aux_mean is not None and aux_std is not None:
+            if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
                 aux_out_std = (aux_out - aux_mean) / (aux_std + 1e-9)
                 aux_targ_std = (aux_feats - aux_mean) / (aux_std + 1e-9)
-                loss_aux = criterion_reg(aux_out_std, aux_targ_std) * AUX_FEAT_WEIGHT
+                loss_aux = criterion_reg(aux_out_std, aux_targ_std) * cfg.training.aux_feat_weight
             else:
-                loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
+                loss_aux = criterion_reg(aux_out, aux_feats) * cfg.training.aux_feat_weight
             # Species: multi-label → BCEWithLogitsLoss
-            loss_sp = criterion_species(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
+            loss_sp = criterion_species(species_logits, species_vec) * cfg.training.species_feat_weight
             # Taxonomy: soft 3-class distribution → KLDivLoss on log-softmax vs normalized targets
             tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
             tax_log_probs = F.log_softmax(taxonomy_logits, dim=1)
-            loss_tax = criterion_tax(tax_log_probs, tax_targets_norm) * TAXONOMY_FEAT_WEIGHT
+            loss_tax = criterion_tax(tax_log_probs, tax_targets_norm) * cfg.training.taxonomy_feat_weight
             
             # Physics Loss
             pred_c = torch.expm1(biomass_out[:, 0])
             pred_d = torch.expm1(biomass_out[:, 1])
             pred_g = torch.expm1(biomass_out[:, 2])
             derived_total = torch.log1p(pred_c + pred_d + pred_g + 1e-8)
-            loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * PHYSICS_FEAT_WEIGHT
+            loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * cfg.training.physics_feat_weight
 
             total_loss = loss_bio + loss_aux + loss_sp + loss_tax + loss_phy
         
@@ -187,7 +143,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         
         # Gradient Clipping
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.hyperparameters.max_grad_norm)
         
         scaler.step(optimizer)
         scaler.update()
@@ -224,13 +180,13 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
     preds_log = torch.cat(all_preds_log).numpy()
     preds_linear = np.expm1(preds_log)
     targets_linear = torch.cat(all_targets_g).numpy()
-    final_metrics['train_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, OFFICIAL_WEIGHTS)
+    final_metrics['train_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, cfg.targets.official_weights)
     
     return final_metrics
 
 @torch.no_grad()
-def validate(model, loader, criterion_reg, criterion_species, criterion_tax, device, prefix='val', use_tta=False, epoch=0, fold=0, session_dir=None,
-             bio_mean=None, bio_std=None, aux_mean=None, aux_std=None):
+def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg, prefix='val', use_tta=False, epoch=0, fold=0, session_dir=None,
+             bio_mean=None, bio_std=None, aux_mean=None, aux_std=None, official_weights_t=None):
     model.eval()
     metrics = defaultdict(float)
     all_preds_log, all_targets_g = [], []
@@ -244,11 +200,11 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, dev
     ]
     
     for batch_idx, batch in enumerate(loader):
-        images = batch['image'].to(device)
-        targets_g = batch['targets'].to(device)
+        images = batch['image'].to(cfg.device)
+        targets_g = batch['targets'].to(cfg.device)
         targets_log = torch.log1p(targets_g)
-        aux_feats = batch['aux_feats'].to(device)
-        species_vec = batch['species_id'].to(device)
+        aux_feats = batch['aux_feats'].to(cfg.device)
+        species_vec = batch['species_id'].to(cfg.device)
         taxonomy_targets = get_taxonomy_targets(species_vec)
         
         if use_tta:
@@ -292,43 +248,43 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, dev
         
         bio_out_for_loss = biomass_out
         targ_for_loss = targets_log
-        if USE_STANDARDIZED_LOSS and bio_mean is not None and bio_std is not None:
+        if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
             bio_out_for_loss = (biomass_out - bio_mean) / (bio_std + 1e-9)
             targ_for_loss = (targets_log - bio_mean) / (bio_std + 1e-9)
-        if USE_WEIGHTED_REGRESSION_LOSS and OFFICIAL_WEIGHTS_T is not None:
-            if REG_LOSS_TYPE == 'smoothl1':
+        if cfg.loss.use_weighted_regression_loss and official_weights_t is not None:
+            if cfg.loss.reg_loss_type == 'smoothl1':
                 per_el = F.smooth_l1_loss(bio_out_for_loss, targ_for_loss, reduction='none')
             else:
                 per_el = F.mse_loss(bio_out_for_loss, targ_for_loss, reduction='none')
             per_target_mean = per_el.mean(dim=0)
-            loss_bio = (per_target_mean * OFFICIAL_WEIGHTS_T).sum() * BIOMASS_FEAT_WEIGHT
+            loss_bio = (per_target_mean * official_weights_t).sum() * cfg.training.biomass_feat_weight
         else:
-            loss_bio = criterion_reg(bio_out_for_loss, targ_for_loss) * BIOMASS_FEAT_WEIGHT
+            loss_bio = criterion_reg(bio_out_for_loss, targ_for_loss) * cfg.training.biomass_feat_weight
 
-        if USE_STANDARDIZED_LOSS and aux_mean is not None and aux_std is not None:
+        if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
             aux_out_std = (aux_out - aux_mean) / (aux_std + 1e-9)
             aux_targ_std = (aux_feats - aux_mean) / (aux_std + 1e-9)
-            loss_aux = criterion_reg(aux_out_std, aux_targ_std) * AUX_FEAT_WEIGHT
+            loss_aux = criterion_reg(aux_out_std, aux_targ_std) * cfg.training.aux_feat_weight
         else:
-            loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
+            loss_aux = criterion_reg(aux_out, aux_feats) * cfg.training.aux_feat_weight
         if use_tta:
             # BCE on probabilities for species when using TTA-averaged probs
-            loss_sp = nn.BCELoss()(species_probs, species_vec) * SPECIES_FEAT_WEIGHT
+            loss_sp = nn.BCELoss()(species_probs, species_vec) * cfg.training.species_feat_weight
             tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
-            loss_tax = criterion_tax(taxonomy_log_probs, tax_targets_norm) * TAXONOMY_FEAT_WEIGHT
+            loss_tax = criterion_tax(taxonomy_log_probs, tax_targets_norm) * cfg.training.taxonomy_feat_weight
         else:
             # BCEWithLogits on raw logits for species
-            loss_sp = criterion_species(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
+            loss_sp = criterion_species(species_logits, species_vec) * cfg.training.species_feat_weight
             # KLDiv on log-softmax for taxonomy
             tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
             tax_log_probs = F.log_softmax(taxonomy_logits, dim=1)
-            loss_tax = criterion_tax(tax_log_probs, tax_targets_norm) * TAXONOMY_FEAT_WEIGHT
+            loss_tax = criterion_tax(tax_log_probs, tax_targets_norm) * cfg.training.taxonomy_feat_weight
         
         pred_c = torch.expm1(biomass_out[:, 0])
         pred_d = torch.expm1(biomass_out[:, 1])
         pred_g = torch.expm1(biomass_out[:, 2])
         derived_total = torch.log1p(pred_c + pred_d + pred_g + 1e-8)
-        loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * PHYSICS_FEAT_WEIGHT
+        loss_phy = criterion_reg(biomass_out[:, 3], derived_total) * cfg.training.physics_feat_weight
 
         total_loss = loss_bio + loss_aux + loss_sp + loss_tax + loss_phy
         
@@ -361,7 +317,7 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, dev
     preds_log = torch.cat(all_preds_log).numpy()
     preds_linear = np.expm1(preds_log)
     targets_linear = torch.cat(all_targets_g).numpy()
-    final_metrics[f'{prefix}_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, OFFICIAL_WEIGHTS)
+    final_metrics[f'{prefix}_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, cfg.targets.official_weights)
     
     return final_metrics
 
@@ -404,7 +360,7 @@ def main():
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
     logger.info("Data sorted by Sampling_Date.")
     
-    species_list = CORE_SPECIES
+    species_list = cfg.species_taxonomy.core_species
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
 
     # Sort full df by Sampling_Date
@@ -420,14 +376,14 @@ def main():
     stratification_col = 'StratifyKey'
     
     # 3. Triple Moving Window Split
-    for fold, (train_idx, val_idx, hold_idx) in enumerate(triple_moving_time_series_split(df, n_splits=N_FOLDS)):
+    for fold, (train_idx, val_idx, hold_idx) in enumerate(triple_moving_time_series_split(df, n_splits=cfg.hyperparameters.n_folds)):
         train_df = df.iloc[train_idx].copy()
         val_df = df.iloc[val_idx].copy()
         hold_df = df.iloc[hold_idx].copy()
         
         raw_n_train = len(train_df)
         
-        logger.info(f"\n{'='*20} Fold {fold+1}/{N_FOLDS} (Triple Moving Window) {'='*20}")
+        logger.info(f"\n{'='*20} Fold {fold+1}/{cfg.hyperparameters.n_folds} (Triple Moving Window) {'='*20}")
         logger.info(f"Train:   {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)}, sessions={train_df['SessionID'].nunique()})")
         logger.info(f"Val:     {val_df['Sampling_Date'].min().date()} -> {val_df['Sampling_Date'].max().date()} (n={len(val_df)}, sessions={val_df['SessionID'].nunique()})")
         logger.info(f"Holdout: {hold_df['Sampling_Date'].min().date()} -> {hold_df['Sampling_Date'].max().date()} (n={len(hold_df)}, sessions={hold_df['SessionID'].nunique()})")
@@ -439,8 +395,8 @@ def main():
         log_dataframe_details(logger, hold_df, name="Holdout Set")
         log_fold_details(logger, train_df, val_df)
 
-        if raw_n_train < MIN_TRAIN_SAMPLES:
-            logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({raw_n_train} < {MIN_TRAIN_SAMPLES})")
+        if raw_n_train < cfg.hyperparameters.min_train_samples:
+            logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({raw_n_train} < {cfg.hyperparameters.min_train_samples})")
             continue
  
         # Upsampling is now handled in load_data function
@@ -464,11 +420,10 @@ def main():
         bio_train_log = np.log1p(train_df[bio_cols].astype(float).values)
         bio_mean_np = bio_train_log.mean(axis=0)
         bio_std_np = bio_train_log.std(axis=0)
-        bio_mean_t = torch.tensor(bio_mean_np, dtype=torch.float32, device=DEVICE).view(1, -1)
-        bio_std_t = torch.tensor(bio_std_np, dtype=torch.float32, device=DEVICE).view(1, -1)
+        bio_mean_t = torch.tensor(bio_mean_np, dtype=torch.float32, device=cfg.device).view(1, -1)
+        bio_std_t = torch.tensor(bio_std_np, dtype=torch.float32, device=cfg.device).view(1, -1)
         # Prepare official weights tensor on device
-        global OFFICIAL_WEIGHTS_T
-        OFFICIAL_WEIGHTS_T = torch.tensor(OFFICIAL_WEIGHTS, dtype=torch.float32, device=DEVICE)
+        official_weights_t = torch.tensor(cfg.targets.official_weights, dtype=torch.float32, device=cfg.device)
 
         # Reconstruct aux column list similar to dataset
         base_aux = ['Pre_GSHH_NDVI', 'Height_Ave_cm_log', 'Interaction_Mul', 'Interaction_Add']
@@ -488,17 +443,17 @@ def main():
         else:
             aux_mean_np = np.array([], dtype=float)
             aux_std_np = np.array([], dtype=float)
-        aux_mean_t = torch.tensor(aux_mean_np, dtype=torch.float32, device=DEVICE).view(1, -1) if aux_data.shape[1] > 0 else None
-        aux_std_t = torch.tensor(aux_std_np, dtype=torch.float32, device=DEVICE).view(1, -1) if aux_data.shape[1] > 0 else None
+        aux_mean_t = torch.tensor(aux_mean_np, dtype=torch.float32, device=cfg.device).view(1, -1) if aux_data.shape[1] > 0 else None
+        aux_std_t = torch.tensor(aux_std_np, dtype=torch.float32, device=cfg.device).view(1, -1) if aux_data.shape[1] > 0 else None
 
         # ===== KEY CHANGE: Use TiledBiomassDataset =====
         train_ds_base = TiledBiomassDataset(
             train_df, 
             transform=train_transform,
             mode='training',  # Enables tiling
-            tile_prob=TILE_PROB
+            tile_prob=cfg.augmentation.tile_prob
         )
-        train_ds = TiledMixupDataset(train_ds_base, prob=MIXUP_PROB, alpha=MIXUP_ALPHA)
+        train_ds = TiledMixupDataset(train_ds_base, prob=cfg.augmentation.mixup_prob, alpha=cfg.augmentation.mixup_alpha)
         
         val_ds = TiledBiomassDataset(
             val_df, 
@@ -507,8 +462,8 @@ def main():
             tile_prob=0.0
         )
         
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
-        val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+        val_loader = DataLoader(val_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
         
         holdout_ds = TiledBiomassDataset(
             hold_df, 
@@ -516,28 +471,28 @@ def main():
             mode='holdout',  # Disables tiling
             tile_prob=0.0
         )
-        holdout_loader = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+        holdout_loader = DataLoader(holdout_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
         
         # Model
         dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation')
         n_aux = dummy_ds[0]['aux_feats'].shape[0]
         
-        model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(DEVICE)
+        model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
         
         if fold == 0:
-            save_metadata(session_dir, CORE_SPECIES, cfg.targets.cols, n_aux)
+            save_metadata(session_dir, cfg.species_taxonomy.core_species, cfg.targets.cols, n_aux)
         
         # Backbone Protection Logic
         n_upsampled = len(train_df)
-        if n_upsampled < BACKBONE_FREEZE_THRESHOLD:
-            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n_upsampled={n_upsampled} < {BACKBONE_FREEZE_THRESHOLD})")
+        if n_upsampled < cfg.hyperparameters.backbone_freeze_threshold:
+            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n_upsampled={n_upsampled} < {cfg.hyperparameters.backbone_freeze_threshold})")
             for param in model.backbone.parameters():
                 param.requires_grad = False
         else:
-            if FREEZE_BACKBONE:
-                logger.info(f"STRATEGY: Applying Partial Freeze ({BACKBONE_FREEZE_FRACTION*100}%) for Fold {fold+1} (n_upsampled={n_upsampled})")
+            if cfg.training.freeze_backbone:
+                logger.info(f"STRATEGY: Applying Partial Freeze ({cfg.training.backbone_freeze_fraction*100}%) for Fold {fold+1} (n_upsampled={n_upsampled})")
                 all_params = list(model.backbone.parameters())
-                freeze_until = int(len(all_params) * BACKBONE_FREEZE_FRACTION)
+                freeze_until = int(len(all_params) * cfg.training.backbone_freeze_fraction)
                 for i, p in enumerate(all_params):
                     p.requires_grad = (i >= freeze_until)
             else:
@@ -550,11 +505,11 @@ def main():
         head_params = [p for n, p in model.named_parameters() if 'backbone' not in n]
         
         param_groups = [
-            {'params': backbone_params, 'lr': LEARNING_RATE * BACKBONE_LR_FACTOR},
-            {'params': head_params, 'lr': LEARNING_RATE}
+            {'params': backbone_params, 'lr': cfg.hyperparameters.learning_rate * cfg.hyperparameters.backbone_lr_factor},
+            {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
         ]
         
-        optimizer = AdamW(param_groups, weight_decay=WEIGHT_DECAY)
+        optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, threshold=1e-3, min_lr=1e-6)
         
         criterion_reg = nn.MSELoss()
@@ -570,27 +525,30 @@ def main():
         best_fold_epoch = -1
         patience_counter = 0
         
-        for epoch in range(EPOCHS):
+        for epoch in range(cfg.hyperparameters.epochs):
             # Train
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, criterion_reg, criterion_species, criterion_tax,
-                DEVICE, epoch, session_dir=session_dir, logger=logger,
-                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t
+                cfg, epoch, session_dir=session_dir, logger=logger,
+                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t,
+                official_weights_t=official_weights_t
             )
             
             # Validate
             val_metrics = validate(
-                model, val_loader, criterion_reg, criterion_species, criterion_tax, DEVICE,
+                model, val_loader, criterion_reg, criterion_species, criterion_tax, cfg,
                 prefix='val', use_tta=False,
-                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t
+                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t,
+                official_weights_t=official_weights_t
             )
             
             # Holdout
             hol_metrics = validate(
-                model, holdout_loader, criterion_reg, criterion_species, criterion_tax, DEVICE,
-                prefix='holdout', use_tta=USE_TTA,
+                model, holdout_loader, criterion_reg, criterion_species, criterion_tax, cfg,
+                prefix='holdout', use_tta=cfg.training.use_tta,
                 epoch=epoch, fold=fold, session_dir=session_dir,
-                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t
+                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t,
+                official_weights_t=official_weights_t
             )
             
             # Custom Score
@@ -606,16 +564,16 @@ def main():
             
             log_msg = (
                 f"Ep {epoch} | "
-                f"T_Loss: {train_metrics['train_loss']:.3f} "
+                f"T_Loss: {train_metrics['train_loss']:.3f} \n"
                 f"(bio:{train_metrics.get('train_bio', 0.0):.3f}, aux:{train_metrics.get('train_aux', 0.0):.3f}, "
-                f"sp:{train_metrics.get('train_sp', 0.0):.3f}, tax:{train_metrics.get('train_tax', 0.0):.3f}, phy:{train_metrics.get('train_phy', 0.0):.3f}) | "
-                f"V_Loss: {val_metrics['val_loss']:.3f} "
+                f"sp:{train_metrics.get('train_sp', 0.0):.3f}, tax:{train_metrics.get('train_tax', 0.0):.3f}, phy:{train_metrics.get('train_phy', 0.0):.3f}) \n "
+                f"V_Loss: {val_metrics['val_loss']:.3f} \n"
                 f"(bio:{val_metrics.get('val_bio', 0.0):.3f}, aux:{val_metrics.get('val_aux', 0.0):.3f}, "
-                f"sp:{val_metrics.get('val_sp', 0.0):.3f}, tax:{val_metrics.get('val_tax', 0.0):.3f}, phy:{val_metrics.get('val_phy', 0.0):.3f}) | "
-                f"H_Loss: {hol_metrics['holdout_loss']:.3f} "
-                f"(bio:{hol_metrics.get('holdout_bio', 0.0):.3f}, aux:{hol_metrics.get('holdout_aux', 0.0):.3f}, "
-                f"sp:{hol_metrics.get('holdout_sp', 0.0):.3f}, tax:{hol_metrics.get('holdout_tax', 0.0):.3f}, phy:{hol_metrics.get('holdout_phy', 0.0):.3f}) | "
-                f"T_R2: {train_metrics['train_r2']:.4f} | V_R2: {v_r2:.4f} | H_R2: {h_r2:.4f} | "
+                f"sp:{val_metrics.get('val_sp', 0.0):.3f}, tax:{val_metrics.get('val_tax', 0.0):.3f}, phy:{val_metrics.get('val_phy', 0.0):.3f}) \n "
+                f"H_Loss: {hol_metrics['holdout_loss']:.3f} \n"
+                f"(bio:{hol_metrics.get('holdout_bio', 0.0):.3f}, aux:{hol_metrics.get('holdout_aux', 0.0):.3f}, \n"
+                f"sp:{hol_metrics.get('holdout_sp', 0.0):.3f}, tax:{hol_metrics.get('holdout_tax', 0.0):.3f}, phy:{hol_metrics.get('holdout_phy', 0.0):.3f}) \n "
+                f"T_R2: {train_metrics['train_r2']:.4f} | V_R2: {v_r2:.4f} | H_R2: {h_r2:.4f} | \n"
                 f"Score: {current_score:.4f} | Gap: {score_gap:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}"
             )
             logger.info(log_msg)
@@ -646,7 +604,7 @@ def main():
             else:
                 patience_counter += 1
                 
-            if patience_counter >= EARLY_STOP_PATIENCE:
+            if patience_counter >= cfg.hyperparameters.early_stop_patience:
                 logger.info("Early Stopping Triggered")
                 break
                 

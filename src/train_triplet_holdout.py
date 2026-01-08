@@ -18,7 +18,7 @@ import json
 # Local Imports
 from config.loader import cfg
 from common import (
-    load_data, engineer_features, get_image_data_transforms, save_batch_images, 
+    get_formatted_loss_log, load_data, engineer_features, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,save_tta_images,
     rotate_crop_resize, smart_temporal_split, triple_moving_time_series_split
@@ -226,7 +226,8 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
                 # Convert to linear/prob space for averaging
                 accum_bio_linear += torch.expm1(bio_out)
                 accum_aux += aux_out
-                accum_sp_probs += torch.softmax(sp_logits, dim=1)
+                # Multi-label: average sigmoid probabilities across TTA views
+                accum_sp_probs += torch.sigmoid(sp_logits)
                 accum_tax_probs += torch.softmax(tax_logits, dim=1)
             
             # Average
@@ -553,29 +554,21 @@ def main():
             
             # Custom Score
             v_r2 = val_metrics['val_r2']
-            h_r2 = hol_metrics['holdout_r2']
-            
+            h_r2 = hol_metrics['holdout_r2']            
             avg_r2 = (v_r2 + h_r2) / 2
             consistency_penalty = 0.5 * abs(v_r2 - h_r2)
-            current_score = avg_r2 - consistency_penalty
-            
+            current_score = avg_r2 - consistency_penalty            
             score_gap = abs(v_r2 - h_r2)
             scheduler.step(current_score)
             
-            log_msg = (
-                f"Ep {epoch} | "
-                f"T_Loss: {train_metrics['train_loss']:.3f} \n"
-                f"(bio:{train_metrics.get('train_bio', 0.0):.3f}, aux:{train_metrics.get('train_aux', 0.0):.3f}, "
-                f"sp:{train_metrics.get('train_sp', 0.0):.3f}, tax:{train_metrics.get('train_tax', 0.0):.3f}, phy:{train_metrics.get('train_phy', 0.0):.3f}) \n "
-                f"V_Loss: {val_metrics['val_loss']:.3f} \n"
-                f"(bio:{val_metrics.get('val_bio', 0.0):.3f}, aux:{val_metrics.get('val_aux', 0.0):.3f}, "
-                f"sp:{val_metrics.get('val_sp', 0.0):.3f}, tax:{val_metrics.get('val_tax', 0.0):.3f}, phy:{val_metrics.get('val_phy', 0.0):.3f}) \n "
-                f"H_Loss: {hol_metrics['holdout_loss']:.3f} \n"
-                f"(bio:{hol_metrics.get('holdout_bio', 0.0):.3f}, aux:{hol_metrics.get('holdout_aux', 0.0):.3f}, \n"
-                f"sp:{hol_metrics.get('holdout_sp', 0.0):.3f}, tax:{hol_metrics.get('holdout_tax', 0.0):.3f}, phy:{hol_metrics.get('holdout_phy', 0.0):.3f}) \n "
-                f"T_R2: {train_metrics['train_r2']:.4f} | V_R2: {v_r2:.4f} | H_R2: {h_r2:.4f} | \n"
-                f"Score: {current_score:.4f} | Gap: {score_gap:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}"
-            )
+            
+            log_msg = get_formatted_loss_log(epoch, 
+                                             train_metrics, 
+                                             val_metrics, 
+                                             hol_metrics,
+                                             current_score, score_gap,
+                                             scheduler.get_last_lr()[0]
+                                             )
             logger.info(log_msg)
             
             # Store History

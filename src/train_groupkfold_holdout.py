@@ -596,7 +596,8 @@ def main():
                                              val_metrics, 
                                              hol_metrics,
                                              current_score, score_gap,
-                                             scheduler.get_last_lr()[0]
+                                             scheduler.get_last_lr()[0],
+                                             v_r2, h_r2
                                              )
             logger.info(log_msg)
             

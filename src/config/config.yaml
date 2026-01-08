@@ -117,9 +117,9 @@ seasons:
       Dry_Dead_g: -0.4
       Dry_Clover_g: 0.4
     summer:
-      Dry_Green_g: 0.4
-      Dry_Dead_g: 0.2
-      Dry_Clover_g: 0.2
+      Dry_Green_g: 0.6
+      Dry_Dead_g: -0.3
+      Dry_Clover_g: 0.3
     autumn:
       Dry_Green_g: -0.2
       Dry_Dead_g: 0.2

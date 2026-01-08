@@ -673,14 +673,36 @@ def smart_upsample(train_df, stratify_col='StratifyKey',date_col='Sampling_Date'
                         gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
                         upsampled['GDM_g'] = gdm_final
 
-            # Add noise to biomass targets (avoid exact duplicates)
-            biomass_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-            for col in biomass_cols:
+            # Add noise to component biomass only, then recompute totals & GDM
+            comp_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+            for col in comp_cols:
                 if col in upsampled.columns:
                     s = upsampled[col].std()
-                    if np.isnan(s) or s == 0: s = upsampled[col].mean() # Fallback if std is undefined
+                    if np.isnan(s) or s == 0:
+                        s = upsampled[col].mean()
                     noise = np.random.normal(0, s * noise_scale, size=len(upsampled))
-                    upsampled[col] = np.maximum(0, upsampled[col] + noise)  # Ensure non-negative
+                    upsampled[col] = np.maximum(0.0, upsampled[col] + noise)
+
+            if all(c in upsampled.columns for c in comp_cols):
+                total_new = (
+                    upsampled['Dry_Clover_g'].astype(float).values +
+                    upsampled['Dry_Dead_g'].astype(float).values +
+                    upsampled['Dry_Green_g'].astype(float).values
+                )
+                upsampled['Dry_Total_g'] = np.maximum(0.0, total_new)
+                if 'GDM_g' in upsampled.columns:
+                    total_old = upsampled['Dry_Total_g'].astype(float).values
+                    scale = np.divide(total_new, total_old, out=np.ones_like(total_new), where=total_old > 0)
+                    gdm = upsampled['GDM_g'].astype(float).values
+                    gdm_scaled = np.maximum(0.0, gdm * scale)
+                    gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
+                    upsampled['GDM_g'] = gdm_final
+
+            # Clamp to competition target limits
+            clamp_val = float(cfg.targets.biomass_clamp)
+            for col in ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']:
+                if col in upsampled.columns:
+                    upsampled[col] = np.clip(upsampled[col].astype(float).values, 0.0, clamp_val)
             
             # Mark samples
             upsampled['is_synthetic'] = True
@@ -764,14 +786,36 @@ def apply_smart_upsample_with_features(wide_df, logger):
                         gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
                         upsampled['GDM_g'] = gdm_final
 
-            # Add noise to biomass targets (existing logic)
-            biomass_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-            for col in biomass_cols:
+            # Add noise to component biomass only, then recompute totals & GDM
+            comp_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+            for col in comp_cols:
                 if col in upsampled.columns:
                     s = upsampled[col].std()
-                    if np.isnan(s) or s == 0: s = upsampled[col].mean() # Fallback if std is undefined
+                    if np.isnan(s) or s == 0:
+                        s = upsampled[col].mean()
                     noise = np.random.normal(0, s * noise_scale, size=len(upsampled))
-                    upsampled[col] = np.maximum(0, upsampled[col] + noise)  # Ensure non-negative
+                    upsampled[col] = np.maximum(0.0, upsampled[col] + noise)
+
+            if all(c in upsampled.columns for c in comp_cols):
+                total_new = (
+                    upsampled['Dry_Clover_g'].astype(float).values +
+                    upsampled['Dry_Dead_g'].astype(float).values +
+                    upsampled['Dry_Green_g'].astype(float).values
+                )
+                upsampled['Dry_Total_g'] = np.maximum(0.0, total_new)
+                if 'GDM_g' in upsampled.columns:
+                    total_old = upsampled['Dry_Total_g'].astype(float).values
+                    scale = np.divide(total_new, total_old, out=np.ones_like(total_new), where=total_old > 0)
+                    gdm = upsampled['GDM_g'].astype(float).values
+                    gdm_scaled = np.maximum(0.0, gdm * scale)
+                    gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
+                    upsampled['GDM_g'] = gdm_final
+
+            # Clamp to competition target limits
+            clamp_val = float(cfg.targets.biomass_clamp)
+            for col in ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']:
+                if col in upsampled.columns:
+                    upsampled[col] = np.clip(upsampled[col].astype(float).values, 0.0, clamp_val)
             
             # NEW: Add noise to NDVI (bounded 0-1) and Height (cm scale) in linear space
             if 'Pre_GSHH_NDVI' in upsampled.columns:
@@ -1000,7 +1044,7 @@ def build_weighted_sampler_from_df(df, key='StratifyKey', cap_quantile=0.95):
 # -----------------------------------------------------------------------------
 # 16. Formatted log message for losses
 # -----------------------------------------------------------------------------
-def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, current_score,score_gap, lr):
+def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, current_score,score_gap, lr,v_r2, h_r2):
     """
     Generate a formatted log message for training, validation, and holdout losses.
     """    

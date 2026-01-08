@@ -55,7 +55,7 @@ GROUP_DEFINITIONS = cfg.species_taxonomy.groups
 TAXONOMY_IDXS = cfg.species_taxonomy.taxonomy_idxs
 
 # ====================== IMPROVED STRATIFICATION ======================
-def get_stratify_key(row):
+def get_state_specie_pair(row):
     """
     Create region-aware stratification key: State + Primary Species Pattern.
     """

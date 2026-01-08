@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 
 from config.loader import cfg
-from configs import config_str, get_stratify_key
+from configs import config_str, get_state_specie_pair
 from common import (
     get_formatted_loss_log, get_season, load_data, engineer_features, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2,
@@ -454,14 +454,14 @@ def main():
     hold_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
     
     # 4. Stratified K-Fold on dev set (by StratifyKey)
-    if 'StratifyKey' not in dev_df.columns:
-        raise ValueError("StratifyKey column not found in dataframe. Ensure preprocessing populates it.")
-    
+    if 'State_Specie' not in dev_df.columns:
+        raise ValueError("State_Specie column not found in dataframe. Ensure preprocessing populates it.")
+
     best_overall_score = -float('inf')
     
     skf = StratifiedKFold(n_splits=cfg.hyperparameters.n_folds)
     
-    for fold, (train_idx, val_idx) in enumerate(skf.split(dev_df, dev_df['StratifyKey'])):
+    for fold, (train_idx, val_idx) in enumerate(skf.split(dev_df, dev_df['State_Specie'])):
         train_df = dev_df.iloc[train_idx].copy().reset_index(drop=True)
         val_df = dev_df.iloc[val_idx].copy().reset_index(drop=True)
         
@@ -485,7 +485,7 @@ def main():
         
         # Upsampling is now handled in load_data function
         logger.info(f"Training fold {fold} size: {len(train_df)} (upsampling applied in load_data)")
-        logger.info(f"Training set distribution: {train_df['StratifyKey'].value_counts()}")
+        logger.info(f"Training set distribution: {train_df['State_Specie'].value_counts()}")
         
         # Effective train size with tiling
         effective_train_size = len(train_df) * 6

@@ -419,15 +419,6 @@ def main():
     df = engineer_features(df, logger)
 
     df = df.sort_values('Sampling_Date').reset_index(drop=True)
-    df['Season'] = df['Sampling_Date'].apply(get_season)
-    
-    # Ensure SessionID exists (State+Sampling_Date)
-    if 'SessionID' not in df.columns:
-        if 'State' in df.columns:
-            sid = df['State'].astype(str) + '_' + df['Sampling_Date'].dt.strftime('%Y-%m-%d')
-            df['SessionID'] = sid
-        else:
-            raise ValueError("SessionID not found and State column unavailable to construct it.")
     
     logger.info("Data sorted by Sampling_Date and SessionID prepared.")
     
@@ -471,15 +462,15 @@ def main():
     hold_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
     
     # 4. GroupKFold on dev set (group by SessionID)
-    if 'StratifyKey' not in dev_df.columns:
-        raise ValueError("StratifyKey column not found in dataframe. Ensure preprocessing populates it.")
-    
+    if 'State_Specie' not in dev_df.columns:
+        raise ValueError("State_Specie column not found in dataframe. Ensure preprocessing populates it.")
+
     best_overall_score = -float('inf')
     
     gkf = GroupKFold(n_splits=cfg.hyperparameters.n_folds)
     groups = dev_df['GroupKey'].values
-    
-    for fold, (train_idx, val_idx) in enumerate(gkf.split(dev_df, y=dev_df['StratifyKey'], groups=groups)):
+
+    for fold, (train_idx, val_idx) in enumerate(gkf.split(dev_df, y=dev_df['State_Specie'], groups=groups)):
         train_df = dev_df.iloc[train_idx].copy().reset_index(drop=True)
         val_df = dev_df.iloc[val_idx].copy().reset_index(drop=True)
         
@@ -523,7 +514,7 @@ def main():
         
         # Upsampling is now handled in load_data function
         logger.info(f"Training fold {fold} size: {len(train_df)} (upsampling applied in load_data)")
-        logger.info(f"Training set distribution: {train_df['StratifyKey'].value_counts()}")
+        logger.info(f"Training set distribution: {train_df['State_Specie'].value_counts()}")
         
         # Effective train size with tiling
         effective_train_size = len(train_df) * 6

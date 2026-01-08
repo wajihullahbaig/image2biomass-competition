@@ -454,7 +454,7 @@ def main():
     train_transform, val_transform = get_image_data_transforms()
     
     best_overall_score = -float('inf')
-    stratification_col = 'StratifyKey'
+    stratification_col = 'State_Specie'  # For logging purposes only
     
     # 3. Triple Moving Window Split
     for fold, (train_idx, val_idx, hold_idx) in enumerate(triple_moving_time_series_split(df, n_splits=cfg.hyperparameters.n_folds)):
@@ -482,7 +482,7 @@ def main():
  
         # Upsampling is now handled in load_data function
         logger.info(f"Training set size: {len(train_df)} (upsampling applied in load_data)")
-        logger.info(f"Training set distribution: {train_df['StratifyKey'].value_counts()}")
+        logger.info(f"Training set distribution: {train_df['State_Specie'].value_counts()}")
         
         # Calculate effective training size with tiling
         effective_train_size = len(train_df) * 6  # 6 views per sample

@@ -44,13 +44,7 @@ USE_BIN_FEATURES = cfg.features.use_bin_features
 BIN_ENCODING = cfg.features.bin_encoding
 USE_SPECIES_COUNT_FEATURE = cfg.features.use_species_count_feature
 
-# Note: get_stratify_key is imported from configs if needed, 
-# but we can also define it here or keep it in configs.py bridge.
-from configs import get_stratify_key
-
-# -----------------------------------------------------------------------------
-# 1. MATH & GEOMETRY HELPERS (The Core of the Strategy)
-# -----------------------------------------------------------------------------
+from configs import get_state_specie_pair
 
 def get_largest_rotated_crop(h: int, w: int, angle: float) -> Tuple[int, int]:
     """
@@ -107,10 +101,6 @@ def rotate_crop_resize(img: torch.Tensor, angle: float) -> torch.Tensor:
         ).squeeze(0)
     
     return img_resized
-
-# -----------------------------------------------------------------------------
-# 2. CUSTOM TRAINING TRANSFORM (Manifold Alignment)
-# -----------------------------------------------------------------------------
 
 class RandomRotateCropResize(nn.Module):
     """
@@ -181,9 +171,6 @@ class SubtleSharpen:
             ))
         return img
     
-# -----------------------------------------------------------------------------
-# 3. DATA AUGMENTATION PIPELINES
-# -----------------------------------------------------------------------------
 
 def get_image_data_transforms():
     """
@@ -218,10 +205,6 @@ def get_image_data_transforms():
     ])
 
     return train_transform, val_transform
-
-# -----------------------------------------------------------------------------
-# 4. DATA LOADING & STRATIFICATION
-# -----------------------------------------------------------------------------
 
 def load_data(logger):
     """
@@ -293,7 +276,7 @@ def engineer_features(wide, logger):
     wide = assign_functional_groups(wide)
     
     # Region-Aware Stratification & Session ID ===
-    wide['StratifyKey'] = wide.apply(get_stratify_key, axis=1)
+    wide['State_Specie'] = wide.apply(get_state_specie_pair, axis=1)
     
     # Apply upsampling with enhanced NDVI and Height noise
     logger.info("Applying smart upsampling with NDVI and Height augmentation...")
@@ -359,26 +342,16 @@ def engineer_features(wide, logger):
                     wide[f'NDVI_Bin_OH_{k}'] = 1.0 if k == 1 else 0.0
                     wide[f'Height_Bin_OH_{k}'] = 1.0 if k == 1 else 0.0
     
-    # Session ID
     wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
-    
-    # Log distribution
-    logger.info("\n" + "="*70)
-    logger.info("STRATIFICATION KEY DISTRIBUTION")
-    logger.info("="*70)
-    key_counts = wide['StratifyKey'].value_counts().sort_index()
-    for key, count in key_counts.items():
-        logger.info(f"  {key:<30}: {count:>3} samples")
-    logger.info("="*70 + "\n")
-        
+    wide['Season'] = wide['Sampling_Date'].apply(get_season)
+    wide["Seasion_State_Specie"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
+    wide["State_Season"] = wide.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
+    wide["Species_Season"] = wide.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
+                
     logger.info(f"Feature Engineering Complete. Rows: {len(wide)}")
     wide.to_csv('wide.csv', index=False)
     return wide
 
-
-# -----------------------------------------------------------------------------
-# 5. SPECIES PARSING (Existing Logic)
-# -----------------------------------------------------------------------------
 
 def parse_species_to_vector(species_str):
     """
@@ -422,11 +395,8 @@ def add_species_columns(df):
         )
     return df
 
-# -----------------------------------------------------------------------------
-# 6. IMPROVED TEMPORAL SPLIT
-# -----------------------------------------------------------------------------
 
-def smart_temporal_split(df, stratify_col='StratifyKey'):
+def smart_temporal_split(df, stratify_col='State_Specie'):
     """
     Hybrid Temporal Split:
     1. STRICT: evaluation_dates > training_dates (Zero leakage across all groups).
@@ -532,19 +502,6 @@ def triple_moving_time_series_split(df, n_splits=5, window_pct=0.25):
         
         yield train_indices, val_indices, hold_indices
 
-# -----------------------------------------------------------------------------
-# 7. SEASONAL HELPERS & SMART UPSAMPLING
-# -----------------------------------------------------------------------------
-
-def add_cv_group(df: pd.DataFrame, date_col: str = 'Sampling_Date') -> pd.DataFrame:
-    """
-    Add a group identifier combining State and Sampling_Date (YYYY-MM-DD) to avoid leakage
-    across splits when the same state-date appears.
-    """
-    df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col])
-    df['cv_group'] = df['State'].astype(str) + "_" + df[date_col].dt.strftime('%Y-%m-%d')
-    return df
 
 def get_season(date_val):
     """
@@ -598,123 +555,6 @@ def apply_seasonal_drift(row: pd.Series, season: str, drift_strength: float) -> 
 
     return new_row
 
-def smart_upsample(train_df, stratify_col='StratifyKey',date_col='Sampling_Date'):
-    """
-    Upsample only sparse groups to minimum threshold.
-    
-    Improvements over blanket upsampling:
-    1. Only upsample groups below target (preserves natural distribution)
-    2. Add noise to biomass targets (prevents exact duplicates → overfitting)
-    3. Mark synthetic samples for monitoring
-    
-    Why this matters:
-    - Prevents overwhelming large groups (e.g., Ryegrass_Clover)
-    - Reduces overfitting on repeated samples
-    - Balances class distribution without destroying signal
-    """
-    if not UPSAMPLE_CONFIG['enabled']:
-        return train_df
-    
-    target_min = UPSAMPLE_CONFIG['target_min_samples']
-    noise_scale = UPSAMPLE_CONFIG['noise_scale']
-    use_seasonal = UPSAMPLE_CONFIG.get('seasonal_drift', False)
-    day_shift_prob = UPSAMPLE_CONFIG.get('day_shift_prob', 0.0)
-    drift_strength = UPSAMPLE_CONFIG.get('drift_strength', 0.0)
-    
-    groups = []
-    
-    for key in train_df[stratify_col].unique():
-        key_df = train_df[train_df[stratify_col] == key].copy()
-        n = len(key_df)
-        
-        if n >= target_min:
-            # Already sufficient
-            key_df['is_synthetic'] = False
-            groups.append(key_df)
-        else:
-            # Upsample to target_min
-            n_needed = target_min - n
-            upsampled = key_df.sample(n=n_needed, replace=True, random_state=42).copy()
-            
-            # Optionally shift dates by ±1 day (vectorized) and apply seasonal drift
-            if day_shift_prob > 0:
-                shift_mask = np.random.rand(len(upsampled)) < day_shift_prob
-                if shift_mask.any():
-                    offsets = np.random.choice([-1, 1], size=int(shift_mask.sum()))
-                    shifted_dates = pd.to_datetime(upsampled.loc[shift_mask, date_col]) + pd.to_timedelta(offsets, unit='D')
-                    upsampled.loc[shift_mask, date_col] = shifted_dates
-
-            if use_seasonal:
-                seasons = upsampled[date_col].apply(get_season)
-                rand_mag = np.random.uniform(0.5, 1.0, size=len(upsampled))
-                components = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
-                for comp in components:
-                    if comp in upsampled.columns:
-                        t_series = seasons.map(lambda s: SEASONAL_DRIFT.get(s, {}).get(comp, 0.0)).astype(float)
-                        factors = np.clip(1.0 + t_series.values * drift_strength * rand_mag, 0.5, 1.5)
-                        base = upsampled[comp].astype(float).values
-                        upsampled[comp] = np.maximum(0.0, base * factors)
-
-                # Recompute totals and adjust GDM proportionally
-                if all(c in upsampled.columns for c in components):
-                    total_new = (
-                        upsampled['Dry_Clover_g'].astype(float).values +
-                        upsampled['Dry_Dead_g'].astype(float).values +
-                        upsampled['Dry_Green_g'].astype(float).values
-                    )
-                    if 'Dry_Total_g' in upsampled.columns:
-                        upsampled['Dry_Total_g'] = np.maximum(0.0, total_new)
-                    if 'GDM_g' in upsampled.columns:
-                        total_old = upsampled['Dry_Total_g'].astype(float).values if 'Dry_Total_g' in upsampled.columns else np.zeros_like(total_new)
-                        scale = np.divide(total_new, total_old, out=np.ones_like(total_new), where=total_old > 0)
-                        gdm = upsampled['GDM_g'].astype(float).values
-                        gdm_scaled = np.maximum(0.0, gdm * scale)
-                        # Fallback to green component where old total is zero
-                        gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
-                        upsampled['GDM_g'] = gdm_final
-
-            # Add noise to component biomass only, then recompute totals & GDM
-            comp_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
-            for col in comp_cols:
-                if col in upsampled.columns:
-                    s = upsampled[col].std()
-                    if np.isnan(s) or s == 0:
-                        s = upsampled[col].mean()
-                    noise = np.random.normal(0, s * noise_scale, size=len(upsampled))
-                    upsampled[col] = np.maximum(0.0, upsampled[col] + noise)
-
-            if all(c in upsampled.columns for c in comp_cols):
-                total_new = (
-                    upsampled['Dry_Clover_g'].astype(float).values +
-                    upsampled['Dry_Dead_g'].astype(float).values +
-                    upsampled['Dry_Green_g'].astype(float).values
-                )
-                upsampled['Dry_Total_g'] = np.maximum(0.0, total_new)
-                if 'GDM_g' in upsampled.columns:
-                    total_old = upsampled['Dry_Total_g'].astype(float).values
-                    scale = np.divide(total_new, total_old, out=np.ones_like(total_new), where=total_old > 0)
-                    gdm = upsampled['GDM_g'].astype(float).values
-                    gdm_scaled = np.maximum(0.0, gdm * scale)
-                    gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
-                    upsampled['GDM_g'] = gdm_final
-
-            # Clamp to competition target limits
-            clamp_val = float(cfg.targets.biomass_clamp)
-            for col in ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']:
-                if col in upsampled.columns:
-                    upsampled[col] = np.clip(upsampled[col].astype(float).values, 0.0, clamp_val)
-            
-            # Mark samples
-            upsampled['is_synthetic'] = True
-            key_df['is_synthetic'] = False
-            
-            groups.append(pd.concat([key_df, upsampled], ignore_index=True))
-    
-    result_df = pd.concat(groups, ignore_index=True)
-    result_df = result_df.sample(frac=1, random_state=42).reset_index(drop=True)  # Shuffle
-    result_df = result_df.sort_values(by=[date_col]).reset_index(drop=True)
-    return result_df
-
 def apply_smart_upsample_with_features(wide_df, logger):
     """
     Apply smart upsampling with enhanced feature augmentation.
@@ -734,8 +574,8 @@ def apply_smart_upsample_with_features(wide_df, logger):
     groups = []
     original_count = len(wide_df)
     
-    for key in wide_df['StratifyKey'].unique():
-        key_df = wide_df[wide_df['StratifyKey'] == key].copy()
+    for key in wide_df['State_Specie'].unique():
+        key_df = wide_df[wide_df['State_Specie'] == key].copy()
         n = len(key_df)
         
         if n >= target_min:
@@ -846,9 +686,6 @@ def apply_smart_upsample_with_features(wide_df, logger):
     
     return result_df
 
-# -----------------------------------------------------------------------------
-# 8. FUNCTIONAL GROUP ASSIGNMENT (For Model Features)
-# -----------------------------------------------------------------------------
 
 def assign_functional_groups(df):
     """
@@ -876,62 +713,6 @@ def assign_functional_groups(df):
     df['FunctionalGroup'] = groups
     return df
 
-# -----------------------------------------------------------------------------
-# 9. LEGACY UPSAMPLING (Keep for backward compatibility)
-# -----------------------------------------------------------------------------
-
-def upsample_minority_classes(df, target_col='FunctionalGroup', date_col='Sampling_Date'):
-    """
-    OLD upsampling strategy using temporal neighbors.
-    Kept for backward compatibility but NOT recommended.
-    Use smart_upsample() instead.
-    """
-    if target_col == 'FunctionalGroup':
-        df = assign_functional_groups(df)
-        
-    counts = df[target_col].value_counts()
-    target_count = int(counts.max())
-    
-    dfs = [df]
-    
-    for cls, count in counts.items():
-        if count < target_count:
-            n_needed = target_count - count
-            
-            cls_mask = df[target_col] == cls
-            cls_df = df[cls_mask].copy()
-            
-            existing_dates = set(cls_df[date_col].dt.date)
-            candidates = []
-            
-            for _, row in cls_df.iterrows():
-                for offset in [-1, 1]:
-                    d_new = row[date_col] + pd.Timedelta(days=offset)
-                    if d_new.date() not in existing_dates:
-                        new_row = row.copy()
-                        new_row[date_col] = d_new
-                        candidates.append(new_row)
-            
-            cand_df = pd.DataFrame(candidates) if candidates else pd.DataFrame()
-            
-            if len(cand_df) > 0:
-                if len(cand_df) >= n_needed:
-                    dfs.append(cand_df.sample(n=n_needed, replace=False, random_state=42))
-                else:
-                    dfs.append(cand_df)
-                    rem = n_needed - len(cand_df)
-                    if rem > 0:
-                        dfs.append(cls_df.sample(n=rem, replace=True, random_state=42))
-            else:
-                dfs.append(cls_df.sample(n=n_needed, replace=True, random_state=42))
-
-    dfs = pd.concat(dfs).sample(frac=1, random_state=42).reset_index(drop=True)
-    dfs = dfs.sort_values(by=[date_col]).reset_index(drop=True)
-    return dfs
-
-# -----------------------------------------------------------------------------
-# 10. METRICS & UTILS
-# -----------------------------------------------------------------------------
 
 def calculate_global_weighted_r2(y_true, y_pred, weights):
     """
@@ -954,9 +735,6 @@ def calculate_global_weighted_r2(y_true, y_pred, weights):
     if ss_tot == 0: return 0.0
     return 1 - (ss_res / ss_tot)
 
-# -----------------------------------------------------------------------------
-# 11. SEED SETTING
-# -----------------------------------------------------------------------------
 def set_seed(seed: Optional[int] = 42, logger=None) -> None:
     if seed is not None:
         np.random.seed(seed)
@@ -964,9 +742,6 @@ def set_seed(seed: Optional[int] = 42, logger=None) -> None:
         torch.cuda.manual_seed_all(seed)
         if logger: logger.info(f"Seed set to {seed}")
 
-# -----------------------------------------------------------------------------
-# 12. SAVE BATCH IMAGES
-# -----------------------------------------------------------------------------
 def save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=5):
     """
     Save a batch of images as a grid to disk.
@@ -985,9 +760,6 @@ def save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=
     save_path = os.path.join(images_dir, f'batch_{batch_idx:03d}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
 
-# -----------------------------------------------------------------------------
-# 13. TAXONOMY TARGET GENERATION (For Model)
-# -----------------------------------------------------------------------------
 def get_taxonomy_targets(species_vec):
     """
     Converts 14-dim species probability vector to 3-dim Taxonomy vector.
@@ -1000,10 +772,6 @@ def get_taxonomy_targets(species_vec):
     weed_prob   = species_vec[:, TAXONOMY_IDXS['weed']].sum(dim=1, keepdim=True)
     
     return torch.cat([legume_prob, grass_prob, weed_prob], dim=1)
-
-# -----------------------------------------------------------------------------
-# 14. Save TTA Images
-# -----------------------------------------------------------------------------
 
 def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     """Save TTA-augmented images for visualization."""
@@ -1022,11 +790,7 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     save_path = os.path.join(save_dir, f'batch{batch_idx}_{view_name}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
 
-
-# -----------------------------------------------------------------------------
-# 15. Build Weighted Sampler from DataFrame
-# -----------------------------------------------------------------------------
-def build_weighted_sampler_from_df(df, key='StratifyKey', cap_quantile=0.95):
+def build_weighted_sampler_from_df(df, key='State_Specie', cap_quantile=0.95):
     if key not in df.columns or len(df) == 0:
         return None
     counts = df[key].value_counts()
@@ -1041,9 +805,6 @@ def build_weighted_sampler_from_df(df, key='StratifyKey', cap_quantile=0.95):
     sampler = torch.utils.data.WeightedRandomSampler(w_tensor, num_samples=len(df), replacement=True)
     return sampler
 
-# -----------------------------------------------------------------------------
-# 16. Formatted log message for losses
-# -----------------------------------------------------------------------------
 def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, current_score,score_gap, lr,v_r2, h_r2):
     """
     Generate a formatted log message for training, validation, and holdout losses.

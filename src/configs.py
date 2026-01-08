@@ -37,7 +37,6 @@ BIOMASS_FEAT_WEIGHT = cfg.training.biomass_feat_weight
 AUX_FEAT_WEIGHT = cfg.training.aux_feat_weight
 SPECIES_FEAT_WEIGHT = cfg.training.species_feat_weight
 TAXONOMY_FEAT_WEIGHT = cfg.training.taxonomy_feat_weight
-PHYSICS_FEAT_WEIGHT = cfg.training.physics_feat_weight
 
 # --- Augmentation & Tiling Settings ---
 TILE_PROB = cfg.augmentation.tile_prob
@@ -132,7 +131,7 @@ def config_str():
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
         f"TAXONOMY_FEAT_WEIGHT: {TAXONOMY_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
-        f"PHYSICS_FEAT_WEIGHT: {PHYSICS_FEAT_WEIGHT}",
+        # Physics removed
         f"STRATIFY: State + Dominant Species (Region-Aware)",
         f"UPSAMPLE: Enabled={UPSAMPLE_CONFIG['enabled']} (target={UPSAMPLE_CONFIG['target_min_samples']})",
         f"SPLIT: Adaptive temporal (sparse_threshold={SPLIT_CONFIG['sparse_threshold']})",

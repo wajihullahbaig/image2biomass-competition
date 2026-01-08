@@ -69,7 +69,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.6),
             nn.Linear(self.fusion_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
+            nn.Linear(128, 3), # [Log_C, Log_D, Log_G]
         )
 
         self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
@@ -84,7 +84,6 @@ class BiomassUnifiedModel(nn.Module):
             last_layer.bias[0] = 3.0 # ~20g
             last_layer.bias[1] = 2.0 # ~7g
             last_layer.bias[2] = 3.0 # ~20g
-            last_layer.bias[3] = 4.0 # ~54g
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -110,14 +109,7 @@ class BiomassUnifiedModel(nn.Module):
         log_c = log_preds[:, 0:1]
         log_d = log_preds[:, 1:2]
         log_g = log_preds[:, 2:3]
-        log_t = log_preds[:, 3:4]
-        
-        # Derived GDM
-        c = torch.expm1(log_c)
-        g = torch.expm1(log_g)
-        log_gdm = torch.log1p(c + g + 1e-8)
-        
-        biomass_out = torch.cat([log_c, log_d, log_g, log_t, log_gdm], dim=1)
+        biomass_out = torch.cat([log_c, log_d, log_g], dim=1)
         
         return biomass_out, aux_out, species_logits, taxonomy_logits
 

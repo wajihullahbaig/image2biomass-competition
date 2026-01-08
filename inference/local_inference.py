@@ -48,7 +48,7 @@ MAX_IMAGES_TO_SAVE = 10   # Only save first N batches
 
 
 # ====================== IMAGE SAVING HELPER ======================
-def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images_routed', max_to_save=MAX_IMAGES_TO_SAVE):
+def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images', max_to_save=MAX_IMAGES_TO_SAVE):
     """
     Save TTA-augmented images for visualization.
     """
@@ -120,7 +120,7 @@ class BiomassUnifiedModel(nn.Module):
             # Transition to 128
             nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(128, 4), # [Log_C, Log_D, Log_G, Log_T]
+            nn.Linear(128, 3), # [Log_C, Log_D, Log_G]
         )
         
         self.log_clamp = torch.log1p(torch.tensor(BIOMASS_CLAMP))
@@ -135,7 +135,7 @@ class BiomassUnifiedModel(nn.Module):
             last_layer.bias[0] = 3.0 # ~20g
             last_layer.bias[1] = 2.0 # ~7g
             last_layer.bias[2] = 3.0 # ~20g
-            last_layer.bias[3] = 4.0 # ~54g
+            # Only 3 outputs now (C, D, G)
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -159,14 +159,7 @@ class BiomassUnifiedModel(nn.Module):
         log_c = log_preds[:, 0:1]
         log_d = log_preds[:, 1:2]
         log_g = log_preds[:, 2:3]
-        log_t = log_preds[:, 3:4]
-        
-        # Derived GDM
-        c = torch.expm1(log_c)
-        g = torch.expm1(log_g)
-        log_gdm = torch.log1p(c + g + 1e-8)
-        
-        biomass_out = torch.cat([log_c, log_d, log_g, log_t, log_gdm], dim=1)
+        biomass_out = torch.cat([log_c, log_d, log_g], dim=1)
         
         return biomass_out, aux_out, species_logits, taxonomy_logits
 
@@ -309,7 +302,10 @@ def get_inference_transforms(h, w):
 def load_model(fold_path, device, num_species, backbone_name, num_aux=7):
     model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species, num_aux=num_aux).to(device)
     state_dict = torch.load(fold_path, map_location=device, weights_only=True)
-    model.load_state_dict(state_dict)
+    # Allow loading older checkpoints with 4-output biomass head by ignoring mismatches
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing or unexpected:
+        print(f"[load_model] Non-strict load. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
     model.eval()
     return model
 
@@ -406,16 +402,29 @@ def run_inference(use_tta=False):
         ensemble_preds_g.append(np.concatenate(fold_preds, axis=0))
         print(f"  ✓ Completed\n")
         
-    # 5. AVERAGE ENSEMBLE (Linear Space)
+    # 5. AVERAGE ENSEMBLE (Linear Space) over components C/D/G
     print("Averaging ensemble predictions...")
-    avg_preds_g = np.mean(ensemble_preds_g, axis=0) 
-    avg_preds_g = np.maximum(avg_preds_g, 0)
-    
-    # 6. EXPORT
-    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-    final_df = pd.DataFrame(avg_preds_g, columns=target_cols)
+    avg_components = np.mean(ensemble_preds_g, axis=0)  # shape [N,3]
+    avg_components = np.maximum(avg_components, 0)
+
+    # 6. DERIVE TOTAL and GDM in linear space
+    c = avg_components[:, 0]
+    d = avg_components[:, 1]
+    g = avg_components[:, 2]
+    total = c + d + g
+    gdm = c + g
+
+    # 7. EXPORT
+    final_df = pd.DataFrame({
+        'Dry_Clover_g': c,
+        'Dry_Dead_g': d,
+        'Dry_Green_g': g,
+        'Dry_Total_g': total,
+        'GDM_g': gdm,
+    })
     final_df['clean_id'] = final_clean_ids
     
+    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
     submission_rows = []
     for _, row in final_df.iterrows():
         cid = row['clean_id']

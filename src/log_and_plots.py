@@ -43,11 +43,22 @@ def plot_training_history(history, fold, session_dir):
     try_plot(3, 'holdout_sp', 'Holdout', 'tab:green')
     axes[3].set_title('Species Loss')
 
-    # 5. Physics Loss
-    try_plot(4, 'train_phy', 'Train', 'tab:blue')
-    try_plot(4, 'val_phy', 'Val', 'tab:red')
-    try_plot(4, 'holdout_phy', 'Holdout', 'tab:green')
-    axes[4].set_title('Physics Loss')
+    # 5. Derived Losses (Total/GDM)
+    # Overlay Total and GDM losses on the same axis
+    if 'train_loss_t' in history and len(history['train_loss_t']) > 0:
+        axes[4].plot([float(x) for x in history['train_loss_t']], label='Train Total', color='tab:blue')
+    if 'val_loss_t' in history and len(history['val_loss_t']) > 0:
+        axes[4].plot([float(x) for x in history['val_loss_t']], label='Val Total', color='tab:red')
+    if 'holdout_loss_t' in history and len(history['holdout_loss_t']) > 0:
+        axes[4].plot([float(x) for x in history['holdout_loss_t']], label='HO Total', color='tab:green')
+
+    if 'train_loss_gdm' in history and len(history['train_loss_gdm']) > 0:
+        axes[4].plot([float(x) for x in history['train_loss_gdm']], label='Train GDM', color='tab:orange', linestyle='--')
+    if 'val_loss_gdm' in history and len(history['val_loss_gdm']) > 0:
+        axes[4].plot([float(x) for x in history['val_loss_gdm']], label='Val GDM', color='tab:pink', linestyle='--')
+    if 'holdout_loss_gdm' in history and len(history['holdout_loss_gdm']) > 0:
+        axes[4].plot([float(x) for x in history['holdout_loss_gdm']], label='HO GDM', color='tab:olive', linestyle='--')
+    axes[4].set_title('Derived Losses')
 
     # 6. R2 Metrics (UPDATED)
     try_plot(5, 'train_r2', 'Train R2', 'tab:blue')

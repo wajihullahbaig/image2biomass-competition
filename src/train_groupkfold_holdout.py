@@ -689,15 +689,7 @@ def main():
                                              v_r2, h_r2
                                              )
             logger.info(log_msg)
-            
-            log_msg = get_formatted_loss_log(epoch, 
-                                             train_metrics, 
-                                             val_metrics, 
-                                             hol_metrics,
-                                             current_score, score_gap,
-                                             scheduler.get_last_lr()[0]
-                                             )
-            logger.info(log_msg)
+                        
             
             # Store History
             for k, v in train_metrics.items(): history[k].append(v)

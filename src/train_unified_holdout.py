@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.model_selection import GroupKFold, StratifiedKFold
+from sklearn.preprocessing import KBinsDiscretizer
 try:
     from sklearn.model_selection import StratifiedGroupKFold
     _HAS_SGF = True
@@ -22,11 +23,12 @@ import json
 from config.loader import cfg
 from configs import config_str
 from common import (
-    get_formatted_loss_log, get_season, load_data, engineer_features, get_image_data_transforms, save_batch_images,
+    get_formatted_loss_log, get_season, load_data, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
     rotate_crop_resize, save_tta_images
 )
+from feature_transform import BiomassFeatureTransform, ensure_split_keys
 
 from log_and_plots import (
     log_dataframe_details, setup_logging, plot_training_history,
@@ -374,9 +376,8 @@ def main():
 
     logger.info(config_str())
 
-    # 1. Load + FE
+    # 1. Load raw wide
     df = load_data(logger)
-    df = engineer_features(df, logger)
 
     species_list = cfg.species_taxonomy.core_species
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -418,9 +419,8 @@ def main():
     strat_key = cfg.split.stratification_key
     logger.info(f"Using groupby_key='{groupby_key}' and stratification_key='{strat_key}'")
 
-    # Ensure special groupby columns if requested
-    if groupby_key:
-        dev_df = _ensure_groupby_column(dev_df, groupby_key, species_col)
+    # Ensure split keys via transform utility (clean and consistent)
+    dev_df = ensure_split_keys(dev_df, groupby_key, strat_key, logger)
 
     best_overall_score = -float('inf')
 
@@ -459,7 +459,12 @@ def main():
     else:
         raise ValueError("Specify either 'split.groupby_key' or 'split.stratification_key' in config.")
 
-    for fold, (train_df, val_df) in enumerate(fold_iter):
+    for fold, (train_df_raw, val_df_raw) in enumerate(fold_iter):
+        # Fit/Transform pipeline per fold
+        ft = BiomassFeatureTransform(logger)
+        train_df = ft.fit(train_df_raw)
+        val_df = ft.transform(val_df_raw)
+        hold_df = ft.transform(hold_df)
         raw_n_train = len(train_df)
         logger.info(f"\n{'='*20} Fold {fold+1}/{cfg.hyperparameters.n_folds} ({split_name}) {'='*20}")
         logger.info(f"Train:   n={len(train_df)}, sessions={train_df['SessionID'].nunique() if 'SessionID' in train_df.columns else 'N/A'}")

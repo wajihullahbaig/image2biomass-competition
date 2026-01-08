@@ -13,6 +13,7 @@ import torchvision.transforms.functional as TF
 from torchvision import transforms
 from torchvision.utils import save_image
 from PIL import ImageFilter
+from sklearn.preprocessing import KBinsDiscretizer
 
 from config.loader import cfg
 
@@ -308,6 +309,23 @@ def engineer_features(wide, logger):
             richness_cols = [f'Species_{sp}' for sp in CORE_SPECIES if sp != 'clover' and f'Species_{sp}' in wide.columns]
             if len(richness_cols) > 0:
                 wide['Species_Count'] = wide[richness_cols].sum(axis=1).astype(float)
+
+    # Composite Biomass Stratification Bins (KBinsDiscretizer: ordinal/quantile)
+    try:
+        wts = cfg.targets.official_weights
+        tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+        comp = np.zeros(len(wide), dtype=float)
+        for col, wt in zip(tgt_cols, wts):
+            if col in wide.columns:
+                comp += wt * wide[col].astype(float).values
+        n_bins = int(getattr(cfg.features, 'biomass_composite_bins', 5))
+        kbd = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
+        bins = kbd.fit_transform(comp.reshape(-1, 1)).astype(int).ravel()
+        # Guard against fewer effective bins due to duplicates; still store as int labels
+        wide['biomass_binned_composite'] = bins
+    except Exception:
+        # Fallback: single-bin if distribution too uniform/small
+        wide['biomass_binned_composite'] = 0
 
     # Quantile Bin Features
     if USE_BIN_FEATURES:

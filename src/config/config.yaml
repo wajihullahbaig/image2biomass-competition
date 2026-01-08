@@ -9,7 +9,7 @@ preprocessing:
 hyperparameters:
   batch_size: 32
   learning_rate: 0.0002
-  n_folds: 3
+  n_folds: 5
   epochs: 40
   weight_decay: 0.05
   early_stop_patience: 10
@@ -39,6 +39,7 @@ features:
   use_bin_features: true
   bin_encoding: "ordinal"
   use_species_count_feature: true
+  biomass_composite_bins: 5
 
 loss:
   use_standardized_loss: true
@@ -96,8 +97,8 @@ split:
   holdout_pct: 0.10
   sparse_threshold: 4
   small_threshold: 6
-  groupby_key: "GroupKey"
-  stratification_key: "State_Specie"
+  groupby_key: "State_Specie"
+  stratification_key: "biomass_binned_composite"
 
 seasons:
   month_map:

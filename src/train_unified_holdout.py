@@ -8,6 +8,12 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.model_selection import GroupKFold, StratifiedKFold
+try:
+    from sklearn.model_selection import StratifiedGroupKFold
+    _HAS_SGF = True
+except Exception:
+    StratifiedGroupKFold = None
+    _HAS_SGF = False
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -362,7 +368,7 @@ def main():
     set_seed(42, logger)
 
     logger.info("="*70)
-    logger.info("UNIFIED TRAIN/VAL + TEMPORAL HOLDOUT")
+    logger.info("UNIFIED TRAIN/VAL + RANDOM HOLDOUT")
     logger.info("Tile-based augmentation enabled for training.")
     logger.info("="*70)
 
@@ -418,14 +424,28 @@ def main():
 
     best_overall_score = -float('inf')
 
-    if groupby_key:
+    if groupby_key and strat_key:
+        # Prefer StratifiedGroupKFold when available
+        if groupby_key not in dev_df.columns:
+            raise ValueError(f"Configured groupby_key '{groupby_key}' not found in dev_df.")
+        if strat_key not in dev_df.columns:
+            raise ValueError(f"Configured stratification_key '{strat_key}' not found in dev_df.")
+        if _HAS_SGF:
+            sgkf = StratifiedGroupKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=42)
+            splitter = sgkf.split(dev_df, y=dev_df[strat_key], groups=dev_df[groupby_key])
+            split_name = 'StratifiedGroupKFold'
+        else:
+            logging.getLogger("System Logger").warning("StratifiedGroupKFold not available; falling back to GroupKFold (no strat balance across folds). Consider upgrading scikit-learn >= 1.1.")
+            gkf = GroupKFold(n_splits=cfg.hyperparameters.n_folds)
+            splitter = gkf.split(dev_df, groups=dev_df[groupby_key])
+            split_name = 'GroupKFold'
+        fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
+    elif groupby_key:
         # GroupKFold path
         if groupby_key not in dev_df.columns:
             raise ValueError(f"Configured groupby_key '{groupby_key}' not found in dev_df.")
         gkf = GroupKFold(n_splits=cfg.hyperparameters.n_folds)
-        groups = dev_df[groupby_key].values
-        # y isn't used by GroupKFold but pass strat target for logging consistency
-        splitter = gkf.split(dev_df, y=dev_df[strat_key] if strat_key and strat_key in dev_df.columns else None, groups=groups)
+        splitter = gkf.split(dev_df, groups=dev_df[groupby_key])
         fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
         split_name = 'GroupKFold'
     elif strat_key:

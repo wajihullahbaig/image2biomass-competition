@@ -46,6 +46,7 @@ class FeatureConfig:
     use_bin_features: bool
     bin_encoding: str
     use_species_count_feature: bool
+    biomass_composite_bins: int
 
 @dataclass
 class LossConfig:

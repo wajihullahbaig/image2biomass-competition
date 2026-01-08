@@ -371,7 +371,6 @@ def main():
     # 1. Load + FE
     df = load_data(logger)
     df = engineer_features(df, logger)
-    df = df.sort_values('Sampling_Date').reset_index(drop=True)
 
     species_list = cfg.species_taxonomy.core_species
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -381,28 +380,31 @@ def main():
 
     train_transform, val_transform = get_image_data_transforms()
 
-    # 2. Temporal holdout (per-species last fraction)
+    # 2. Random holdout (per-species random fraction)
     holdout_pct = cfg.split.holdout_pct
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
     if species_col is None:
         raise ValueError("No species column found (expected 'species_id' or 'Species').")
 
     hold_idx = []
+    rng = np.random.default_rng(42)
     for _, g in df.groupby(species_col):
         n = len(g)
         k = max(1, int(np.ceil(n * holdout_pct)))
-        hold_idx.extend(g.index[-k:])
+        if k >= n:
+            hold_idx.extend(g.index.tolist())
+        else:
+            sampled = g.sample(n=k, random_state=42, replace=False)
+            hold_idx.extend(sampled.index.tolist())
     hold_df = df.loc[hold_idx].copy().reset_index(drop=True)
     dev_df = df.drop(hold_idx).copy().reset_index(drop=True)
-    hold_df = hold_df.sort_values('Sampling_Date').reset_index(drop=True)
-    dev_df = dev_df.sort_values('Sampling_Date').reset_index(drop=True)
 
     log_dataframe_details(logger, dev_df, name="Development Set")
     log_dataframe_details(logger, hold_df, name="Temporal Holdout Set")
 
     logger.info(f"Total Samples: {len(df)}")
-    logger.info(f"Development Set: {len(dev_df)} ({dev_df['Sampling_Date'].min().date()} -> {dev_df['Sampling_Date'].max().date()})")
-    logger.info(f"Temporal Holdout: {len(hold_df)} ({hold_df['Sampling_Date'].min().date()} -> {hold_df['Sampling_Date'].max().date()})")
+    logger.info(f"Development Set: {len(dev_df)}")
+    logger.info(f"Random Holdout: {len(hold_df)}")
     hold_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
 
     # 3. Choose fold strategy from config keys
@@ -440,9 +442,9 @@ def main():
     for fold, (train_df, val_df) in enumerate(fold_iter):
         raw_n_train = len(train_df)
         logger.info(f"\n{'='*20} Fold {fold+1}/{cfg.hyperparameters.n_folds} ({split_name}) {'='*20}")
-        logger.info(f"Train:   {train_df['Sampling_Date'].min().date()} -> {train_df['Sampling_Date'].max().date()} (n={len(train_df)}, sessions={train_df['SessionID'].nunique() if 'SessionID' in train_df.columns else 'N/A'})")
-        logger.info(f"Val:     {val_df['Sampling_Date'].min().date()} -> {val_df['Sampling_Date'].max().date()} (n={len(val_df)}, sessions={val_df['SessionID'].nunique() if 'SessionID' in val_df.columns else 'N/A'})")
-        logger.info(f"Holdout: {hold_df['Sampling_Date'].min().date()} -> {hold_df['Sampling_Date'].max().date()} (n={len(hold_df)}, sessions={hold_df['SessionID'].nunique() if 'SessionID' in hold_df.columns else 'N/A'})")
+        logger.info(f"Train:   n={len(train_df)}, sessions={train_df['SessionID'].nunique() if 'SessionID' in train_df.columns else 'N/A'}")
+        logger.info(f"Val:     n={len(val_df)}, sessions={val_df['SessionID'].nunique() if 'SessionID' in val_df.columns else 'N/A'}")
+        logger.info(f"Holdout: n={len(hold_df)}, sessions={hold_df['SessionID'].nunique() if 'SessionID' in hold_df.columns else 'N/A'}")
 
         if 'State' in train_df.columns:
             logger.info(f"States in Train: {sorted(train_df['State'].unique())}")

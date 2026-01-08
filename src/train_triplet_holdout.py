@@ -7,6 +7,7 @@ import pandas as pd
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.model_selection import TimeSeriesSplit
 from tqdm import tqdm
@@ -41,6 +42,12 @@ BACKBONE_LR_FACTOR = cfg.hyperparameters.backbone_lr_factor
 TILE_PROB = cfg.augmentation.tile_prob
 MIXUP_PROB = cfg.augmentation.mixup_prob
 MIXUP_ALPHA = cfg.augmentation.mixup_alpha
+
+# Loss configuration from YAML
+USE_STANDARDIZED_LOSS = cfg.loss.use_standardized_loss
+USE_WEIGHTED_REGRESSION_LOSS = cfg.loss.use_weighted_regression_loss
+REG_LOSS_TYPE = cfg.loss.reg_loss_type  # 'smoothl1' or 'mse'
+OFFICIAL_WEIGHTS_T = None  # initialized in main() with device
 from common import (
     load_data, engineer_features, get_image_data_transforms, save_batch_images, 
     set_seed, calculate_global_weighted_r2,
@@ -94,7 +101,8 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
 # -----------------------------------------------------------------------------
 # TRAINING ENGINE (No changes needed - works with tiled data automatically)
 # -----------------------------------------------------------------------------
-def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, device, epoch, session_dir=None, logger=None):
+def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, criterion_tax, device, epoch, session_dir=None, logger=None,
+                    bio_mean=None, bio_std=None, aux_mean=None, aux_std=None):
     model.train()
     metrics = defaultdict(float)
     scaler = torch.amp.GradScaler('cuda')
@@ -128,10 +136,37 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
             biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
             
             # Loss Components
-            loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
-            loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
-            loss_sp = criterion_ce(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
-            loss_tax = criterion_ce(taxonomy_logits, taxonomy_targets) * TAXONOMY_FEAT_WEIGHT
+            # Standardize for loss if enabled
+            # Biomass loss (optionally standardized + per-target weighted)
+            bio_out_for_loss = biomass_out
+            targ_for_loss = targets_log
+            if USE_STANDARDIZED_LOSS and bio_mean is not None and bio_std is not None:
+                bio_out_for_loss = (biomass_out - bio_mean) / (bio_std + 1e-9)
+                targ_for_loss = (targets_log - bio_mean) / (bio_std + 1e-9)
+
+            if USE_WEIGHTED_REGRESSION_LOSS and OFFICIAL_WEIGHTS_T is not None:
+                if REG_LOSS_TYPE == 'smoothl1':
+                    per_el = F.smooth_l1_loss(bio_out_for_loss, targ_for_loss, reduction='none')  # [B,5]
+                else:
+                    per_el = F.mse_loss(bio_out_for_loss, targ_for_loss, reduction='none')  # [B,5]
+                # Mean over batch, weight across targets, sum → scalar
+                per_target_mean = per_el.mean(dim=0)  # [5]
+                loss_bio = (per_target_mean * OFFICIAL_WEIGHTS_T).sum() * BIOMASS_FEAT_WEIGHT
+            else:
+                loss_bio = criterion_reg(bio_out_for_loss, targ_for_loss) * BIOMASS_FEAT_WEIGHT
+
+            if USE_STANDARDIZED_LOSS and aux_mean is not None and aux_std is not None:
+                aux_out_std = (aux_out - aux_mean) / (aux_std + 1e-9)
+                aux_targ_std = (aux_feats - aux_mean) / (aux_std + 1e-9)
+                loss_aux = criterion_reg(aux_out_std, aux_targ_std) * AUX_FEAT_WEIGHT
+            else:
+                loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
+            # Species: multi-label → BCEWithLogitsLoss
+            loss_sp = criterion_species(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
+            # Taxonomy: soft 3-class distribution → KLDivLoss on log-softmax vs normalized targets
+            tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
+            tax_log_probs = F.log_softmax(taxonomy_logits, dim=1)
+            loss_tax = criterion_tax(tax_log_probs, tax_targets_norm) * TAXONOMY_FEAT_WEIGHT
             
             # Physics Loss
             pred_c = torch.expm1(biomass_out[:, 0])
@@ -194,7 +229,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_ce, devic
     return final_metrics
 
 @torch.no_grad()
-def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', use_tta=False, epoch=0, fold=0, session_dir=None):
+def validate(model, loader, criterion_reg, criterion_species, criterion_tax, device, prefix='val', use_tta=False, epoch=0, fold=0, session_dir=None,
+             bio_mean=None, bio_std=None, aux_mean=None, aux_std=None):
     model.eval()
     metrics = defaultdict(float)
     all_preds_log, all_targets_g = [], []
@@ -246,16 +282,47 @@ def validate(model, loader, criterion_reg, criterion_ce, device, prefix='val', u
             # Reconstruct for Loss
             biomass_out = torch.log1p(avg_bio_linear)
             aux_out = avg_aux 
-            species_logits = torch.log(avg_sp_probs + 1e-9)
-            taxonomy_logits = torch.log(avg_tax_probs + 1e-9)
+            # For species (multi-label), we have probabilities; use BCELoss on probs
+            species_probs = avg_sp_probs
+            # For taxonomy, use KLDiv on log-probs
+            taxonomy_log_probs = torch.log(avg_tax_probs + 1e-9)
             
         else:
             biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
         
-        loss_bio = criterion_reg(biomass_out, targets_log) * BIOMASS_FEAT_WEIGHT
-        loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
-        loss_sp = criterion_ce(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
-        loss_tax = criterion_ce(taxonomy_logits, taxonomy_targets) * TAXONOMY_FEAT_WEIGHT
+        bio_out_for_loss = biomass_out
+        targ_for_loss = targets_log
+        if USE_STANDARDIZED_LOSS and bio_mean is not None and bio_std is not None:
+            bio_out_for_loss = (biomass_out - bio_mean) / (bio_std + 1e-9)
+            targ_for_loss = (targets_log - bio_mean) / (bio_std + 1e-9)
+        if USE_WEIGHTED_REGRESSION_LOSS and OFFICIAL_WEIGHTS_T is not None:
+            if REG_LOSS_TYPE == 'smoothl1':
+                per_el = F.smooth_l1_loss(bio_out_for_loss, targ_for_loss, reduction='none')
+            else:
+                per_el = F.mse_loss(bio_out_for_loss, targ_for_loss, reduction='none')
+            per_target_mean = per_el.mean(dim=0)
+            loss_bio = (per_target_mean * OFFICIAL_WEIGHTS_T).sum() * BIOMASS_FEAT_WEIGHT
+        else:
+            loss_bio = criterion_reg(bio_out_for_loss, targ_for_loss) * BIOMASS_FEAT_WEIGHT
+
+        if USE_STANDARDIZED_LOSS and aux_mean is not None and aux_std is not None:
+            aux_out_std = (aux_out - aux_mean) / (aux_std + 1e-9)
+            aux_targ_std = (aux_feats - aux_mean) / (aux_std + 1e-9)
+            loss_aux = criterion_reg(aux_out_std, aux_targ_std) * AUX_FEAT_WEIGHT
+        else:
+            loss_aux = criterion_reg(aux_out, aux_feats) * AUX_FEAT_WEIGHT
+        if use_tta:
+            # BCE on probabilities for species when using TTA-averaged probs
+            loss_sp = nn.BCELoss()(species_probs, species_vec) * SPECIES_FEAT_WEIGHT
+            tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
+            loss_tax = criterion_tax(taxonomy_log_probs, tax_targets_norm) * TAXONOMY_FEAT_WEIGHT
+        else:
+            # BCEWithLogits on raw logits for species
+            loss_sp = criterion_species(species_logits, species_vec) * SPECIES_FEAT_WEIGHT
+            # KLDiv on log-softmax for taxonomy
+            tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
+            tax_log_probs = F.log_softmax(taxonomy_logits, dim=1)
+            loss_tax = criterion_tax(tax_log_probs, tax_targets_norm) * TAXONOMY_FEAT_WEIGHT
         
         pred_c = torch.expm1(biomass_out[:, 0])
         pred_d = torch.expm1(biomass_out[:, 1])
@@ -392,6 +459,38 @@ def main():
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
         val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
         
+        # Compute per-fold means/stds for standardized-loss (biomass in log space, aux features)
+        bio_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+        bio_train_log = np.log1p(train_df[bio_cols].astype(float).values)
+        bio_mean_np = bio_train_log.mean(axis=0)
+        bio_std_np = bio_train_log.std(axis=0)
+        bio_mean_t = torch.tensor(bio_mean_np, dtype=torch.float32, device=DEVICE).view(1, -1)
+        bio_std_t = torch.tensor(bio_std_np, dtype=torch.float32, device=DEVICE).view(1, -1)
+        # Prepare official weights tensor on device
+        global OFFICIAL_WEIGHTS_T
+        OFFICIAL_WEIGHTS_T = torch.tensor(OFFICIAL_WEIGHTS, dtype=torch.float32, device=DEVICE)
+
+        # Reconstruct aux column list similar to dataset
+        base_aux = ['Pre_GSHH_NDVI', 'Height_Ave_cm_log', 'Interaction_Mul', 'Interaction_Add']
+        ordinal_cols = ['NDVI_Bin_Ordinal', 'Height_Bin_Ordinal']
+        onehot_cols = [f'NDVI_Bin_OH_{k}' for k in range(4)] + [f'Height_Bin_OH_{k}' for k in range(4)]
+        aux_cols = [c for c in base_aux if c in train_df.columns]
+        for c in ordinal_cols + onehot_cols:
+            if c in train_df.columns:
+                aux_cols.append(c)
+        if 'Species_Count' in train_df.columns:
+            aux_cols.append('Species_Count')
+        # Compute aux stats robustly
+        aux_data = train_df[aux_cols].astype(float).fillna(0.0).values if len(aux_cols) > 0 else np.zeros((len(train_df), 0), dtype=float)
+        if aux_data.shape[1] > 0:
+            aux_mean_np = aux_data.mean(axis=0)
+            aux_std_np = aux_data.std(axis=0)
+        else:
+            aux_mean_np = np.array([], dtype=float)
+            aux_std_np = np.array([], dtype=float)
+        aux_mean_t = torch.tensor(aux_mean_np, dtype=torch.float32, device=DEVICE).view(1, -1) if aux_data.shape[1] > 0 else None
+        aux_std_t = torch.tensor(aux_std_np, dtype=torch.float32, device=DEVICE).view(1, -1) if aux_data.shape[1] > 0 else None
+
         # ===== KEY CHANGE: Use TiledBiomassDataset =====
         train_ds_base = TiledBiomassDataset(
             train_df, 
@@ -458,8 +557,11 @@ def main():
         optimizer = AdamW(param_groups, weight_decay=WEIGHT_DECAY)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, threshold=1e-3, min_lr=1e-6)
         
-        criterion_reg = nn.MSELoss() 
-        criterion_ce = nn.CrossEntropyLoss()
+        criterion_reg = nn.MSELoss()
+        # Species: multi-label classification over CORE_SPECIES
+        criterion_species = nn.BCEWithLogitsLoss()
+        # Taxonomy: soft distribution across 3 groups
+        criterion_tax = nn.KLDivLoss(reduction='batchmean')
         
         history = defaultdict(list)
         best_fold_score = -float('inf')
@@ -471,18 +573,24 @@ def main():
         for epoch in range(EPOCHS):
             # Train
             train_metrics = train_one_epoch(
-                model, train_loader, optimizer, criterion_reg, criterion_ce, 
-                DEVICE, epoch, session_dir=session_dir, logger=logger
+                model, train_loader, optimizer, criterion_reg, criterion_species, criterion_tax,
+                DEVICE, epoch, session_dir=session_dir, logger=logger,
+                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t
             )
             
             # Validate
-            val_metrics = validate(model, val_loader, criterion_reg, criterion_ce, DEVICE, prefix='val', use_tta=False)
+            val_metrics = validate(
+                model, val_loader, criterion_reg, criterion_species, criterion_tax, DEVICE,
+                prefix='val', use_tta=False,
+                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t
+            )
             
             # Holdout
             hol_metrics = validate(
-                model, holdout_loader, criterion_reg, criterion_ce, DEVICE, 
+                model, holdout_loader, criterion_reg, criterion_species, criterion_tax, DEVICE,
                 prefix='holdout', use_tta=USE_TTA,
-                epoch=epoch, fold=fold, session_dir=session_dir
+                epoch=epoch, fold=fold, session_dir=session_dir,
+                bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t
             )
             
             # Custom Score
@@ -496,9 +604,20 @@ def main():
             score_gap = abs(v_r2 - h_r2)
             scheduler.step(current_score)
             
-            log_msg = (f"Ep {epoch} | T_Loss: {train_metrics['train_loss']:.3f} | V_Loss: {val_metrics['val_loss']:.3f} | H_Loss: {hol_metrics['holdout_loss']:.3f} | "
-                       f"T_R2: {train_metrics['train_r2']:.4f} | V_R2: {v_r2:.4f} | H_R2: {h_r2:.4f} | "
-                       f"Score: {current_score:.4f} | Gap: {score_gap:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}")
+            log_msg = (
+                f"Ep {epoch} | "
+                f"T_Loss: {train_metrics['train_loss']:.3f} "
+                f"(bio:{train_metrics.get('train_bio', 0.0):.3f}, aux:{train_metrics.get('train_aux', 0.0):.3f}, "
+                f"sp:{train_metrics.get('train_sp', 0.0):.3f}, tax:{train_metrics.get('train_tax', 0.0):.3f}, phy:{train_metrics.get('train_phy', 0.0):.3f}) | "
+                f"V_Loss: {val_metrics['val_loss']:.3f} "
+                f"(bio:{val_metrics.get('val_bio', 0.0):.3f}, aux:{val_metrics.get('val_aux', 0.0):.3f}, "
+                f"sp:{val_metrics.get('val_sp', 0.0):.3f}, tax:{val_metrics.get('val_tax', 0.0):.3f}, phy:{val_metrics.get('val_phy', 0.0):.3f}) | "
+                f"H_Loss: {hol_metrics['holdout_loss']:.3f} "
+                f"(bio:{hol_metrics.get('holdout_bio', 0.0):.3f}, aux:{hol_metrics.get('holdout_aux', 0.0):.3f}, "
+                f"sp:{hol_metrics.get('holdout_sp', 0.0):.3f}, tax:{hol_metrics.get('holdout_tax', 0.0):.3f}, phy:{hol_metrics.get('holdout_phy', 0.0):.3f}) | "
+                f"T_R2: {train_metrics['train_r2']:.4f} | V_R2: {v_r2:.4f} | H_R2: {h_r2:.4f} | "
+                f"Score: {current_score:.4f} | Gap: {score_gap:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}"
+            )
             logger.info(log_msg)
             
             # Store History

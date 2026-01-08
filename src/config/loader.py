@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from .schemas import (
     Config, PreprocessingConfig, HyperparametersConfig, 
-    TrainingConfig, AugmentationConfig, FeatureConfig, 
+    TrainingConfig, AugmentationConfig, FeatureConfig, LossConfig,
     TargetConfig, SpeciesTaxonomyConfig, UpsampleConfig, 
     SplitConfig, SeasonsConfig
 )
@@ -23,6 +23,7 @@ def load_config(yaml_path: str = None) -> Config:
         training=TrainingConfig(**data['training']),
         augmentation=AugmentationConfig(**data['augmentation']),
         features=FeatureConfig(**data['features']),
+        loss=LossConfig(**data['loss']),
         targets=TargetConfig(**data['targets']),
         species_taxonomy=SpeciesTaxonomyConfig(**data['species_taxonomy']),
         upsample=UpsampleConfig(**data['upsample']),

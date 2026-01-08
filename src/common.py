@@ -304,12 +304,27 @@ def engineer_features(wide, logger):
     wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
     wide['Interaction_Add'] = wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']
 
-    # Species richness (per-sample count)
-    if USE_SPECIES_COUNT_FEATURE:
-        # Exclude the generic 'clover' bucket
-        richness_cols = [f'Species_{sp}' for sp in CORE_SPECIES if sp != 'clover' and f'Species_{sp}' in wide.columns]
-        if len(richness_cols) > 0:
-            wide['Species_Count'] = wide[richness_cols].sum(axis=1).astype(float)
+    # Species richness (per-sample count) and soft labels
+    # Always compute an internal count for soft-label normalization
+    species_cols_all = [f'Species_{sp}' for sp in CORE_SPECIES if f'Species_{sp}' in wide.columns]
+    if len(species_cols_all) > 0:
+        # Count of present species (sum of one-hot/multi-hot entries)
+        species_count_internal = wide[species_cols_all].sum(axis=1).astype(float)
+        # Avoid divide-by-zero; if zero, fall back to count=1 so probs remain 0
+        species_count_internal = species_count_internal.replace(0.0, 1.0)
+        # Create soft probability columns SpeciesProb_{sp}
+        for sp in CORE_SPECIES:
+            col = f'Species_{sp}'
+            if col in wide.columns:
+                wide[f'SpeciesProb_{sp}'] = wide[col].astype(float) / species_count_internal
+            else:
+                wide[f'SpeciesProb_{sp}'] = 0.0
+
+        # Optionally expose Species_Count feature according to config (richness excludes generic 'clover')
+        if USE_SPECIES_COUNT_FEATURE:
+            richness_cols = [f'Species_{sp}' for sp in CORE_SPECIES if sp != 'clover' and f'Species_{sp}' in wide.columns]
+            if len(richness_cols) > 0:
+                wide['Species_Count'] = wide[richness_cols].sum(axis=1).astype(float)
 
     # Quantile Bin Features
     if USE_BIN_FEATURES:

@@ -48,6 +48,12 @@ class FeatureConfig:
     use_species_count_feature: bool
 
 @dataclass
+class LossConfig:
+    use_standardized_loss: bool
+    use_weighted_regression_loss: bool
+    reg_loss_type: str
+
+@dataclass
 class TargetConfig:
     cols: List[str]
     official_weights: List[float]
@@ -93,6 +99,7 @@ class Config:
     training: TrainingConfig
     augmentation: AugmentationConfig
     features: FeatureConfig
+    loss: LossConfig
     targets: TargetConfig
     species_taxonomy: SpeciesTaxonomyConfig
     upsample: UpsampleConfig

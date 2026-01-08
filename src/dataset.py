@@ -42,7 +42,13 @@ class TiledBiomassDataset(Dataset):
         self.tile_prob = tile_prob
         
         self.core_species = CORE_SPECIES
-        self.species_cols = [f'Species_{sp}' for sp in self.core_species]
+        # Prefer soft probability labels if present; fallback to binary/multi-hot
+        prob_cols = [f'SpeciesProb_{sp}' for sp in self.core_species]
+        hard_cols = [f'Species_{sp}' for sp in self.core_species]
+        if all(c in self.df.columns for c in prob_cols):
+            self.species_cols = prob_cols
+        else:
+            self.species_cols = hard_cols
 
         # Auto-include bin features if present (computed in preprocessing)
         extra_aux = []

@@ -76,6 +76,13 @@ class BiomassFeatureTransform:
         df['Height_Ave_cm_log'] = np.log1p(df['Height_Ave_cm'].astype(float))
         df['Interaction_Mul'] = df['Pre_GSHH_NDVI'].astype(float) * df['Height_Ave_cm_log']
         df['Interaction_Add'] = df['Pre_GSHH_NDVI'].astype(float) + df['Height_Ave_cm_log']
+        
+        # Session/Season keys (purely deterministic groupings)
+        df['SessionID'] = df.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
+        df['Season'] = df['Sampling_Date'].apply(get_season)
+        df['Season_State_Specie'] = df.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
+        df['State_Season'] = df.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
+        df['Species_Season'] = df.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
 
         return df
 
@@ -84,10 +91,10 @@ class BiomassFeatureTransform:
         if cfg.features.use_bin_features:
             try:
                 if 'Pre_GSHH_NDVI' in df.columns:
-                    self.ndvi_kbd = KBinsDiscretizer(n_bins=4, encode='ordinal', strategy='quantile')
+                    self.ndvi_kbd = KBinsDiscretizer(n_bins=4, encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
                     self.ndvi_kbd.fit(df['Pre_GSHH_NDVI'].astype(float).values.reshape(-1, 1))
                 if 'Height_Ave_cm' in df.columns:
-                    self.height_kbd = KBinsDiscretizer(n_bins=4, encode='ordinal', strategy='quantile')
+                    self.height_kbd = KBinsDiscretizer(n_bins=4, encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
                     self.height_kbd.fit(df['Height_Ave_cm'].astype(float).values.reshape(-1, 1))
             except Exception:
                 # Leave discretizers as None to skip
@@ -102,7 +109,7 @@ class BiomassFeatureTransform:
             for col, wt in zip(tgt_cols, wts):
                 if col in df.columns:
                     comp += wt * df[col].astype(float).values
-            self.comp_kbd = KBinsDiscretizer(n_bins=self.n_bins, encode='ordinal', strategy='quantile')
+            self.comp_kbd = KBinsDiscretizer(n_bins=self.n_bins, encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
             self.comp_kbd.fit(comp.reshape(-1, 1))
         except Exception:
             self.comp_kbd = None
@@ -146,70 +153,26 @@ class BiomassFeatureTransform:
     def fit(self, train_df_raw: pd.DataFrame) -> pd.DataFrame:
         """Fit on TRAIN split. Returns engineered TRAIN df (after upsample)."""
         self._log("[Transform] Fitting on train split (with upsampling)")
-        # Deterministic keys needed for upsample
-        train_df_raw = train_df_raw.copy()
-        train_df_raw['State_Specie'] = train_df_raw.apply(get_state_specie_pair, axis=1)
-        # Upsample
-        train_up = apply_smart_upsample_with_features(train_df_raw, self.logger)
-        # Deterministic features on upsampled
-        train_eng = self._deterministic_features(train_up)
+        # Expect deterministic features already applied pre-split
+        train_up = apply_smart_upsample_with_features(train_df_raw.copy(), self.logger)
+        train_eng = train_up
         # Fit binning on upsampled train
         self._fit_bins(train_eng)
         # Apply bins to train
         train_final = self._apply_bins(train_eng)
-
-        # Session/Season keys
-        train_final['SessionID'] = train_final.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
-        train_final['Season'] = train_final['Sampling_Date'].apply(get_season)
-        train_final['Season_State_Specie'] = train_final.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
-        train_final['State_Season'] = train_final.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
-        train_final['Species_Season'] = train_final.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
 
         return train_final.reset_index(drop=True)
 
     def transform(self, df_raw: pd.DataFrame) -> pd.DataFrame:
         """Transform VALIDATION or HOLDOUT splits using learned parameters."""
         self._log("[Transform] Applying to validation/holdout splits")
-        df_eng = self._deterministic_features(df_raw)
-        df_final = self._apply_bins(df_eng)
-        df_final['SessionID'] = df_final.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
-        df_final['Season'] = df_final['Sampling_Date'].apply(get_season)
-        df_final['Season_State_Specie'] = df_final.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
-        df_final['State_Season'] = df_final.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
-        df_final['Species_Season'] = df_final.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
+        # Expect deterministic features already present
+        df_final = self._apply_bins(df_raw)
         return df_final.reset_index(drop=True)
 
 
-def ensure_split_keys(df: pd.DataFrame, groupby_key: Optional[str], strat_key: Optional[str], logger=None) -> pd.DataFrame:
-    """
-    Deterministically derive keys needed for splitting on the raw dev set.
-    - Does NOT upsample or learn from train; safe to run pre-split.
-    - Computes common keys like 'State_Specie' and provisional composite bins.
-    """
-    d = df.copy()
-    # Group key derivations
-    if groupby_key == 'State_Specie' and 'State_Specie' not in d.columns:
-        d['State_Specie'] = d.apply(get_state_specie_pair, axis=1)
-    if groupby_key == 'GroupKey' and 'GroupKey' not in d.columns:
-        d['DateStr'] = pd.to_datetime(d['Sampling_Date']).dt.strftime('%Y-%m-%d')
-        species_col = 'species_id' if 'species_id' in d.columns else ('Species' if 'Species' in d.columns else None)
-        if species_col is None:
-            raise ValueError("No species column found (expected 'species_id' or 'Species').")
-        d['GroupKey'] = d['State'].astype(str) + '|' + d[species_col].astype(str) + '|' + d['DateStr']
+def apply_deterministic_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Public helper to compute deterministic, non-learned features once pre-split."""
+    ft = BiomassFeatureTransform(logger=None)
+    return ft._deterministic_features(df)
 
-    # Provisional strat bins for splitting
-    if strat_key == 'biomass_binned_composite' and 'biomass_binned_composite' not in d.columns:
-        try:
-            wts = cfg.targets.official_weights
-            tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-            comp = np.zeros(len(d), dtype=float)
-            for col, wt in zip(tgt_cols, wts):
-                if col in d.columns:
-                    comp += wt * d[col].astype(float).values
-            n_bins = int(getattr(cfg.features, 'biomass_composite_bins', 5))
-            kbd = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
-            d['biomass_binned_composite'] = kbd.fit_transform(comp.reshape(-1, 1)).astype(int).ravel()
-        except Exception:
-            d['biomass_binned_composite'] = 0
-
-    return d

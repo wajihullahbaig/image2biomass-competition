@@ -319,7 +319,7 @@ def engineer_features(wide, logger):
             if col in wide.columns:
                 comp += wt * wide[col].astype(float).values
         n_bins = int(getattr(cfg.features, 'biomass_composite_bins', 5))
-        kbd = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
+        kbd = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
         bins = kbd.fit_transform(comp.reshape(-1, 1)).astype(int).ravel()
         # Guard against fewer effective bins due to duplicates; still store as int labels
         wide['biomass_binned_composite'] = bins

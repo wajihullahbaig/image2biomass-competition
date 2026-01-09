@@ -23,12 +23,12 @@ import json
 from config.loader import cfg,yaml_path
 from configs import config_str
 from common import (
-    load_data, get_image_data_transforms, save_batch_images,
+    get_season, load_data, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
     rotate_crop_resize, save_tta_images
 )
-from feature_transform import BiomassFeatureTransform, ensure_split_keys
+from feature_transform import BiomassFeatureTransform, apply_deterministic_features
 
 from log_and_plots import (
     get_formatted_loss_log, log_dataframe_details, setup_logging, plot_training_history,
@@ -378,8 +378,9 @@ def main():
     shutil.copy(yaml_path, os.path.join(session_dir, 'used_config.yaml'))
 
 
-    # 1. Load raw wide
+    # 1. Load raw wide + deterministic features (no learning)
     df = load_data(logger)
+    df = apply_deterministic_features(df)
 
     species_list = cfg.species_taxonomy.core_species
     target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
@@ -409,7 +410,7 @@ def main():
     dev_df = df.drop(hold_idx).copy().reset_index(drop=True)
 
     log_dataframe_details(logger, dev_df, name="Development Set")
-    log_dataframe_details(logger, hold_df, name="Temporal Holdout Set")
+    log_dataframe_details(logger, hold_df, name="Random Holdout Set")
 
     logger.info(f"Total Samples: {len(df)}")
     logger.info(f"Development Set: {len(dev_df)}")
@@ -421,8 +422,7 @@ def main():
     strat_key = cfg.split.stratification_key
     logger.info(f"Using groupby_key='{groupby_key}' and stratification_key='{strat_key}'")
 
-    # Ensure split keys via transform utility (clean and consistent)
-    dev_df = ensure_split_keys(dev_df, groupby_key, strat_key, logger)
+    # dev/hold already have deterministic grouping keys from pre-split step
 
     best_overall_score = -float('inf')
 
@@ -430,11 +430,24 @@ def main():
         # Prefer StratifiedGroupKFold when available
         if groupby_key not in dev_df.columns:
             raise ValueError(f"Configured groupby_key '{groupby_key}' not found in dev_df.")
-        if strat_key not in dev_df.columns:
-            raise ValueError(f"Configured stratification_key '{strat_key}' not found in dev_df.")
+        # Build strat labels inline if needed (avoid learned features here)
+        if strat_key in dev_df.columns:
+            y_strat = dev_df[strat_key]
+        elif strat_key == 'biomass_binned_composite':
+            from sklearn.preprocessing import KBinsDiscretizer
+            wts = cfg.targets.official_weights
+            tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+            comp = np.zeros(len(dev_df), dtype=float)
+            for col, wt in zip(tgt_cols, wts):
+                if col in dev_df.columns:
+                    comp += wt * dev_df[col].astype(float).values
+            kbd = KBinsDiscretizer(n_bins=int(getattr(cfg.features, 'biomass_composite_bins', 5)), encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
+            y_strat = kbd.fit_transform(comp.reshape(-1, 1)).astype(int).ravel()
+        else:
+            raise ValueError(f"Configured stratification_key '{strat_key}' not found in dev_df and no inline builder is defined.")
         if _HAS_SGF:
             sgkf = StratifiedGroupKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=42)
-            splitter = sgkf.split(dev_df, y=dev_df[strat_key], groups=dev_df[groupby_key])
+            splitter = sgkf.split(dev_df, y=y_strat, groups=dev_df[groupby_key])
             split_name = 'StratifiedGroupKFold'
         else:
             logging.getLogger("System Logger").warning("StratifiedGroupKFold not available; falling back to GroupKFold (no strat balance across folds). Consider upgrading scikit-learn >= 1.1.")

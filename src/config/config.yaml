@@ -86,7 +86,7 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 25
+  target_min_samples: 5
   method: "smart"
   noise_scale: 0.025
   seasonal_drift: true
@@ -97,7 +97,7 @@ split:
   holdout_pct: 0.10
   sparse_threshold: 4
   small_threshold: 6
-  groupby_key: "State_Specie"
+  groupby_key: "Season_State_Specie"
   stratification_key: "biomass_binned_composite"
 
 seasons:

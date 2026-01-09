@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.model_selection import GroupKFold, StratifiedKFold
-from sklearn.preprocessing import KBinsDiscretizer
 try:
     from sklearn.model_selection import StratifiedGroupKFold
     _HAS_SGF = True
@@ -24,7 +23,7 @@ import json
 from config.loader import cfg,yaml_path
 from configs import config_str
 from common import (
-    get_formatted_loss_log, get_season, load_data, get_image_data_transforms, save_batch_images,
+    load_data, get_image_data_transforms, save_batch_images,
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
     rotate_crop_resize, save_tta_images
@@ -32,7 +31,7 @@ from common import (
 from feature_transform import BiomassFeatureTransform, ensure_split_keys
 
 from log_and_plots import (
-    log_dataframe_details, setup_logging, plot_training_history,
+    get_formatted_loss_log, log_dataframe_details, setup_logging, plot_training_history,
     log_fold_details
 )
 

@@ -161,7 +161,7 @@ class BiomassFeatureTransform:
         # Session/Season keys
         train_final['SessionID'] = train_final.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
         train_final['Season'] = train_final['Sampling_Date'].apply(get_season)
-        train_final['Seasion_State_Specie'] = train_final.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
+        train_final['Season_State_Specie'] = train_final.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
         train_final['State_Season'] = train_final.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
         train_final['Species_Season'] = train_final.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
 

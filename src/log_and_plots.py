@@ -99,7 +99,6 @@ def plot_training_history(history, fold, session_dir):
     plt.savefig(os.path.join(save_dir, f"fold_{fold}_metrics.png"))
     plt.close()
 
-    # --- NEW: Component-wise Plots ---
     comp_dir = os.path.join(save_dir, 'components')
     os.makedirs(comp_dir, exist_ok=True)
 
@@ -345,3 +344,43 @@ def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, curre
     summary += ssep(sw0, sw1)
 
     return f"Epoch << {epoch} >>\n{header}\n{body}\n{summary}"
+
+
+def log_species_table(logger, train_df, val_df, hold_df, species_col='Species', title='Species Overview'):
+    """Log a nicely formatted table of species counts across Train/Val/Hold datasets.
+
+    Shows per-species counts and totals in aligned ASCII table.
+    """
+    # Safely handle missing column
+    for df in (train_df, val_df, hold_df):
+        if species_col not in df.columns:
+            logger.info(f"{title}: column '{species_col}' not found in one of the dataframes")
+            return
+
+    sp_train = train_df[species_col].value_counts()
+    sp_val = val_df[species_col].value_counts()
+    sp_hold = hold_df[species_col].value_counts()
+    all_species = sorted(list(set(sp_train.index) | set(sp_val.index) | set(sp_hold.index)))
+
+    table_header = f"{'Species':<35} | {'Train':>6} | {'Val':>6} | {'Hold':>6} | {'Total':>6}"
+    sep = "    " + "-" * len(table_header)
+
+    lines = [f"\n    {'-'*69}", f"    {title}", f"    {'-'*69}", f"    {table_header}", f"{sep}"]
+
+    total_train = total_val = total_hold = 0
+    for sp in all_species:
+        t = int(sp_train.get(sp, 0))
+        v = int(sp_val.get(sp, 0))
+        h = int(sp_hold.get(sp, 0))
+        tot = t + v + h
+        lines.append(f"    {str(sp)[:35]:<35} | {t:>6} | {v:>6} | {h:>6} | {tot:>6}")
+        total_train += t
+        total_val += v
+        total_hold += h
+
+    lines.append(sep)
+    lines.append(f"    {'TOTAL':<35} | {total_train:>6} | {total_val:>6} | {total_hold:>6} | {total_train+total_val+total_hold:>6}")
+    lines.append(f"    {'-'*69}\n")
+
+    msg = "\n".join(lines)
+    logger.info(msg)

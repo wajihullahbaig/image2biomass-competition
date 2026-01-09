@@ -32,19 +32,11 @@ from feature_transform import BiomassFeatureTransform, apply_deterministic_featu
 
 from log_and_plots import (
     get_formatted_loss_log, log_dataframe_details, setup_logging, plot_training_history,
-    log_fold_details
+    log_fold_details, log_species_table
 )
 
 from dataset import TiledBiomassDataset, TiledMixupDataset
 from models import BiomassUnifiedModel
-
-
-def _ensure_groupby_column(df: pd.DataFrame, groupby_key: str, species_col: str) -> pd.DataFrame:
-    """Create groupby column if using special keys like 'GroupKey'."""
-    if groupby_key == 'GroupKey':
-        df['DateStr'] = df['Sampling_Date'].dt.strftime('%Y-%m-%d')
-        df['GroupKey'] = df['State'].astype(str) + '|' + df[species_col].astype(str) + '|' + df['DateStr']
-    return df
 
 
 def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, criterion_tax, cfg, epoch, session_dir=None, logger=None,
@@ -490,9 +482,9 @@ def main():
             logger.info(f"States in Train: {sorted(train_df['State'].unique())}")
             logger.info(f"States in Val:   {sorted(val_df['State'].unique())}")
             logger.info(f"States in Hold:  {sorted(hold_df['State'].unique())}")
-        logger.info(f"Species in Train: {sorted(train_df[species_col].unique())}")
-        logger.info(f"Species in Val:   {sorted(val_df[species_col].unique())}")
-        logger.info(f"Species in Hold:  {sorted(hold_df[species_col].unique())}")
+            
+        # Log species counts across train/val/hold using a formatted table helper
+        log_species_table(logger, train_df, val_df, hold_df, species_col=species_col, title='Species in Fold')
 
         log_fold_details(logger, train_df, val_df)
 

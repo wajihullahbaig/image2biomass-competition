@@ -492,7 +492,7 @@ def main():
             logger.info(f"\nSkipping Fold {fold+1}: Training set too small ({raw_n_train} < {cfg.hyperparameters.min_train_samples})")
             continue
 
-        logger.info(f"Training fold {fold} size: {len(train_df)} (upsampling applied in load_data)")
+        logger.info(f"Training fold {fold} size: {len(train_df)} (upsampling applied in fit())")
         if 'State_Specie' in train_df.columns:
             logger.info(f"Training set distribution: {train_df['State_Specie'].value_counts()}")
 
@@ -566,7 +566,7 @@ def main():
             {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
         ]
         optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, threshold=1e-3, min_lr=1e-6)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.85, patience=10, threshold=1e-3, min_lr=1e-6)
 
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()

@@ -375,6 +375,9 @@ def main():
     logger.info("="*70)
 
     logger.info(config_str())
+    # copy of config file to session dir
+    with open(os.path.join(session_dir, 'config.yaml'), 'w') as f:
+        f.write(cfg.dump())
 
     # 1. Load raw wide
     df = load_data(logger)

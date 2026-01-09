@@ -281,3 +281,67 @@ def log_upsample_stats(logger, before_df, after_df):
         
     msg += "\n" + "="*60
     logger.info(msg)
+    
+    
+def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, current_score, score_gap, lr, v_r2, h_r2):
+    """
+    Generate a formatted ASCII table for training, validation, and holdout losses and metrics.
+    """
+    def fmt_num(v):
+        try:
+            return f"{float(v):.4f}"
+        except (TypeError, ValueError):
+            return "-"
+    def fmt_sci(v):
+        try:
+            return f"{float(v):.4e}"
+        except (TypeError, ValueError):
+            return "-"
+
+    rows = [
+        ("Loss (Total)", fmt_num(train_metrics.get('train_loss')), fmt_num(val_metrics.get('val_loss')), fmt_num(hol_metrics.get('holdout_loss'))),
+        ("Biomass",      fmt_num(train_metrics.get('train_bio')),  fmt_num(val_metrics.get('val_bio')),  fmt_num(hol_metrics.get('holdout_bio'))),
+        ("Aux",          fmt_num(train_metrics.get('train_aux')),  fmt_num(val_metrics.get('val_aux')),  fmt_num(hol_metrics.get('holdout_aux'))),
+        ("Species",      fmt_num(train_metrics.get('train_sp')),   fmt_num(val_metrics.get('val_sp')),   fmt_num(hol_metrics.get('holdout_sp'))),
+        ("Taxonomy",     fmt_num(train_metrics.get('train_tax')),  fmt_num(val_metrics.get('val_tax')),  fmt_num(hol_metrics.get('holdout_tax'))),
+        ("R2",           fmt_num(train_metrics.get('train_r2')),   fmt_num(v_r2),                         fmt_num(h_r2)),
+    ]
+
+    # Compute column widths
+    w0 = max(len("Metric"), *(len(r[0]) for r in rows))
+    w1 = max(len("Train"),  *(len(r[1]) for r in rows))
+    w2 = max(len("Val"),    *(len(r[2]) for r in rows))
+    w3 = max(len("Holdout"),*(len(r[3]) for r in rows))
+
+    def sep(w0, w1, w2, w3):
+        return "+" + "-"*(w0+2) + "+" + "-"*(w1+2) + "+" + "-"*(w2+2) + "+" + "-"*(w3+2) + "+"
+
+    header = sep(w0, w1, w2, w3) + "\n"
+    header += f"| {'Metric':<{w0}} | {'Train':>{w1}} | {'Val':>{w2}} | {'Holdout':>{w3}} |\n"
+    header += sep(w0, w1, w2, w3)
+
+    body_lines = []
+    for label, t, v, h in rows:
+        body_lines.append(f"| {label:<{w0}} | {t:>{w1}} | {v:>{w2}} | {h:>{w3}} |")
+    body = "\n".join(body_lines) + "\n" + sep(w0, w1, w2, w3)
+
+    # Summary table
+    sum_rows = [
+        ("Score", fmt_num(current_score)),
+        ("Gap",   fmt_num(score_gap)),
+        ("LR",    fmt_sci(lr)),
+    ]
+    sw0 = max(len("Summary"), *(len(r[0]) for r in sum_rows))
+    sw1 = max(len("Value"),   *(len(r[1]) for r in sum_rows))
+
+    def ssep(sw0, sw1):
+        return "+" + "-"*(sw0+2) + "+" + "-"*(sw1+2) + "+"
+
+    summary = ssep(sw0, sw1) + "\n"
+    summary += f"| {'Summary':<{sw0}} | {'Value':>{sw1}} |\n"
+    summary += ssep(sw0, sw1) + "\n"
+    for k, v in sum_rows:
+        summary += f"| {k:<{sw0}} | {v:>{sw1}} |\n"
+    summary += ssep(sw0, sw1)
+
+    return f"Epoch << {epoch} >>\n{header}\n{body}\n{summary}"

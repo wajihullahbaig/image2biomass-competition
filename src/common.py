@@ -764,23 +764,3 @@ def build_weighted_sampler_from_df(df, key='State_Specie', cap_quantile=0.95):
     sampler = torch.utils.data.WeightedRandomSampler(w_tensor, num_samples=len(df), replacement=True)
     return sampler
 
-def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, current_score,score_gap, lr,v_r2, h_r2):
-    """
-    Generate a formatted log message for training, validation, and holdout losses.
-    """    
-    log_msg = (
-                f"Ep << {epoch} >> \n "
-                f"T_Loss: {train_metrics['train_loss']:.3f} \n"
-                f"(bio:{train_metrics.get('train_bio', 0.0):.3f}, aux:{train_metrics.get('train_aux', 0.0):.3f}, "
-                f"sp:{train_metrics.get('train_sp', 0.0):.3f}, tax:{train_metrics.get('train_tax', 0.0):.3f}) \n "
-                f"V_Loss: {val_metrics['val_loss']:.3f} \n"
-                f"(bio:{val_metrics.get('val_bio', 0.0):.3f}, aux:{val_metrics.get('val_aux', 0.0):.3f}, "
-                f"sp:{val_metrics.get('val_sp', 0.0):.3f}, tax:{val_metrics.get('val_tax', 0.0):.3f}) \n "
-                f"H_Loss: {hol_metrics['holdout_loss']:.3f} \n"
-                f"(bio:{hol_metrics.get('holdout_bio', 0.0):.3f}, aux:{hol_metrics.get('holdout_aux', 0.0):.3f}, "
-                f"sp:{hol_metrics.get('holdout_sp', 0.0):.3f}, tax:{hol_metrics.get('holdout_tax', 0.0):.3f}) \n "
-                f"T_R2: {train_metrics['train_r2']:.4f} | V_R2: {v_r2:.4f} | H_R2: {h_r2:.4f} | \n"
-                f"Score: {current_score:.4f} | Gap:  {score_gap:.4f} | LR: {lr:.1e} |"
-            )
-    
-    return log_msg

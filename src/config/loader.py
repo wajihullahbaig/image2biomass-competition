@@ -32,7 +32,7 @@ def load_config(yaml_path: str = None) -> Config:
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
     
-    return config
+    return config,yaml_path
 
 # Singleton instance
-cfg = load_config()
+cfg,yaml_path = load_config()

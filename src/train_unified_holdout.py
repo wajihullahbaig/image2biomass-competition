@@ -1,5 +1,6 @@
 import os
 import logging
+import shutil
 import torch
 import numpy as np
 import pandas as pd
@@ -20,7 +21,7 @@ from datetime import datetime
 from collections import defaultdict
 import json
 
-from config.loader import cfg
+from config.loader import cfg,yaml_path
 from configs import config_str
 from common import (
     get_formatted_loss_log, get_season, load_data, get_image_data_transforms, save_batch_images,
@@ -375,9 +376,8 @@ def main():
     logger.info("="*70)
 
     logger.info(config_str())
-    # copy of config file to session dir
-    with open(os.path.join(session_dir, 'config.yaml'), 'w') as f:
-        f.write(cfg.dump())
+    shutil.copy(yaml_path, os.path.join(session_dir, 'used_config.yaml'))
+
 
     # 1. Load raw wide
     df = load_data(logger)
@@ -656,7 +656,7 @@ def main():
                 if best_fold_score > best_overall_score:
                     best_overall_score = best_fold_score
                     torch.save(model.state_dict(), os.path.join(session_dir, "best_model_overall.pth"))
-                    logger.info(f"!!!!! NEW OVERALL BEST MODEL: Fold {fold+1}, Score {best_overall_score:.4f} !!!!!")
+                    logger.info(f">>> NEW OVERALL BEST MODEL: Fold {fold+1}, Score {best_overall_score:.4f} <<<")
             else:
                 patience_counter += 1
 

@@ -8,7 +8,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.model_selection import GroupKFold, StratifiedKFold
+from sklearn.model_selection import GroupKFold, StratifiedKFold, KFold
 try:
     from sklearn.model_selection import StratifiedGroupKFold
     _HAS_SGF = True
@@ -382,22 +382,15 @@ def main():
 
     train_transform, val_transform = get_image_data_transforms()
 
-    # 2. Random holdout (per-species random fraction)
+    # 2. Random holdout (global fraction from the entire dataset)
     holdout_pct = cfg.split.holdout_pct
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
     if species_col is None:
-        raise ValueError("No species column found (expected 'species_id' or 'Species').")
+        # Species column is not required for global random holdout; proceed.
+        logger.warning("No species column found (expected 'species_id' or 'Species'). Proceeding with global random holdout.")
 
-    hold_idx = []
-    rng = np.random.default_rng(42)
-    for _, g in df.groupby(species_col):
-        n = len(g)
-        k = max(1, int(np.ceil(n * holdout_pct)))
-        if k >= n:
-            hold_idx.extend(g.index.tolist())
-        else:
-            sampled = g.sample(n=k, random_state=42, replace=False)
-            hold_idx.extend(sampled.index.tolist())
+    k = max(1, int(np.ceil(len(df) * holdout_pct)))
+    hold_idx = df.sample(n=k, random_state=42, replace=False).index
     hold_df = df.loc[hold_idx].copy().reset_index(drop=True)
     dev_df = df.drop(hold_idx).copy().reset_index(drop=True)
 
@@ -464,7 +457,12 @@ def main():
         fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
         split_name = 'StratifiedKFold'
     else:
-        raise ValueError("Specify either 'split.groupby_key' or 'split.stratification_key' in config.")
+        # Fallback: simple KFold when no grouping or stratification key is provided
+        logger.info("No groupby/stratification key configured; falling back to simple KFold.")
+        kf = KFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=42)
+        splitter = kf.split(dev_df)
+        fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
+        split_name = 'KFold'
 
     for fold, (train_df_raw, val_df_raw) in enumerate(fold_iter):
         # Fit/Transform pipeline per fold
@@ -566,7 +564,7 @@ def main():
             {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
         ]
         optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.85, patience=10, threshold=1e-3, min_lr=1e-6)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.85, patience=5, threshold=1e-3, min_lr=1e-6)
 
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()

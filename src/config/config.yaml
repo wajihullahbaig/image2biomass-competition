@@ -25,10 +25,10 @@ training:
   use_tta: true
   fusion_dim: 256
   biomass_feat_weight: 18.0
-  aux_feat_weight: 4.0
+  aux_feat_weight: 10.0
   species_feat_weight: 15.0
-  taxonomy_feat_weight: 10.0
-  physics_feat_weight: 10.0
+  taxonomy_feat_weight: 5.0
+  
 
 augmentation:
   tile_prob: 0.25

@@ -33,7 +33,6 @@ class TrainingConfig:
     aux_feat_weight: float
     species_feat_weight: float
     taxonomy_feat_weight: float
-    physics_feat_weight: float
 
 @dataclass
 class AugmentationConfig:

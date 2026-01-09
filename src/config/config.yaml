@@ -24,9 +24,9 @@ training:
   backbone_freeze_fraction: 0.65
   use_tta: true
   fusion_dim: 256
-  biomass_feat_weight: 18.0
-  aux_feat_weight: 10.0
-  species_feat_weight: 15.0
+  biomass_feat_weight: 20.0
+  aux_feat_weight: 15.0
+  species_feat_weight: 10.0
   taxonomy_feat_weight: 5.0
   
 
@@ -97,8 +97,8 @@ split:
   holdout_pct: 0.10
   sparse_threshold: 4
   small_threshold: 6
-  groupby_key: "Season_State_Specie"
-  stratification_key: ""
+  groupby_key: "State_Specie"
+  stratification_key: "biomass_composite_bins"
 
 seasons:
   month_map:

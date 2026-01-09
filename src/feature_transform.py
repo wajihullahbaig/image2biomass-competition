@@ -174,5 +174,26 @@ class BiomassFeatureTransform:
 def apply_deterministic_features(df: pd.DataFrame) -> pd.DataFrame:
     """Public helper to compute deterministic, non-learned features once pre-split."""
     ft = BiomassFeatureTransform(logger=None)
-    return ft._deterministic_features(df)
+    df_det = ft._deterministic_features(df)
+
+    # Create a global composite biomass bin column for use as a stratification key
+    try:
+        wts = cfg.targets.official_weights
+        tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+        comp = np.zeros(len(df_det), dtype=float)
+        for col, wt in zip(tgt_cols, wts):
+            if col in df_det.columns:
+                comp += wt * df_det[col].astype(float).values
+        n_bins = int(getattr(cfg.features, 'biomass_composite_bins', 5))
+        kbd = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
+        bins = kbd.fit_transform(comp.reshape(-1, 1)).astype(int).ravel()
+        # Add both the canonical 'biomass_composite_bins' name (used in config) and
+        # the older 'biomass_binned_composite' for backward compatibility.
+        df_det['biomass_composite_bins'] = bins
+        df_det['biomass_binned_composite'] = bins
+    except Exception:
+        df_det['biomass_composite_bins'] = 0
+        df_det['biomass_binned_composite'] = 0
+
+    return df_det
 

@@ -174,7 +174,7 @@ class BiomassFeatureTransform:
         df_final = self._apply_bins(df_eng)
         df_final['SessionID'] = df_final.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
         df_final['Season'] = df_final['Sampling_Date'].apply(get_season)
-        df_final['Seasion_State_Specie'] = df_final.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
+        df_final['Season_State_Specie'] = df_final.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
         df_final['State_Season'] = df_final.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
         df_final['Species_Season'] = df_final.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
         return df_final.reset_index(drop=True)

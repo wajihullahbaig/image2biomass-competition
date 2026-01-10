@@ -10,7 +10,7 @@ hyperparameters:
   batch_size: 32
   learning_rate: 0.0005
   n_folds: 4
-  epochs: 40
+  epochs: 30
   weight_decay: 0.05
   early_stop_patience: 15
   backbone: "timm/tf_efficientnet_b3.ns_jft_in1k"
@@ -86,7 +86,7 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 60
+  target_min_samples: 30
   method: "smart"
   noise_scale: 0.025
   seasonal_drift: true
@@ -97,7 +97,7 @@ split:
   holdout_pct: 0.10
   sparse_threshold: 4
   small_threshold: 6
-  groupby_key: "State_Specie"
+  groupby_key: "State_Sampling_Date"
   stratification_key: ""
 
 seasons:

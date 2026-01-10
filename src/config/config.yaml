@@ -31,7 +31,7 @@ training:
   
 
 augmentation:
-  tile_prob: 0.25
+  tile_prob: 0.10
   mixup_prob: 0.05
   mixup_alpha: 0.40
 
@@ -86,7 +86,7 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 25
+  target_min_samples: 60
   method: "smart"
   noise_scale: 0.025
   seasonal_drift: true
@@ -98,7 +98,7 @@ split:
   sparse_threshold: 4
   small_threshold: 6
   groupby_key: "State_Specie"
-  stratification_key: "biomass_composite_bins"
+  stratification_key: ""
 
 seasons:
   month_map:

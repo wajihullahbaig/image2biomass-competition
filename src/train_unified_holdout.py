@@ -516,16 +516,16 @@ def main():
         val_ds = TiledBiomassDataset(
             val_df,
             transform=val_transform,
-            mode='validation',
-            tile_prob=0.0,
+            mode='train',
+            tile_prob=0.2,
             target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
         )
 
         holdout_ds = TiledBiomassDataset(
             hold_df,
             transform=val_transform,
-            mode='holdout',
-            tile_prob=0.0,
+            mode='train',
+            tile_prob=0.2,
             target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
         )
 

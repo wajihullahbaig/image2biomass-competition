@@ -510,7 +510,7 @@ def main():
         train_ds_base = TiledBiomassDataset(
             train_df,
             transform=train_transform,
-            mode='validation',
+            mode='training',
             tile_prob=cfg.augmentation.tile_prob,
             target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
         )
@@ -519,7 +519,7 @@ def main():
         val_ds = TiledBiomassDataset(
             val_df,
             transform=val_transform,
-            mode='validation',
+            mode='train',
             tile_prob=0.2,
             target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
         )
@@ -527,7 +527,7 @@ def main():
         holdout_ds = TiledBiomassDataset(
             hold_df,
             transform=val_transform,
-            mode='validation',
+            mode='train',
             tile_prob=0.2,
             target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
         )

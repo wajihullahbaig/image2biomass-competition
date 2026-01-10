@@ -359,7 +359,7 @@ def engineer_features(wide, logger):
     
     wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
     wide['Season'] = wide['Sampling_Date'].apply(get_season)
-    wide["Seasion_State_Species"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
+    wide["Season_State_Species"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
     wide["State_Season"] = wide.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
     wide['Season_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Season'), axis=1)
     wide['Species_Sampling_Date'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Sampling_Date',flip=True), axis=1)

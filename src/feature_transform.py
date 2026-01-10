@@ -53,9 +53,6 @@ class BiomassFeatureTransform:
         # Functional groups
         df = assign_functional_groups(df)
 
-        # Region-aware strat key
-        df['State_Specie'] = df.apply(get_key1_specie_pair, axis=1)
-
         # Soft species probabilities + richness
         species_cols_all = [f'Species_{sp}' for sp in core_species if f'Species_{sp}' in df.columns]
         if len(species_cols_all) > 0:
@@ -80,10 +77,12 @@ class BiomassFeatureTransform:
         # Session/Season keys (purely deterministic groupings)
         df['SessionID'] = df.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
         df['Season'] = df['Sampling_Date'].apply(get_season)
-        df['Season_State_Specie'] = df.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
-        df['State_Season'] = df.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
-        df['Species_Season'] = df.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
-        df["State_Sampling_Date"] = df.apply(lambda r: f"{r['State']}_{r['Sampling_Date']}", axis=1)
+        df["Season_State_Species"] = df.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
+        df["State_Season"] = df.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
+        df['Season_Species'] = df.apply(lambda row: get_key1_specie_pair(row, key1='Season'), axis=1)
+        df['Species_Sampling_Date'] = df.apply(lambda row: get_key1_specie_pair(row, key1='Sampling_Date',flip=True), axis=1)
+        df['State_Sampling_Date'] = df.apply(lambda r: f"{r['State']}_{r['Sampling_Date']}", axis=1)
+        df['Season_Sampling_Date'] = df.apply(lambda r: f"{r['Season']}_{r['Sampling_Date']}", axis=1)
 
         return df
 

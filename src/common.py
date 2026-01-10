@@ -45,7 +45,7 @@ USE_BIN_FEATURES = cfg.features.use_bin_features
 BIN_ENCODING = cfg.features.bin_encoding
 USE_SPECIES_COUNT_FEATURE = cfg.features.use_species_count_feature
 
-from configs import get_state_specie_pair
+from configs import get_key1_specie_pair
 
 def get_largest_rotated_crop(h: int, w: int, angle: float) -> Tuple[int, int]:
     """
@@ -273,13 +273,10 @@ def engineer_features(wide, logger):
     for i, sp in enumerate(CORE_SPECIES):
         wide[f'Species_{sp}'] = species_matrix[:, i]
 
-    # Assign functional groups
     wide = assign_functional_groups(wide)
     
-    # Region-Aware Stratification & Session ID ===
-    wide['State_Specie'] = wide.apply(get_state_specie_pair, axis=1)
+    wide['State_Specie'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='State'), axis=1)
     
-    # Apply upsampling with enhanced NDVI and Height noise
     logger.info("Applying smart upsampling with NDVI and Height augmentation...")
     wide = apply_smart_upsample_with_features(wide, logger)
     
@@ -362,9 +359,12 @@ def engineer_features(wide, logger):
     
     wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
     wide['Season'] = wide['Sampling_Date'].apply(get_season)
-    wide["Seasion_State_Specie"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
+    wide["Seasion_State_Species"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
     wide["State_Season"] = wide.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
-    wide["Species_Season"] = wide.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
+    wide['Season_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Season'), axis=1)
+    wide['Species_Sampling_Date'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Sampling_Date',flip=True), axis=1)
+    wide['State_Sampling_Date'] = wide.apply(lambda r: f"{r['State']}_{r['Sampling_Date']}", axis=1)
+    wide['Season_Sampling_Date'] = wide.apply(lambda r: f"{r['Season']}_{r['Sampling_Date']}", axis=1)
                 
     logger.info(f"Feature Engineering Complete. Rows: {len(wide)}")
     wide.to_csv('wide.csv', index=False)

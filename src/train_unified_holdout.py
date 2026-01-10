@@ -35,6 +35,8 @@ from log_and_plots import (
     log_fold_details, log_species_table
 )
 
+from log_and_plots import log_fold_summary_tables, log_aggregate_best_across_folds
+
 from dataset import TiledBiomassDataset, TiledMixupDataset
 from models import BiomassUnifiedModel
 
@@ -464,6 +466,7 @@ def main():
         fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
         split_name = 'KFold'
 
+    per_fold_best = []
     for fold, (train_df_raw, val_df_raw) in enumerate(fold_iter):
         # Fit/Transform pipeline per fold
         ft = BiomassFeatureTransform(logger)
@@ -507,7 +510,7 @@ def main():
         train_ds_base = TiledBiomassDataset(
             train_df,
             transform=train_transform,
-            mode='training',
+            mode='validation',
             tile_prob=cfg.augmentation.tile_prob,
             target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
         )
@@ -516,7 +519,7 @@ def main():
         val_ds = TiledBiomassDataset(
             val_df,
             transform=val_transform,
-            mode='train',
+            mode='validation',
             tile_prob=0.2,
             target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
         )
@@ -524,7 +527,7 @@ def main():
         holdout_ds = TiledBiomassDataset(
             hold_df,
             transform=val_transform,
-            mode='train',
+            mode='validation',
             tile_prob=0.2,
             target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
         )
@@ -537,7 +540,7 @@ def main():
         n_aux = dummy_ds[0]['aux_feats'].shape[0]
         model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
 
-        if fold == 0:
+        if fold == 0 or fold == 1:
             save_metadata(session_dir, cfg.species_taxonomy.core_species, cfg.targets.cols, n_aux)
 
         n_upsampled = len(train_df)
@@ -673,6 +676,39 @@ def main():
         logger.info(f"Best Val R2: {best_fold_v_r2:.4f}")
         logger.info(f"Best Holdout R2: {best_fold_h_r2:.4f}")
         logger.info("-" * 40)
+        # Safely derive best epoch (fallback to last epoch if none recorded)
+        be = best_fold_epoch if best_fold_epoch >= 0 else (len(history.get('score', [])) - 1 if len(history.get('score', [])) > 0 else 0)
+        try:
+            best_val_loss = history.get('val_loss', [None])[be]
+        except Exception:
+            best_val_loss = None
+        try:
+            best_holdout_loss = history.get('holdout_loss', [None])[be]
+        except Exception:
+            best_holdout_loss = None
+        try:
+            best_train_loss = history.get('train_loss', [None])[be]
+        except Exception:
+            best_train_loss = None
+
+        per_fold_best.append({
+            'best_score': best_fold_score,
+            'best_val_loss': best_val_loss,
+            'best_holdout_loss': best_holdout_loss,
+            'best_train_loss': best_train_loss,
+            'best_val_r2': best_fold_v_r2,
+            'best_holdout_r2': best_fold_h_r2,
+            'best_epoch': be
+        })
+
+        # Log fold summary tables (best-epoch + epoch averages)
+        log_fold_summary_tables(logger, fold+1, history, be)
+
+    # After all folds complete, aggregate and log best metrics across folds
+    try:
+        log_aggregate_best_across_folds(logger, per_fold_best)
+    except Exception:
+        logger.warning("Failed to compute aggregated fold statistics")
 
 
 if __name__ == '__main__':

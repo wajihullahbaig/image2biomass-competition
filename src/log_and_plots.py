@@ -384,3 +384,137 @@ def log_species_table(logger, train_df, val_df, hold_df, species_col='Species', 
 
     msg = "\n".join(lines)
     logger.info(msg)
+
+
+def _safe_mean(lst):
+    try:
+        arr = np.array([float(x) for x in lst if x is not None])
+        if arr.size == 0:
+            return None
+        return float(np.mean(arr))
+    except Exception:
+        return None
+
+
+def log_fold_summary_tables(logger, fold, history, best_epoch):
+    """Log three tables for a fold:
+    - Best-epoch metrics (values at best_epoch)
+    - Per-fold epoch averages
+    - (Does not compute cross-fold aggregates)"""
+    # Keys we care about
+    metrics_map = [
+        ('Loss (Total)', 'train_loss', 'val_loss', 'holdout_loss'),
+        ('Biomass',      'train_bio',  'val_bio',  'holdout_bio'),
+        ('Aux',          'train_aux',  'val_aux',  'holdout_aux'),
+        ('Species',      'train_sp',   'val_sp',   'holdout_sp'),
+        ('Taxonomy',     'train_tax',  'val_tax',  'holdout_tax'),
+        ('R2',           'train_r2',   'val_r2',   'holdout_r2'),
+    ]
+
+    def get_at(key, idx):
+        try:
+            if key in history and len(history[key]) > idx and idx >= 0:
+                return history[key][idx]
+        except Exception:
+            pass
+        return None
+
+    # Best epoch table
+    be_lines = []
+    be_lines.append(f"\n    {'='*60}")
+    be_lines.append(f"    FOLD {fold} - BEST EPOCH METRICS (epoch={best_epoch})")
+    be_lines.append(f"    {'='*60}")
+    be_lines.append(f"    {'Metric':<30} | {'Train':>10} | {'Val':>10} | {'Holdout':>10}")
+    be_lines.append(f"    " + '-'*64)
+    for label, tkey, vkey, hkey in metrics_map:
+        t = get_at(tkey, best_epoch)
+        v = get_at(vkey, best_epoch)
+        h = get_at(hkey, best_epoch)
+        t_s = f"{float(t):.4f}" if t is not None else "-"
+        v_s = f"{float(v):.4f}" if v is not None else "-"
+        h_s = f"{float(h):.4f}" if h is not None else "-"
+        be_lines.append(f"    {label:<30} | {t_s:>10} | {v_s:>10} | {h_s:>10}")
+    be_lines.append(f"    {'='*60}\n")
+
+    # Per-fold epoch averages
+    avg_lines = []
+    avg_lines.append(f"    {'='*60}")
+    avg_lines.append(f"    FOLD {fold} - EPOCH AVERAGES (mean over epochs)")
+    avg_lines.append(f"    {'='*60}")
+    avg_lines.append(f"    {'Metric':<30} | {'Train':>10} | {'Val':>10} | {'Holdout':>10}")
+    avg_lines.append(f"    " + '-'*64)
+    for label, tkey, vkey, hkey in metrics_map:
+        t = _safe_mean(history.get(tkey, []))
+        v = _safe_mean(history.get(vkey, []))
+        h = _safe_mean(history.get(hkey, []))
+        t_s = f"{t:.4f}" if t is not None else "-"
+        v_s = f"{v:.4f}" if v is not None else "-"
+        h_s = f"{h:.4f}" if h is not None else "-"
+        avg_lines.append(f"    {label:<30} | {t_s:>10} | {v_s:>10} | {h_s:>10}")
+    avg_lines.append(f"    {'='*60}\n")
+
+    # Best-epoch summary (score / gap / lr)
+    score = None
+    gap = None
+    lr = None
+    try:
+        if 'score' in history and best_epoch >= 0 and best_epoch < len(history['score']):
+            score = history['score'][best_epoch]
+    except Exception:
+        score = None
+    try:
+        if 'lr' in history:
+            lr = _safe_mean(history['lr'])
+    except Exception:
+        lr = None
+
+    sum_lines = []
+    sum_lines.append(f"    {'-'*40}")
+    sum_lines.append(f"    Score (best epoch): {score:.4f}" if score is not None else "    Score (best epoch): -")
+    sum_lines.append(f"    Avg LR: {lr:.4e}" if lr is not None else "    Avg LR: -")
+    sum_lines.append(f"    {'-'*40}\n")
+
+    logger.info("\n" + "\n".join(be_lines + avg_lines + sum_lines))
+
+
+def log_aggregate_best_across_folds(logger, per_fold_best_list):
+    """Given a list of per-fold-best dicts, compute mean/std/min/max and log a compact table.
+
+    Expected dict keys (recommended): 'best_score', 'best_val_loss', 'best_holdout_loss', 'best_val_r2', 'best_holdout_r2'
+    """
+    if not per_fold_best_list:
+        logger.info("No per-fold best metrics to aggregate.")
+        return
+
+    # Collect keys
+    keys = sorted(set().union(*[set(d.keys()) for d in per_fold_best_list]))
+    agg = {}
+    for k in keys:
+        vals = [d.get(k) for d in per_fold_best_list if d.get(k) is not None]
+        try:
+            arr = np.array([float(x) for x in vals])
+            agg[k] = {
+                'mean': float(np.mean(arr)),
+                'std': float(np.std(arr, ddof=0)),
+                'min': float(np.min(arr)),
+                'max': float(np.max(arr)),
+                'n': int(len(arr))
+            }
+        except Exception:
+            agg[k] = None
+
+    # Render table
+    lines = []
+    lines.append(f"\n    {'='*70}")
+    lines.append(f"    AGGREGATED BEST METRICS ACROSS FOLDS (n={len(per_fold_best_list)})")
+    lines.append(f"    {'='*70}")
+    lines.append(f"    {'Metric':<30} | {'Mean':>10} | {'Std':>10} | {'Min':>10} | {'Max':>10} | {'N':>3}")
+    lines.append(f"    " + '-'*80)
+    for k in sorted(agg.keys()):
+        v = agg[k]
+        if v is None:
+            lines.append(f"    {k:<30} | {'-':>10} | {'-':>10} | {'-':>10} | {'-':>10} | {'-':>3}")
+        else:
+            lines.append(f"    {k:<30} | {v['mean']:10.4f} | {v['std']:10.4f} | {v['min']:10.4f} | {v['max']:10.4f} | {v['n']:3d}")
+    lines.append(f"    {'='*70}\n")
+    logger.info("\n" + "\n".join(lines))

@@ -10,7 +10,7 @@ from common import (
     apply_smart_upsample_with_features,
     get_season,
 )
-from configs import get_state_specie_pair
+from configs import get_key1_specie_pair
 
 
 class BiomassFeatureTransform:
@@ -54,7 +54,7 @@ class BiomassFeatureTransform:
         df = assign_functional_groups(df)
 
         # Region-aware strat key
-        df['State_Specie'] = df.apply(get_state_specie_pair, axis=1)
+        df['State_Specie'] = df.apply(get_key1_specie_pair, axis=1)
 
         # Soft species probabilities + richness
         species_cols_all = [f'Species_{sp}' for sp in core_species if f'Species_{sp}' in df.columns]
@@ -83,6 +83,7 @@ class BiomassFeatureTransform:
         df['Season_State_Specie'] = df.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
         df['State_Season'] = df.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
         df['Species_Season'] = df.apply(lambda r: f"{r['Species']}_{r['Season']}", axis=1)
+        df["State_Sampling_Date"] = df.apply(lambda r: f"{r['State']}_{r['Sampling_Date']}", axis=1)
 
         return df
 

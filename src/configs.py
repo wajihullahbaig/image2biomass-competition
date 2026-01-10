@@ -55,15 +55,12 @@ GROUP_DEFINITIONS = cfg.species_taxonomy.groups
 TAXONOMY_IDXS = cfg.species_taxonomy.taxonomy_idxs
 
 # ====================== IMPROVED STRATIFICATION ======================
-def get_state_specie_pair(row):
+def get_key1_specie_pair(row, key1='State',flip=False) -> str:
     """
     Create region-aware stratification key: State + Primary Species Pattern.
     """
-    state = row['State']
+    col1 = row[key1]
     species = str(row['Species']).lower().replace(' ', '')
-    
-    if state == 'WA':
-        return 'WA_Clover'
     
     dominant = None
     if 'phalaris' in species:
@@ -80,8 +77,10 @@ def get_state_specie_pair(row):
         dominant = 'Mixed'
     else:
         dominant = 'Other'
-    
-    return f"{state}_{dominant}"
+
+    if flip:
+        return f"{dominant}_{col1}"
+    return f"{col1}_{dominant}"
 
 # ===== UPSAMPLING STRATEGY =====
 UPSAMPLE_CONFIG = {
@@ -131,7 +130,6 @@ def config_str():
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
         f"TAXONOMY_FEAT_WEIGHT: {TAXONOMY_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
-        # Physics removed
         f"STRATIFY: State + Dominant Species (Region-Aware)",
         f"UPSAMPLE: Enabled={UPSAMPLE_CONFIG['enabled']} (target={UPSAMPLE_CONFIG['target_min_samples']})",
         f"SPLIT: Adaptive temporal (sparse_threshold={SPLIT_CONFIG['sparse_threshold']})",

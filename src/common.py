@@ -275,7 +275,7 @@ def engineer_features(wide, logger):
 
     wide = assign_functional_groups(wide)
     
-    wide['State_Specie'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='State'), axis=1)
+    wide['State_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='State'), axis=1)
     
     logger.info("Applying smart upsampling with NDVI and Height augmentation...")
     wide = apply_smart_upsample_with_features(wide, logger)
@@ -359,7 +359,8 @@ def engineer_features(wide, logger):
     
     wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
     wide['Season'] = wide['Sampling_Date'].apply(get_season)
-    wide["Season_State_Species"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Specie']}", axis=1)
+    wide['State_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='State'), axis=1)
+    wide["Season_State_Species"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Species']}", axis=1)
     wide["State_Season"] = wide.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
     wide['Season_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Season'), axis=1)
     wide['Species_Sampling_Date'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Sampling_Date',flip=True), axis=1)
@@ -414,7 +415,7 @@ def add_species_columns(df):
     return df
 
 
-def smart_temporal_split(df, stratify_col='State_Specie'):
+def smart_temporal_split(df, stratify_col='State_Species'):
     """
     Hybrid Temporal Split:
     1. STRICT: evaluation_dates > training_dates (Zero leakage across all groups).
@@ -533,8 +534,8 @@ def apply_smart_upsample_with_features(wide_df, logger):
     groups = []
     original_count = len(wide_df)
     
-    for key in wide_df['State_Specie'].unique():
-        key_df = wide_df[wide_df['State_Specie'] == key].copy()
+    for key in wide_df['State_Species'].unique():
+        key_df = wide_df[wide_df['State_Species'] == key].copy()
         n = len(key_df)
         
         if n >= target_min:
@@ -749,7 +750,7 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     save_path = os.path.join(save_dir, f'batch{batch_idx}_{view_name}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
 
-def build_weighted_sampler_from_df(df, key='State_Specie', cap_quantile=0.95):
+def build_weighted_sampler_from_df(df, key='State_Species', cap_quantile=0.95):
     if key not in df.columns or len(df) == 0:
         return None
     counts = df[key].value_counts()

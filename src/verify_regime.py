@@ -27,7 +27,7 @@ def verify_regime():
     print(f"Total sessions: {df['SessionID'].nunique()}")
     
     print("2. Verifying temporal split (dev vs holdout)...")
-    dev_df, hold_df = smart_temporal_split(df, stratify_col='State_Specie')
+    dev_df, hold_df = smart_temporal_split(df, stratify_col='State_Species')
     train_sessions = set(dev_df['SessionID'])
     hold_sessions = set(hold_df['SessionID'])
     leak = train_sessions.intersection(hold_sessions)

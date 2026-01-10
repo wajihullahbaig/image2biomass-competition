@@ -494,8 +494,8 @@ def main():
             continue
 
         logger.info(f"Training fold {fold} size: {len(train_df)} (upsampling applied in fit())")
-        if 'State_Specie' in train_df.columns:
-            logger.info(f"Training set distribution: {train_df['State_Specie'].value_counts()}")
+        if 'State_Species' in train_df.columns:
+            logger.info(f"Training set distribution: {train_df['State_Species'].value_counts()}")
 
         effective_train_size = len(train_df) * 6
         logger.info(f"\n{'='*40}")

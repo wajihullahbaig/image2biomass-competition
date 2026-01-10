@@ -89,7 +89,7 @@ class SplitConfig:
     # New optional keys to control unified training behavior
     # Column name to group folds (e.g., 'GroupKey', 'SessionID')
     groupby_key: str | None = None
-    # Column name used for stratification (e.g., 'State_Specie')
+    # Column name used for stratification (e.g., 'State_Species')
     stratification_key: str | None = None
 
 @dataclass

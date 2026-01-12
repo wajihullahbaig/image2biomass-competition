@@ -69,7 +69,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.6),
             nn.Linear(self.fusion_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, 3), # [Log_C, Log_D, Log_G]
+            nn.Linear(128, 3), # [Log_Total, Log_GDM, Log_Green]
         )
 
         self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
@@ -81,9 +81,9 @@ class BiomassUnifiedModel(nn.Module):
         nn.init.xavier_uniform_(last_layer.weight)
         with torch.no_grad():
             last_layer.bias.fill_(0)
-            last_layer.bias[0] = 3.0 # ~20g
-            last_layer.bias[1] = 2.0 # ~7g
-            last_layer.bias[2] = 3.0 # ~20g
+            last_layer.bias[0] = 4.0 # ~50g total
+            last_layer.bias[1] = 3.5 # ~30g gdm
+            last_layer.bias[2] = 3.0 # ~20g green
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -106,10 +106,10 @@ class BiomassUnifiedModel(nn.Module):
         # softplus ensures positivity, clamp ensures we don't blow up expm1
         log_preds = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
         
-        log_c = log_preds[:, 0:1]
-        log_d = log_preds[:, 1:2]
-        log_g = log_preds[:, 2:3]
-        biomass_out = torch.cat([log_c, log_d, log_g], dim=1)
+        log_total = log_preds[:, 0:1]
+        log_gdm = log_preds[:, 1:2] 
+        log_green = log_preds[:, 2:3]
+        biomass_out = torch.cat([log_total, log_gdm, log_green], dim=1)
         
         return biomass_out, aux_out, species_logits, taxonomy_logits
 

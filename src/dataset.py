@@ -35,7 +35,7 @@ class TiledBiomassDataset(Dataset):
         """
         self.df = df.reset_index(drop=True)
         self.transform = transform
-        self.target_cols = target_cols or ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+        self.target_cols = target_cols or ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         self.aux_cols = aux_cols or ['Pre_GSHH_NDVI', 'Height_Ave_cm_log', 'Interaction_Mul', 'Interaction_Add']
         self.is_test = is_test
         self.mode = mode

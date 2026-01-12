@@ -518,8 +518,8 @@ def apply_seasonal_drift(row: pd.Series, season: str, drift_strength: float) -> 
 def apply_smart_upsample_with_features(wide_df, logger):
     """
     Apply smart upsampling with enhanced feature augmentation.
-    Includes proper noise for NDVI (bounded 0-1) and Height (cm scale) in linear space.
-    This should be called before any log transformations.
+    Uses new target order: [Green, Dead, Clover, GDM, Total]
+    Includes proper biomass constraints: GDM = Clover + Green, Total = Clover + Dead + Green
     """
     if not UPSAMPLE_CONFIG['enabled']:
         logger.info("Upsampling disabled, skipping...")
@@ -531,25 +531,31 @@ def apply_smart_upsample_with_features(wide_df, logger):
     day_shift_prob = UPSAMPLE_CONFIG.get('day_shift_prob', 0.0)
     drift_strength = UPSAMPLE_CONFIG.get('drift_strength', 0.0)
     
+    logger.info(f"Smart upsampling config: target_min={target_min}, noise_scale={noise_scale}, seasonal_drift={use_seasonal}")
+    
     groups = []
     original_count = len(wide_df)
+    groups_processed = 0
+    total_synthetic_added = 0
     
     for key in wide_df['State_Species'].unique():
         key_df = wide_df[wide_df['State_Species'] == key].copy()
         n = len(key_df)
+        groups_processed += 1
         
         if n >= target_min:
             # Already sufficient
             key_df['is_synthetic'] = False
             groups.append(key_df)
-            logger.info(f"  {key}: {n} samples (sufficient, no upsampling)")
+            logger.info(f"  [{groups_processed:2d}] {key}: {n} samples (sufficient, no upsampling)")
         else:
             # Upsample to target_min
             n_needed = target_min - n
-            upsampled = key_df.sample(n=n_needed, replace=True, random_state=42).copy()
-            logger.info(f"  {key}: {n} → {target_min} samples (added {n_needed})")
+            upsampled = key_df.sample(n=n_needed, replace=True, random_state=313).copy()
+            total_synthetic_added += n_needed
+            logger.info(f"  [{groups_processed:2d}] {key}: {n} → {target_min} samples (+{n_needed} synthetic)")
             
-            # Optionally shift dates by ±1 day (vectorized) and apply seasonal drift
+            # Apply date shifting and seasonal drift if enabled
             if day_shift_prob > 0:
                 shift_mask = np.random.rand(len(upsampled)) < day_shift_prob
                 if shift_mask.any():
@@ -560,7 +566,9 @@ def apply_smart_upsample_with_features(wide_df, logger):
             if use_seasonal:
                 seasons = upsampled['Sampling_Date'].apply(get_season)
                 rand_mag = np.random.uniform(0.5, 1.0, size=len(upsampled))
-                components = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+                
+                # Apply drift to component biomass (correct order: [Green, Dead, Clover])
+                components = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
                 for comp in components:
                     if comp in upsampled.columns:
                         t_series = seasons.map(lambda s: SEASONAL_DRIFT.get(s, {}).get(comp, 0.0)).astype(float)
@@ -568,26 +576,23 @@ def apply_smart_upsample_with_features(wide_df, logger):
                         base = upsampled[comp].astype(float).values
                         upsampled[comp] = np.maximum(0.0, base * factors)
 
-                # Recompute totals and adjust GDM proportionally
+                # Recompute derived targets: Total = Green + Dead + Clover, GDM = Green + Clover  
                 if all(c in upsampled.columns for c in components):
-                    total_new = (
-                        upsampled['Dry_Clover_g'].astype(float).values +
-                        upsampled['Dry_Dead_g'].astype(float).values +
-                        upsampled['Dry_Green_g'].astype(float).values
-                    )
+                    green = upsampled['Dry_Green_g'].astype(float).values
+                    dead = upsampled['Dry_Dead_g'].astype(float).values 
+                    clover = upsampled['Dry_Clover_g'].astype(float).values
+                    
+                    new_total = green + dead + clover
+                    new_gdm = green + clover
+                    
                     if 'Dry_Total_g' in upsampled.columns:
-                        upsampled['Dry_Total_g'] = np.maximum(0.0, total_new)
+                        upsampled['Dry_Total_g'] = np.maximum(0.0, new_total)
                     if 'GDM_g' in upsampled.columns:
-                        total_old = upsampled['Dry_Total_g'].astype(float).values if 'Dry_Total_g' in upsampled.columns else np.zeros_like(total_new)
-                        scale = np.divide(total_new, total_old, out=np.ones_like(total_new), where=total_old > 0)
-                        gdm = upsampled['GDM_g'].astype(float).values
-                        gdm_scaled = np.maximum(0.0, gdm * scale)
-                        # Fallback to green component where old total is zero
-                        gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
-                        upsampled['GDM_g'] = gdm_final
+                        upsampled['GDM_g'] = np.maximum(0.0, new_gdm)
 
-            # Add noise to component biomass only, then recompute totals & GDM
-            comp_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+            # Add noise to component biomass, then recompute derived targets
+            comp_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
+            
             for col in comp_cols:
                 if col in upsampled.columns:
                     s = upsampled[col].std()
@@ -596,28 +601,27 @@ def apply_smart_upsample_with_features(wide_df, logger):
                     noise = np.random.normal(0, s * noise_scale, size=len(upsampled))
                     upsampled[col] = np.maximum(0.0, upsampled[col] + noise)
 
+            # Recompute derived targets with proper constraints
             if all(c in upsampled.columns for c in comp_cols):
-                total_new = (
-                    upsampled['Dry_Clover_g'].astype(float).values +
-                    upsampled['Dry_Dead_g'].astype(float).values +
-                    upsampled['Dry_Green_g'].astype(float).values
-                )
-                upsampled['Dry_Total_g'] = np.maximum(0.0, total_new)
+                green = upsampled['Dry_Green_g'].astype(float).values
+                dead = upsampled['Dry_Dead_g'].astype(float).values
+                clover = upsampled['Dry_Clover_g'].astype(float).values
+                
+                new_total = green + dead + clover
+                new_gdm = green + clover
+                
+                upsampled['Dry_Total_g'] = np.maximum(0.0, new_total)
                 if 'GDM_g' in upsampled.columns:
-                    total_old = upsampled['Dry_Total_g'].astype(float).values
-                    scale = np.divide(total_new, total_old, out=np.ones_like(total_new), where=total_old > 0)
-                    gdm = upsampled['GDM_g'].astype(float).values
-                    gdm_scaled = np.maximum(0.0, gdm * scale)
-                    gdm_final = np.where(total_old > 0, gdm_scaled, np.maximum(0.0, upsampled['Dry_Green_g'].astype(float).values))
-                    upsampled['GDM_g'] = gdm_final
+                    upsampled['GDM_g'] = np.maximum(0.0, new_gdm)
 
-            # Clamp to competition target limits
+            # Clamp to competition target limits 
             clamp_val = float(cfg.targets.biomass_clamp)
-            for col in ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']:
+            biomass_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
+            for col in biomass_cols:
                 if col in upsampled.columns:
                     upsampled[col] = np.clip(upsampled[col].astype(float).values, 0.0, clamp_val)
             
-            # NEW: Add noise to NDVI (bounded 0-1) and Height (cm scale) in linear space
+            # Add noise to auxiliary features (NDVI and Height) 
             if 'Pre_GSHH_NDVI' in upsampled.columns:
                 ndvi_noise_std = 0.015  # Fixed small noise for NDVI
                 ndvi_noise = np.random.normal(0, ndvi_noise_std, size=len(upsampled))
@@ -630,19 +634,26 @@ def apply_smart_upsample_with_features(wide_df, logger):
                 height_noise = np.random.normal(0, height_noise_std, size=len(upsampled))
                 upsampled['Height_Ave_cm'] = np.maximum(0.1, upsampled['Height_Ave_cm'] + height_noise)  # Minimum 0.1 cm
             
-            # Mark samples
+            # Mark samples and combine
             upsampled['is_synthetic'] = True
             key_df['is_synthetic'] = False
             
             groups.append(pd.concat([key_df, upsampled], ignore_index=True))
     
     result_df = pd.concat(groups, ignore_index=True)
-    result_df = result_df.sample(frac=1, random_state=42).reset_index(drop=True)  # Shuffle
+    result_df = result_df.sample(frac=1, random_state=313).reset_index(drop=True)  # Shuffle
     result_df = result_df.sort_values(by=['Sampling_Date']).reset_index(drop=True)
     
     synthetic_count = len(result_df[result_df.get('is_synthetic', False)])
     total_count = len(result_df)
-    logger.info(f"Upsampling complete: {original_count} → {total_count} samples ({synthetic_count} synthetic)")
+    upsampling_ratio = synthetic_count / total_count if total_count > 0 else 0
+    
+    logger.info(f"Upsampling summary:")
+    logger.info(f"  Original: {original_count:,} samples")
+    logger.info(f"  Final: {total_count:,} samples")
+    logger.info(f"  Synthetic: {synthetic_count:,} samples ({upsampling_ratio:.1%})")
+    logger.info(f"  Groups processed: {groups_processed}")
+    logger.info(f"  Total synthetic added: {total_synthetic_added:,}")
     
     return result_df
 
@@ -738,7 +749,7 @@ def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     if fold != 0 or epoch != 0 or batch_idx > 0:
         return
         
-    save_dir = os.path.join(session_dir, 'tta_debug', f'fold{fold+1}_ep{epoch}')
+    save_dir = os.path.join(session_dir, 'tta_analysis', f'fold{fold+1}_ep{epoch}')
     os.makedirs(save_dir, exist_ok=True)
     
     # Denormalize

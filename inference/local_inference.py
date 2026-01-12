@@ -132,10 +132,9 @@ class BiomassUnifiedModel(nn.Module):
         nn.init.xavier_uniform_(last_layer.weight)
         with torch.no_grad():
             last_layer.bias.fill_(0)
-            last_layer.bias[0] = 3.0 # ~20g
-            last_layer.bias[1] = 2.0 # ~7g
-            last_layer.bias[2] = 3.0 # ~20g
-            # Only 3 outputs now (C, D, G)
+            last_layer.bias[0] = 4.0 # ~50g total
+            last_layer.bias[1] = 3.5 # ~30g gdm
+            last_layer.bias[2] = 3.0 # ~20g green
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -156,10 +155,10 @@ class BiomassUnifiedModel(nn.Module):
         # softplus ensures positivity, clamp ensures we don't blow up expm1
         log_preds = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
         
-        log_c = log_preds[:, 0:1]
-        log_d = log_preds[:, 1:2]
-        log_g = log_preds[:, 2:3]
-        biomass_out = torch.cat([log_c, log_d, log_g], dim=1)
+        log_total = log_preds[:, 0:1]
+        log_gdm = log_preds[:, 1:2]
+        log_green = log_preds[:, 2:3]
+        biomass_out = torch.cat([log_total, log_gdm, log_green], dim=1)
         
         return biomass_out, aux_out, species_logits, taxonomy_logits
 
@@ -402,29 +401,31 @@ def run_inference(use_tta=False):
         ensemble_preds_g.append(np.concatenate(fold_preds, axis=0))
         print(f"  ✓ Completed\n")
         
-    # 5. AVERAGE ENSEMBLE (Linear Space) over components C/D/G
+    # 5. AVERAGE ENSEMBLE (Linear Space) over 3 predictions
     print("Averaging ensemble predictions...")
     avg_components = np.mean(ensemble_preds_g, axis=0)  # shape [N,3]
     avg_components = np.maximum(avg_components, 0)
 
-    # 6. DERIVE TOTAL and GDM in linear space
-    c = avg_components[:, 0]
-    d = avg_components[:, 1]
-    g = avg_components[:, 2]
-    total = c + d + g
-    gdm = c + g
+    # 6. DERIVE 5 targets from 3 predictions
+    pred_total = avg_components[:, 0]
+    pred_gdm = avg_components[:, 1]
+    pred_green = avg_components[:, 2]
+    
+    # Ensure no negative values
+    pred_clover = np.maximum(0, pred_gdm - pred_green)
+    pred_dead = np.maximum(0, pred_total - pred_gdm)
 
-    # 7. EXPORT
+    # 7. EXPORT in correct order [green, dead, clover, gdm, total]
     final_df = pd.DataFrame({
-        'Dry_Clover_g': c,
-        'Dry_Dead_g': d,
-        'Dry_Green_g': g,
-        'Dry_Total_g': total,
-        'GDM_g': gdm,
+        'Dry_Green_g': pred_green,
+        'Dry_Dead_g': pred_dead,
+        'Dry_Clover_g': pred_clover,
+        'GDM_g': pred_gdm,
+        'Dry_Total_g': pred_total,
     })
     final_df['clean_id'] = final_clean_ids
     
-    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+    target_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
     submission_rows = []
     for _, row in final_df.iterrows():
         cid = row['clean_id']

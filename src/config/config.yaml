@@ -9,7 +9,7 @@ preprocessing:
 hyperparameters:
   batch_size: 16
   learning_rate: 0.0005
-  n_folds: 3
+  n_folds: 5
   epochs: 30
   weight_decay: 0.05
   early_stop_patience: 15
@@ -31,7 +31,7 @@ training:
   
 
 augmentation:
-  tile_prob: 0.10
+  tile_prob: 0.05
   mixup_prob: 0.05
   mixup_alpha: 0.40
 
@@ -43,12 +43,12 @@ features:
 
 loss:
   use_standardized_loss: true
-  use_weighted_regression_loss: false
+  use_weighted_regression_loss: true
   reg_loss_type: "smoothl1"  # options: smoothl1, mse
 
 targets:
-  cols: ["Dry_Clover_g", "Dry_Dead_g", "Dry_Green_g", "Dry_Total_g", "GDM_g"]
-  official_weights: [0.1, 0.1, 0.1, 0.5, 0.2]
+  cols: ["Dry_Green_g", "Dry_Dead_g", "Dry_Clover_g", "GDM_g", "Dry_Total_g"]
+  official_weights: [0.1, 0.1, 0.1, 0.2, 0.5]
   biomass_clamp: 5000.0 # grams
 
 species_taxonomy:
@@ -86,7 +86,7 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 40
+  target_min_samples: 25
   method: "smart"
   noise_scale: 0.025
   seasonal_drift: true
@@ -97,8 +97,8 @@ split:
   holdout_pct: 0.10
   sparse_threshold: 4
   small_threshold: 6
-  groupby_key: "Sampling_Date"
-  stratification_key: "FunctionalGroup"
+  groupby_key: "SessionID"
+  stratification_key: "biomass_binned_composite"
 
 seasons:
   month_map:

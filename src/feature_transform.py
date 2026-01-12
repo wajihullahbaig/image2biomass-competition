@@ -106,7 +106,8 @@ class BiomassFeatureTransform:
         # Fit composite bins
         try:
             wts = cfg.targets.official_weights
-            tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+            #tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+            tgt_cols = ['Dry_Total_g']
             comp = np.zeros(len(df), dtype=float)
             for col, wt in zip(tgt_cols, wts):
                 if col in df.columns:
@@ -140,7 +141,8 @@ class BiomassFeatureTransform:
         # Composite
         if self.comp_kbd is not None:
             wts = cfg.targets.official_weights
-            tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+            #tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+            tgt_cols = ['Dry_Total_g']
             comp = np.zeros(len(df), dtype=float)
             for col, wt in zip(tgt_cols, wts):
                 if col in df.columns:
@@ -155,14 +157,19 @@ class BiomassFeatureTransform:
     def fit(self, train_df_raw: pd.DataFrame) -> pd.DataFrame:
         """Fit on TRAIN split. Returns engineered TRAIN df (after upsample)."""
         self._log("[Transform] Fitting on train split (with upsampling)")
+        self._log(f"Input train samples: {len(train_df_raw)}")
+        
         # Expect deterministic features already applied pre-split
         train_up = apply_smart_upsample_with_features(train_df_raw.copy(), self.logger)
+        self._log(f"After upsampling: {len(train_up)} samples")
+        
         train_eng = train_up
         # Fit binning on upsampled train
         self._fit_bins(train_eng)
         # Apply bins to train
         train_final = self._apply_bins(train_eng)
-
+        
+        self._log(f"Feature engineering complete: {len(train_final)} samples")
         return train_final.reset_index(drop=True)
 
     def transform(self, df_raw: pd.DataFrame) -> pd.DataFrame:
@@ -181,20 +188,18 @@ def apply_deterministic_features(df: pd.DataFrame) -> pd.DataFrame:
     # Create a global composite biomass bin column for use as a stratification key
     try:
         wts = cfg.targets.official_weights
-        tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+        #tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
+        tgt_cols = ['Dry_Total_g']
         comp = np.zeros(len(df_det), dtype=float)
         for col, wt in zip(tgt_cols, wts):
             if col in df_det.columns:
                 comp += wt * df_det[col].astype(float).values
-        n_bins = int(getattr(cfg.features, 'biomass_composite_bins', 5))
+        n_bins = int(cfg.features.biomass_composite_bins)
         kbd = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
         bins = kbd.fit_transform(comp.reshape(-1, 1)).astype(int).ravel()
-        # Add both the canonical 'biomass_composite_bins' name (used in config) and
         # the older 'biomass_binned_composite' for backward compatibility.
-        df_det['biomass_composite_bins'] = bins
         df_det['biomass_binned_composite'] = bins
     except Exception:
-        df_det['biomass_composite_bins'] = 0
         df_det['biomass_binned_composite'] = 0
 
     return df_det

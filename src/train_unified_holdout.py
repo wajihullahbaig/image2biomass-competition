@@ -167,9 +167,9 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_tax'] += loss_tax.item() * B
 
         with torch.no_grad():
-            metrics['train_loss_total'] += nn.functional.mse_loss(biomass_out[:, 0], torch.log1p(targ_total).squeeze()).item() * B
-            metrics['train_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 1], torch.log1p(targ_gdm).squeeze()).item() * B
-            metrics['train_loss_green'] += nn.functional.mse_loss(biomass_out[:, 2], torch.log1p(targ_green).squeeze()).item() * B
+            metrics['train_loss_total'] += nn.functional.mse_loss(biomass_out[:, 0:1], torch.log1p(targ_total)).item() * B
+            metrics['train_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 1:2], torch.log1p(targ_gdm)).item() * B
+            metrics['train_loss_green'] += nn.functional.mse_loss(biomass_out[:, 2:3], torch.log1p(targ_green)).item() * B
             
             # Derived losses
             pred_clover_log = torch.log1p(pred_clover + 1e-8)
@@ -334,9 +334,9 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
         metrics[f'{prefix}_tax'] += loss_tax.item() * B
-        metrics[f'{prefix}_loss_total'] += nn.functional.mse_loss(biomass_out[:, 0], torch.log1p(targ_total).squeeze()).item() * B
-        metrics[f'{prefix}_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 1], torch.log1p(targ_gdm).squeeze()).item() * B
-        metrics[f'{prefix}_loss_green'] += nn.functional.mse_loss(biomass_out[:, 2], torch.log1p(targ_green).squeeze()).item() * B
+        metrics[f'{prefix}_loss_total'] += nn.functional.mse_loss(biomass_out[:, 0:1], torch.log1p(targ_total)).item() * B
+        metrics[f'{prefix}_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 1:2], torch.log1p(targ_gdm)).item() * B
+        metrics[f'{prefix}_loss_green'] += nn.functional.mse_loss(biomass_out[:, 2:3], torch.log1p(targ_green)).item() * B
         
         # Derived losses
         pred_clover_log = torch.log1p(pred_clover + 1e-8)

@@ -415,52 +415,126 @@ def add_species_columns(df):
     return df
 
 
+def leakage_free_split(df, group_col='SessionID', stratify_col='State_Species', 
+                      holdout_pct=0.15, val_pct=0.20, random_state=42):
+    """
+    Create leakage-free train/validation/holdout splits ensuring complete group integrity.
+    
+    Args:
+        df: Input dataframe
+        group_col: Column defining groups that must not be split (e.g. 'SessionID', 'State_Species')
+        stratify_col: Column for stratification to maintain distribution balance
+        holdout_pct: Percentage for holdout set
+        val_pct: Percentage for validation set (from remaining after holdout)
+        random_state: Random seed for reproducibility
+    
+    Returns:
+        train_df, val_df, holdout_df
+    """
+    np.random.seed(random_state)
+    
+    # Create group-level summary for splitting
+    group_summary = df.groupby(group_col).agg({
+        'Sampling_Date': ['min', 'max', 'count'],
+        stratify_col: 'first',
+        'State': 'first',
+        'Species': 'first',
+        'Dry_Total_g': 'mean'
+    }).reset_index()
+    
+    # Flatten column names
+    group_summary.columns = [
+        group_col, 'date_min', 'date_max', 'sample_count', 
+        stratify_col, 'state', 'species', 'biomass_mean'
+    ]
+    
+    # Sort groups by earliest date for temporal integrity
+    group_summary = group_summary.sort_values('date_min').reset_index(drop=True)
+    
+    # Split groups (not individual samples) to prevent leakage
+    n_groups = len(group_summary)
+    
+    # Calculate group split points
+    holdout_groups = int(n_groups * holdout_pct)
+    val_groups = int(n_groups * val_pct)
+    train_groups = n_groups - holdout_groups - val_groups
+    
+    # Ensure minimum groups per split
+    if holdout_groups < 1:
+        holdout_groups = 1
+    if val_groups < 1:
+        val_groups = 1
+        
+    train_groups = n_groups - holdout_groups - val_groups
+    if train_groups < 1:
+        raise ValueError(f"Not enough groups ({n_groups}) for 3-way split")
+    
+    # Temporal-first approach: latest groups go to holdout for time series validity
+    holdout_group_ids = group_summary.iloc[-holdout_groups:][group_col].tolist()
+    remaining_groups = group_summary.iloc[:-holdout_groups]
+    
+    # Split remaining groups into train/validation with stratification balance
+    remaining_groups = remaining_groups.sample(frac=1, random_state=random_state).reset_index(drop=True)
+    
+    # Try to balance stratification key across train/val
+    strat_counts = remaining_groups[stratify_col].value_counts()
+    val_group_ids = []
+    train_group_ids = []
+    
+    # Balanced allocation by stratification key
+    for strat_group in strat_counts.index:
+        group_subset = remaining_groups[remaining_groups[stratify_col] == strat_group]
+        n_subset = len(group_subset)
+        n_val_subset = max(1, int(n_subset * val_pct / (1 - holdout_pct)))
+        n_val_subset = min(n_val_subset, n_subset - 1)  # Ensure at least 1 for training
+        
+        if n_val_subset > 0:
+            val_subset = group_subset.sample(n=n_val_subset, random_state=random_state)
+            val_group_ids.extend(val_subset[group_col].tolist())
+            
+            train_subset = group_subset[~group_subset[group_col].isin(val_subset[group_col])]
+            train_group_ids.extend(train_subset[group_col].tolist())
+        else:
+            # If too few groups, put all in training
+            train_group_ids.extend(group_subset[group_col].tolist())
+    
+    # Create final splits based on group assignments
+    train_df = df[df[group_col].isin(train_group_ids)].copy()
+    val_df = df[df[group_col].isin(val_group_ids)].copy()
+    holdout_df = df[df[group_col].isin(holdout_group_ids)].copy()
+    
+    # Verification: ensure no group appears in multiple splits
+    all_splits_groups = set(train_group_ids) | set(val_group_ids) | set(holdout_group_ids)
+    train_val_overlap = set(train_group_ids) & set(val_group_ids)
+    train_holdout_overlap = set(train_group_ids) & set(holdout_group_ids)
+    val_holdout_overlap = set(val_group_ids) & set(holdout_group_ids)
+    
+    assert len(train_val_overlap) == 0, f"Train/Val group overlap: {train_val_overlap}"
+    assert len(train_holdout_overlap) == 0, f"Train/Holdout group overlap: {train_holdout_overlap}"
+    assert len(val_holdout_overlap) == 0, f"Val/Holdout group overlap: {val_holdout_overlap}"
+    assert len(all_splits_groups) == n_groups, f"Missing groups in splits"
+    
+    return train_df, val_df, holdout_df
+
 def smart_temporal_split(df, stratify_col='State_Species'):
     """
+    Legacy function - now redirects to leakage_free_split for session awareness.
     Hybrid Temporal Split:
     1. STRICT: evaluation_dates > training_dates (Zero leakage across all groups).
     2. SMART: Adjusts the split cutoff to ensure every group is represented in training.
     """
-    df = df.sort_values('Sampling_Date').reset_index(drop=True)
-    n_total = len(df)
+    # Use SessionID as group column to prevent session leakage
+    train_df, val_df, holdout_df = leakage_free_split(
+        df, 
+        group_col='SessionID',
+        stratify_col=stratify_col,
+        holdout_pct=SPLIT_CONFIG.get('holdout_pct', 0.15),
+        val_pct=0.20
+    )
     
-    # Configuration
-    holdout_pct = SPLIT_CONFIG.get('holdout_pct', 0.15)
-    target_split_idx = int(n_total * (1.0 - holdout_pct))
-    
-    # 1. Representation Guard: Every group must have at least one sample in dev
-    # We find the MIN date for each group, and then the MAX of those.
-    # This date is the absolute earliest we can split to include everyone.
-    min_dates_per_group = df.groupby(stratify_col)['Sampling_Date'].min()
-    safe_cutoff_date = min_dates_per_group.max()
-    
-    # 2. Target Cutoff: The date at our target split percentile
-    target_cutoff_date = df.iloc[target_split_idx]['Sampling_Date']
-    
-    # Final Choice: Use the later of the two dates to satisfy both constraints
-    final_cutoff = max(target_cutoff_date, safe_cutoff_date)
-    
-    # Session Guard: Ensure the final cutoff doesn't split a session
-    # (Though typically sessions are all on the same date, this is safer)
-    session_at_cutoff = df[df['Sampling_Date'] == final_cutoff]['SessionID'].unique()
-    
-    # Split
-    dev_df = df[df['Sampling_Date'] <= final_cutoff].copy()
-    holdout_df = df[df['Sampling_Date'] > final_cutoff].copy()
-    
-    # Verification: If the last session in dev_df is also in holdout_df, move it entirely to one side
-    # But with strict temporal sorting, this shouldn't happen unless dates are identical.
-    
-    # Emergency fallback: If holdout is empty (rare), take the last 5% regardless
-    if len(holdout_df) == 0:
-        split_idx = int(len(df) * 0.95)
-        dev_df = df.iloc[:split_idx].copy()
-        holdout_df = df.iloc[split_idx:].copy()
-        
+    # For legacy compatibility, combine train/val as "dev"
+    dev_df = pd.concat([train_df, val_df], ignore_index=True)
     return dev_df, holdout_df
-
-    # NOTE: Triplet moving time series split removed per refactor request.
-    # Use explicit temporal holdout and KFold/GroupKFold strategies in unified trainer.
 
 
 def get_season(date_val):

@@ -416,18 +416,32 @@ def main():
 
     train_transform, val_transform = get_image_data_transforms()
 
-    # 2. Random holdout (global fraction from the entire dataset)
+    # 2. Leakage-free train/validation/holdout split ensuring group integrity
+    groupby_key = cfg.split.groupby_key
+    strat_key = cfg.split.stratification_key
     holdout_pct = cfg.split.holdout_pct
+    
+    logger.info(f"Using groupby_key='{groupby_key}' and stratification_key='{strat_key}'")
+    
+    # Import the new splitting function
+    from common import leakage_free_split
+    
+    # Create leakage-free splits - this replaces the random holdout approach
+    # Use a temporary train/val split for initial holdout separation
+    initial_train, temp_val, hold_df = leakage_free_split(
+        df, 
+        group_col=groupby_key,
+        stratify_col=strat_key,
+        holdout_pct=holdout_pct,
+        val_pct=0.01,  # Very small val for now, will be handled by CV
+        random_state=313
+    )
+    
+    # Combine initial_train and temp_val for CV splitting (this becomes dev_df)
+    dev_df = pd.concat([initial_train, temp_val], ignore_index=True)
+    
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
-    if species_col is None:
-        # Species column is not required for global random holdout; proceed.
-        logger.warning("No species column found (expected 'species_id' or 'Species'). Proceeding with global random holdout.")
-
-    k = max(1, int(np.ceil(len(df) * holdout_pct)))
-    hold_idx = df.sample(n=k, random_state=313, replace=False).index
-    hold_df = df.loc[hold_idx].copy().reset_index(drop=True)
-    dev_df = df.drop(hold_idx).copy().reset_index(drop=True)
-
+    
     log_dataframe_details(logger, dev_df, name="Development Set")
     log_dataframe_details(logger, hold_df, name="Random Holdout Set")
 
@@ -437,7 +451,6 @@ def main():
     hold_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
 
     # 3. Choose fold strategy from config keys
-    groupby_key = cfg.split.groupby_key
     strat_key = cfg.split.stratification_key
     logger.info(f"Using groupby_key='{groupby_key}' and stratification_key='{strat_key}'")
 
@@ -518,6 +531,15 @@ def main():
             
         # Log species counts across train/val/hold using a formatted table helper
         log_species_table(logger, train_df, val_df, hold_df, species_col=species_col, title='Species in Fold')
+        
+        # Generate split analysis visualizations
+        if fold == 0:  # Only for first fold to avoid cluttering
+            from visualize_splits import analyze_splits_in_training
+            try:
+                analyze_splits_in_training(train_df, val_df, hold_df, session_dir, fold,group_col=groupby_key)
+                logger.info("Split analysis visualizations saved to split_analysis/")
+            except Exception as e:
+                logger.warning(f"Could not generate split analysis: {e}")
 
         log_fold_details(logger, train_df, val_df)
 

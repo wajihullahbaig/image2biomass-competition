@@ -91,6 +91,8 @@ class SplitConfig:
     groupby_key: str | None = None
     # Column name used for stratification (e.g., 'State_Species')
     stratification_key: str | None = None
+    # Minimum samples per combo guaranteed in training (for coverage-aware split)
+    min_train_per_combo: int = 2
 
 @dataclass
 class SeasonsConfig:

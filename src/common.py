@@ -541,6 +541,123 @@ def smart_temporal_split(df, stratify_col='State_Species'):
     return dev_df, holdout_df
 
 
+def coverage_aware_split(df, stratify_col='Species_Season', 
+                         min_train_per_combo=2, holdout_pct=0.15, 
+                         random_state=42, logger=None):
+    """
+    Coverage-prioritized splitting that guarantees minimum training 
+    representation for every stratification group.
+    
+    Algorithm:
+    1. Group by stratify_col (e.g., Species_Season)
+    2. For each group:
+       - If group size <= min_train_per_combo: ALL samples go to training
+       - Else: Reserve min_train_per_combo for training, rest are holdout candidates
+    3. Sample holdout from candidates proportionally
+    4. Remaining candidates + reserved samples = training
+    
+    Args:
+        df: Input dataframe with all samples
+        stratify_col: Column for stratification (default: 'Species_Season')
+        min_train_per_combo: Minimum samples per combo reserved for training
+        holdout_pct: Target percentage for holdout set
+        random_state: Random seed for reproducibility
+        logger: Optional logger for diagnostics
+        
+    Returns:
+        train_df, holdout_df
+    """
+    np.random.seed(random_state)
+    
+    # Ensure stratify column exists
+    if stratify_col not in df.columns:
+        if logger:
+            logger.warning(f"Column '{stratify_col}' not found. Creating it from Species + Season.")
+        if 'Species' in df.columns and 'Season' in df.columns:
+            df = df.copy()
+            df[stratify_col] = df['Species'].astype(str) + '_' + df['Season'].astype(str)
+        else:
+            raise ValueError(f"Cannot create {stratify_col}: missing Species or Season columns")
+    
+    # Get unique stratification groups
+    groups = df[stratify_col].unique()
+    n_total = len(df)
+    target_holdout = int(n_total * holdout_pct)
+    
+    reserved_train_idx = []  # Guaranteed training samples
+    holdout_candidates_idx = []  # Pool for holdout selection
+    
+    coverage_stats = {'full_coverage': [], 'partial_coverage': [], 'sparse': []}
+    
+    for group in groups:
+        group_mask = df[stratify_col] == group
+        group_idx = df[group_mask].index.tolist()
+        n_group = len(group_idx)
+        
+        if n_group <= min_train_per_combo:
+            # Sparse group: ALL go to training to ensure coverage
+            reserved_train_idx.extend(group_idx)
+            coverage_stats['sparse'].append((group, n_group))
+        else:
+            # Reserve minimum for training, rest are holdout candidates
+            np.random.shuffle(group_idx)
+            reserved_train_idx.extend(group_idx[:min_train_per_combo])
+            holdout_candidates_idx.extend(group_idx[min_train_per_combo:])
+            
+            if n_group >= 2 * min_train_per_combo:
+                coverage_stats['full_coverage'].append((group, n_group))
+            else:
+                coverage_stats['partial_coverage'].append((group, n_group))
+    
+    # Sample holdout from candidates
+    n_candidates = len(holdout_candidates_idx)
+    n_holdout = min(target_holdout, n_candidates)
+    
+    if n_holdout > 0:
+        holdout_idx = np.random.choice(holdout_candidates_idx, size=n_holdout, replace=False).tolist()
+        remaining_candidates = [idx for idx in holdout_candidates_idx if idx not in holdout_idx]
+    else:
+        holdout_idx = []
+        remaining_candidates = holdout_candidates_idx
+    
+    # Training = reserved + remaining candidates
+    train_idx = reserved_train_idx + remaining_candidates
+    
+    # Create dataframes
+    train_df = df.loc[train_idx].copy().reset_index(drop=True)
+    holdout_df = df.loc[holdout_idx].copy().reset_index(drop=True) if holdout_idx else pd.DataFrame()
+    
+    # Log coverage statistics
+    if logger:
+        logger.info(f"\n{'='*50}")
+        logger.info(f"COVERAGE-AWARE SPLIT RESULTS")
+        logger.info(f"{'='*50}")
+        logger.info(f"Total samples: {n_total}")
+        logger.info(f"Training samples: {len(train_df)} ({100*len(train_df)/n_total:.1f}%)")
+        logger.info(f"Holdout samples: {len(holdout_df)} ({100*len(holdout_df)/n_total:.1f}%)")
+        logger.info(f"\nStratification groups ({stratify_col}): {len(groups)}")
+        logger.info(f"  Full coverage (n >= {2*min_train_per_combo}): {len(coverage_stats['full_coverage'])}")
+        logger.info(f"  Partial coverage: {len(coverage_stats['partial_coverage'])}")
+        logger.info(f"  Sparse (all in train): {len(coverage_stats['sparse'])}")
+        
+        if coverage_stats['sparse']:
+            logger.info(f"\nSparse groups (100% in training):")
+            for grp, cnt in coverage_stats['sparse'][:10]:
+                logger.info(f"    {grp}: {cnt} samples")
+            if len(coverage_stats['sparse']) > 10:
+                logger.info(f"    ... and {len(coverage_stats['sparse'])-10} more")
+        
+        # Verify coverage
+        train_groups = set(train_df[stratify_col].unique())
+        missing_in_train = set(groups) - train_groups
+        if missing_in_train:
+            logger.warning(f"WARNING: Groups missing from training: {missing_in_train}")
+        else:
+            logger.info(f"\n✓ All {len(groups)} groups represented in training")
+    
+    return train_df, holdout_df
+
+
 def get_season(date_val):
     """
     Map a timestamp to Australian meteorological seasons.

@@ -49,28 +49,53 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
     plt.yticks(fontsize=9)
     plt.grid(True, alpha=0.3)
     
-    # 2. GROUP LEAKAGE CHECK
+    # 2. SPECIES × SEASON COVERAGE MATRIX (Training only)
     plt.subplot(2, 4, 2)
-    if group_col in all_data.columns:
-        group_splits = all_data.groupby(group_col)['split'].apply(lambda x: '+'.join(sorted(x.unique()))).reset_index()
-        leakage_groups = group_splits[group_splits['split'].str.contains(r'\+')]
+    if 'Species' in all_data.columns and 'Season' in all_data.columns:
+        # Get training data coverage
+        train_data = all_data[all_data['split'] == 'train']
+        coverage_matrix = pd.crosstab(train_data['Species'], train_data['Season'])
         
-        split_counts = group_splits['split'].value_counts()
-        colors = ['green' if '+' not in split else 'red' for split in split_counts.index]
-        bars = plt.bar(range(len(split_counts)), split_counts.values, color=colors, alpha=0.8)
-        plt.xticks(range(len(split_counts)), split_counts.index, rotation=45, fontsize=9, ha='right')
-        plt.title(f'{group_col} Groups by Split\n{len(leakage_groups)} groups have leakage', fontsize=12, fontweight='bold')
-        plt.ylabel(f'Number of {group_col}s', fontsize=10)
-        plt.grid(True, alpha=0.3, axis='y')
+        # Ensure all seasons are present (in order)
+        season_order = ['summer', 'autumn', 'winter', 'spring']
+        for s in season_order:
+            if s not in coverage_matrix.columns:
+                coverage_matrix[s] = 0
+        coverage_matrix = coverage_matrix[season_order]
         
-        # Add value labels on bars
-        for bar, count in zip(bars, split_counts.values):
-            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
-                    str(count), ha='center', va='bottom', fontsize=9, fontweight='bold')
+        # Create heatmap
+        import matplotlib.colors as mcolors
+        cmap = mcolors.LinearSegmentedColormap.from_list('coverage', ['#ffcccc', '#66ff66', '#006600'])
+        
+        im = plt.imshow(coverage_matrix.values, cmap=cmap, aspect='auto')
+        plt.colorbar(im, label='Train Samples')
+        
+        # Labels
+        plt.xticks(range(len(coverage_matrix.columns)), coverage_matrix.columns, fontsize=9)
+        plt.yticks(range(len(coverage_matrix.index)), 
+                   [s[:12] + '..' if len(s) > 12 else s for s in coverage_matrix.index], 
+                   fontsize=7)
+        
+        # Add count annotations
+        for i in range(len(coverage_matrix.index)):
+            for j in range(len(coverage_matrix.columns)):
+                val = coverage_matrix.iloc[i, j]
+                color = 'white' if val > coverage_matrix.values.max() * 0.6 else 'black'
+                plt.text(j, i, str(val), ha='center', va='center', fontsize=7, color=color)
+        
+        # Count coverage gaps
+        zero_cells = (coverage_matrix.values == 0).sum()
+        total_cells = coverage_matrix.size
+        coverage_pct = 100 * (total_cells - zero_cells) / total_cells
+        
+        plt.title(f'Species×Season Coverage (Train)\n{coverage_pct:.0f}% covered ({zero_cells} gaps)', 
+                  fontsize=11, fontweight='bold')
+        plt.xlabel('Season', fontsize=10)
+        plt.ylabel('Species', fontsize=10)
     else:
-        plt.text(0.5, 0.5, f'{group_col} column not found', ha='center', va='center', 
+        plt.text(0.5, 0.5, 'Species/Season columns not found', ha='center', va='center', 
                 transform=plt.gca().transAxes, fontsize=11, style='italic', color='red')
-        plt.title(f'{group_col} Analysis - Column Missing', fontsize=12, fontweight='bold', color='red')
+        plt.title('Coverage Matrix - Columns Missing', fontsize=12, fontweight='bold', color='red')
     
     # 3. SPECIES DISTRIBUTION
     plt.subplot(2, 4, 3)
@@ -188,7 +213,11 @@ def generate_leakage_report(all_data, plots_dir, fold=None, group_col='SessionID
         f.write("=" * 50 + "\n\n")
         
         # 1. Group leakage (using the specified grouping column)
-        if group_col in all_data.columns:
+        if group_col is None or group_col == 'None' or str(group_col).lower() == 'null':
+            f.write(f"1. GROUP LEAKAGE ANALYSIS:\n")
+            f.write(f"   Group-based splitting disabled (coverage-aware mode)\n")
+            f.write(f"   ✓ Using coverage-first splitting strategy\n")
+        elif group_col in all_data.columns:
             group_splits = all_data.groupby(group_col)['split'].apply(lambda x: sorted(x.unique())).reset_index()
             leaky_groups = group_splits[group_splits['split'].apply(len) > 1]
             
@@ -203,7 +232,7 @@ def generate_leakage_report(all_data, plots_dir, fold=None, group_col='SessionID
                 f.write(f"   ✓ No {group_col} leakage detected\n")
         else:
             f.write(f"1. GROUP LEAKAGE ({group_col}):\n")
-            f.write(f"   ERROR: Column '{group_col}' not found in data\n")
+            f.write(f"   Note: Column '{group_col}' not in data (may be intentional for coverage-aware split)\n")
         f.write("\n")
         
         # 2. Temporal leakage

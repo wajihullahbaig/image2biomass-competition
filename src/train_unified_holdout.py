@@ -416,29 +416,25 @@ def main():
 
     train_transform, val_transform = get_image_data_transforms()
 
-    # 2. Leakage-free train/validation/holdout split ensuring group integrity
-    groupby_key = cfg.split.groupby_key
+    # 2. Coverage-aware train/holdout split ensuring species×season coverage
     strat_key = cfg.split.stratification_key
     holdout_pct = cfg.split.holdout_pct
+    min_train_per_combo = getattr(cfg.split, 'min_train_per_combo', 2)
     
-    logger.info(f"Using groupby_key='{groupby_key}' and stratification_key='{strat_key}'")
+    logger.info(f"Using coverage-aware split with stratification_key='{strat_key}'")
     
-    # Import the new splitting function
-    from common import leakage_free_split
+    # Import the coverage-aware splitting function
+    from common import coverage_aware_split
     
-    # Create leakage-free splits - this replaces the random holdout approach
-    # Use a temporary train/val split for initial holdout separation
-    initial_train, temp_val, hold_df = leakage_free_split(
+    # Create coverage-aware splits - ensures all species×season combos in training
+    dev_df, hold_df = coverage_aware_split(
         df, 
-        group_col=groupby_key,
         stratify_col=strat_key,
+        min_train_per_combo=min_train_per_combo,
         holdout_pct=holdout_pct,
-        val_pct=0.01,  # Very small val for now, will be handled by CV
-        random_state=313
+        random_state=313,
+        logger=logger
     )
-    
-    # Combine initial_train and temp_val for CV splitting (this becomes dev_df)
-    dev_df = pd.concat([initial_train, temp_val], ignore_index=True)
     
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
     
@@ -451,7 +447,7 @@ def main():
     hold_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
 
     # 3. Choose fold strategy from config keys
-    strat_key = cfg.split.stratification_key
+    groupby_key = cfg.split.groupby_key
     logger.info(f"Using groupby_key='{groupby_key}' and stratification_key='{strat_key}'")
 
     # dev/hold already have deterministic grouping keys from pre-split step

@@ -84,6 +84,7 @@ class BiomassFeatureTransform:
         df['Species_Sampling_Date'] = df.apply(lambda row: get_key1_specie_pair(row, key1='Sampling_Date',flip=True), axis=1)
         df['State_Sampling_Date'] = df.apply(lambda r: f"{r['State']}_{r['Sampling_Date']}", axis=1)
         df['Season_Sampling_Date'] = df.apply(lambda r: f"{r['Season']}_{r['Sampling_Date']}", axis=1)
+        df['FunctionalGroup_Sampling_Date'] = df.apply(lambda r: f"{r['FunctionalGroup']}_{r['Sampling_Date']}", axis=1)
 
         return df
 

@@ -9,7 +9,7 @@ preprocessing:
 hyperparameters:
   batch_size: 16
   learning_rate: 0.0005
-  n_folds: 4
+  n_folds: 3
   epochs: 30
   weight_decay: 0.05
   early_stop_patience: 15
@@ -39,7 +39,7 @@ features:
   use_bin_features: true
   bin_encoding: "ordinal"
   use_species_count_feature: true
-  biomass_composite_bins: 4
+  biomass_composite_bins: 3
 
 loss:
   use_standardized_loss: true
@@ -97,8 +97,8 @@ split:
   holdout_pct: 0.10
   sparse_threshold: 4
   small_threshold: 6
-  groupby_key: "State_Sampling_Date"
-  stratification_key: ""
+  groupby_key: "Sampling_Date"
+  stratification_key: "FunctionalGroup"
 
 seasons:
   month_map:

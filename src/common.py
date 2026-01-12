@@ -363,6 +363,7 @@ def engineer_features(wide, logger):
     wide["Season_State_Species"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Species']}", axis=1)
     wide["State_Season"] = wide.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
     wide['Season_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Season'), axis=1)
+    wide['Species_Season'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Season', flip=True), axis=1)
     wide['Species_Sampling_Date'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Sampling_Date',flip=True), axis=1)
     wide['State_Sampling_Date'] = wide.apply(lambda r: f"{r['State']}_{r['Sampling_Date']}", axis=1)
     wide['Season_Sampling_Date'] = wide.apply(lambda r: f"{r['Season']}_{r['Sampling_Date']}", axis=1)
@@ -433,16 +434,19 @@ def leakage_free_split(df, group_col='SessionID', stratify_col='State_Species',
     """
     np.random.seed(random_state)
     
-    # Create group-level summary for splitting
-    group_summary = df.groupby(group_col).agg({
-        'Sampling_Date': ['min', 'max', 'count'],
-        stratify_col: 'first',
-        'State': 'first',
-        'Species': 'first',
-        'Dry_Total_g': 'mean'
-    }).reset_index()
+    # Create group-level summary for splitting using named aggregation
+    # to avoid collisions if stratify_col is one of the other columns.
+    group_summary = df.groupby(group_col).agg(
+        date_min=('Sampling_Date', 'min'),
+        date_max=('Sampling_Date', 'max'),
+        sample_count=('Sampling_Date', 'count'),
+        stratify_key=(stratify_col, 'first'),
+        state_first=('State', 'first'),
+        species_first=('Species', 'first'),
+        biomass_mean=('Dry_Total_g', 'mean')
+    ).reset_index()
     
-    # Flatten column names
+    # Flatten column names to match function expectation
     group_summary.columns = [
         group_col, 'date_min', 'date_max', 'sample_count', 
         stratify_col, 'state', 'species', 'biomass_mean'

@@ -28,7 +28,6 @@ training:
   aux_feat_weight: 15.0
   species_feat_weight: 10.0
   taxonomy_feat_weight: 5.0
-  
 
 augmentation:
   tile_prob: 0.05
@@ -44,7 +43,7 @@ features:
 loss:
   use_standardized_loss: true
   use_weighted_regression_loss: true
-  reg_loss_type: "smoothl1"  # options: smoothl1, mse
+  reg_loss_type: "smoothl1" # options: smoothl1, mse
 
 targets:
   cols: ["Dry_Green_g", "Dry_Dead_g", "Dry_Clover_g", "GDM_g", "Dry_Total_g"]
@@ -97,8 +96,8 @@ split:
   holdout_pct: 0.10
   sparse_threshold: 4
   small_threshold: 6
-  groupby_key: "SessionID"
-  stratification_key: "biomass_binned_composite"
+  groupby_key: "Sampling_Date"
+  stratification_key: "Species_Season"
 
 seasons:
   month_map:

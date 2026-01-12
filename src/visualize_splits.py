@@ -141,20 +141,28 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
         plt.legend(['Train', 'Validation', 'Holdout'], fontsize=9)
         plt.grid(True, alpha=0.3, axis='y')
     
-    # 6. BIOMASS DISTRIBUTION COMPARISON
+    # 6. ALL 5 BIOMASS TARGETS DISTRIBUTION (log+1 scale)
     plt.subplot(2, 4, 6)
-    biomass_col = 'Dry_Total_g'
-    if biomass_col in all_data.columns:
-        for split, color in [('train', 'blue'), ('validation', 'red'), ('holdout', 'green')]:
-            split_data = all_data[all_data['split'] == split]
-            plt.hist(np.log1p(split_data[biomass_col]), bins=30, alpha=0.7, 
-                    label=f'{split} (n={len(split_data)})', color=color, density=True)
-        plt.title('Biomass Distribution (log scale)', fontsize=12, fontweight='bold')
-        plt.xlabel('log(Dry_Total_g + 1)', fontsize=10)
+    biomass_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
+    available_cols = [c for c in biomass_cols if c in all_data.columns]
+    
+    if available_cols:
+        # Plot training data only with different colors per target
+        train_data = all_data[all_data['split'] == 'train']
+        colors = ['#2ecc71', '#e74c3c', '#9b59b6', '#3498db', '#f39c12']  # Green, Red, Purple, Blue, Orange
+        labels = ['Green', 'Dead', 'Clover', 'GDM', 'Total']
+        
+        for i, (col, color, label) in enumerate(zip(available_cols, colors, labels)):
+            if col in train_data.columns:
+                values = np.log1p(train_data[col].fillna(0))
+                plt.hist(values, bins=25, alpha=0.5, color=color, label=label, density=True)
+        
+        plt.title('All Targets Distribution (Train, log+1)', fontsize=11, fontweight='bold')
+        plt.xlabel('log(biomass_g + 1)', fontsize=10)
         plt.ylabel('Density', fontsize=10)
         plt.xticks(fontsize=9)
         plt.yticks(fontsize=9)
-        plt.legend(fontsize=9)
+        plt.legend(fontsize=8, loc='upper right')
         plt.grid(True, alpha=0.3)
     
     # 7. SEASON DISTRIBUTION
@@ -197,7 +205,55 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
                dpi=200, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
     
+    # NEW: Generate the 5-target distribution report requested by user
+    visualize_multi_target_distributions(all_data, plots_dir, fold)
+    
     generate_leakage_report(all_data, plots_dir, fold, group_col)
+
+def visualize_multi_target_distributions(all_data, plots_dir, fold=None):
+    """Generate a separate figure showing distributions for all 5 targets across splits."""
+    biomass_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
+    available_cols = [c for c in biomass_cols if c in all_data.columns]
+    
+    if not available_cols:
+        return
+
+    # Create a 1x5 or 5x1 or 2x3 grid. 5x1 stack is good for vertical comparison.
+    # Let's use 2x3 to keep it readable.
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+    
+    # User requested colors: train:green, validation:red, holdout:blue
+    colors = {'train': '#2ecc71', 'validation': '#e74c3c', 'holdout': '#3498db'}
+    split_labels = {'train': 'Train', 'validation': 'Validation', 'holdout': 'Holdout'}
+    
+    for i, col in enumerate(available_cols):
+        ax = axes[i]
+        for split in ['train', 'validation', 'holdout']:
+            split_data = all_data[all_data['split'] == split]
+            if not split_data.empty:
+                vals = np.log1p(split_data[col].fillna(0))
+                ax.hist(vals, bins=25, alpha=0.5, color=colors[split], 
+                        label=f"{split_labels[split]} (n={len(split_data)})", density=True)
+        
+        ax.set_title(f'Target: {col}', fontsize=12, fontweight='bold')
+        ax.set_xlabel('log(grams + 1)', fontsize=10)
+        ax.set_ylabel('Density', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+
+    # Hide the 6th empty subplot if only 5 columns
+    if len(available_cols) < 6:
+        axes[5].axis('off')
+
+    fold_str = f"Fold {fold} " if fold is not None else ""
+    plt.suptitle(f'{fold_str}Biomass Target Distributions (Log Scale)', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    
+    fold_suffix = f"_fold{fold}" if fold is not None else ""
+    save_path = os.path.join(plots_dir, f'split_analysis{fold_suffix}_targets.png')
+    plt.savefig(save_path, dpi=180, bbox_inches='tight', facecolor='white')
+    plt.close()
 
 def generate_leakage_report(all_data, plots_dir, fold=None, group_col='SessionID'):
     """Generate detailed text report of potential leakage issues.
@@ -208,7 +264,7 @@ def generate_leakage_report(all_data, plots_dir, fold=None, group_col='SessionID
     fold_suffix = f"_fold{fold}" if fold is not None else ""
     report_path = os.path.join(plots_dir, f'leakage_report{fold_suffix}.txt')
     
-    with open(report_path, 'w') as f:
+    with open(report_path, 'w', encoding='utf-8') as f:
         f.write("DATA SPLIT LEAKAGE ANALYSIS REPORT\n")
         f.write("=" * 50 + "\n\n")
         

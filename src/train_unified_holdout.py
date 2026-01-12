@@ -8,13 +8,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.model_selection import GroupKFold, StratifiedKFold, KFold
-try:
-    from sklearn.model_selection import StratifiedGroupKFold
-    _HAS_SGF = True
-except Exception:
-    StratifiedGroupKFold = None
-    _HAS_SGF = False
+from sklearn.model_selection import StratifiedKFold
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -381,7 +375,6 @@ def save_metadata(session_dir, species_list, target_cols, num_aux):
         'num_species': len(species_list),
         'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         'tile_augmentation': 'enabled',
-        'groupby_key': cfg.split.groupby_key,
         'stratification_key': cfg.split.stratification_key,
         'holdout_pct': cfg.split.holdout_pct
     }
@@ -446,66 +439,17 @@ def main():
     logger.info(f"Random Holdout: {len(hold_df)}")
     hold_df.to_csv(os.path.join(splits_dir, "global_holdout.csv"), index=False)
 
-    # 3. Choose fold strategy from config keys
-    groupby_key = cfg.split.groupby_key
-    logger.info(f"Using groupby_key='{groupby_key}' and stratification_key='{strat_key}'")
-
-    # dev/hold already have deterministic grouping keys from pre-split step
-
+    # 3. StratifiedKFold CV on Species_Season for balanced folds
     best_overall_score = -float('inf')
-
-    if groupby_key and strat_key:
-        # Prefer StratifiedGroupKFold when available
-        if groupby_key not in dev_df.columns:
-            raise ValueError(f"Configured groupby_key '{groupby_key}' not found in dev_df.")
-        # Build strat labels inline if needed (avoid learned features here)
-        if strat_key in dev_df.columns:
-            y_strat = dev_df[strat_key]
-        elif strat_key == 'biomass_binned_composite':
-            from sklearn.preprocessing import KBinsDiscretizer
-            wts = cfg.targets.official_weights
-            tgt_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
-            comp = np.zeros(len(dev_df), dtype=float)
-            for col, wt in zip(tgt_cols, wts):
-                if col in dev_df.columns:
-                    comp += wt * dev_df[col].astype(float).values
-            kbd = KBinsDiscretizer(n_bins=int(getattr(cfg.features, 'biomass_composite_bins', 5)), encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
-            y_strat = kbd.fit_transform(comp.reshape(-1, 1)).astype(int).ravel()
-        else:
-            raise ValueError(f"Configured stratification_key '{strat_key}' not found in dev_df and no inline builder is defined.")
-        if _HAS_SGF:
-            sgkf = StratifiedGroupKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
-            splitter = sgkf.split(dev_df, y=y_strat, groups=dev_df[groupby_key])
-            split_name = 'StratifiedGroupKFold'
-        else:
-            logging.getLogger("System Logger").warning("StratifiedGroupKFold not available; falling back to GroupKFold (no strat balance across folds). Consider upgrading scikit-learn >= 1.1.")
-            gkf = GroupKFold(n_splits=cfg.hyperparameters.n_folds)
-            splitter = gkf.split(dev_df, groups=dev_df[groupby_key])
-            split_name = 'GroupKFold'
-        fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
-    elif groupby_key:
-        # GroupKFold path
-        if groupby_key not in dev_df.columns:
-            raise ValueError(f"Configured groupby_key '{groupby_key}' not found in dev_df.")
-        gkf = GroupKFold(n_splits=cfg.hyperparameters.n_folds)
-        splitter = gkf.split(dev_df, groups=dev_df[groupby_key])
-        fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
-        split_name = 'GroupKFold'
-    elif strat_key:
-        # StratifiedKFold path
-        if strat_key not in dev_df.columns:
-            raise ValueError(f"Configured stratification_key '{strat_key}' not found in dev_df.")
-        skf = StratifiedKFold(n_splits=cfg.hyperparameters.n_folds)
-        splitter = skf.split(dev_df, dev_df[strat_key])
-        fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
-        split_name = 'StratifiedKFold'
-    else:
-        # Fallback: simple KFold when no grouping or stratification key is provided
-        logger.info("No groupby/stratification key configured; falling back to simple KFold.")
-        kf = KFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
-        splitter = kf.split(dev_df)
-        fold_iter = ((dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) for train, val in splitter)
-        split_name = 'KFold'
+    
+    if strat_key not in dev_df.columns:
+        raise ValueError(f"Stratification key '{strat_key}' not found in dev_df.")
+    
+    skf = StratifiedKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
+    splitter = skf.split(dev_df, dev_df[strat_key])
+    fold_iter = [(dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) 
+                 for train, val in splitter]
+    split_name = 'StratifiedKFold'
 
     per_fold_best = []
     for fold, (train_df_raw, val_df_raw) in enumerate(fold_iter):
@@ -519,23 +463,17 @@ def main():
         logger.info(f"Train:   n={len(train_df)}, sessions={train_df['SessionID'].nunique() if 'SessionID' in train_df.columns else 'N/A'}")
         logger.info(f"Val:     n={len(val_df)}, sessions={val_df['SessionID'].nunique() if 'SessionID' in val_df.columns else 'N/A'}")
         logger.info(f"Holdout: n={len(hold_df)}, sessions={hold_df['SessionID'].nunique() if 'SessionID' in hold_df.columns else 'N/A'}")
-
-        if 'State' in train_df.columns:
-            logger.info(f"States in Train: {sorted(train_df['State'].unique())}")
-            logger.info(f"States in Val:   {sorted(val_df['State'].unique())}")
-            logger.info(f"States in Hold:  {sorted(hold_df['State'].unique())}")
-            
+   
         # Log species counts across train/val/hold using a formatted table helper
         log_species_table(logger, train_df, val_df, hold_df, species_col=species_col, title='Species in Fold')
         
         # Generate split analysis visualizations
-        if fold == 0:  # Only for first fold to avoid cluttering
-            from visualize_splits import analyze_splits_in_training
-            try:
-                analyze_splits_in_training(train_df, val_df, hold_df, session_dir, fold,group_col=groupby_key)
-                logger.info("Split analysis visualizations saved to split_analysis/")
-            except Exception as e:
-                logger.warning(f"Could not generate split analysis: {e}")
+        from visualize_splits import analyze_splits_in_training
+        try:
+            analyze_splits_in_training(train_df, val_df, hold_df, session_dir, fold, group_col=None)
+            logger.info("Split analysis visualizations saved to split_analysis/")
+        except Exception as e:
+            logger.warning(f"Could not generate split analysis: {e}")
 
         log_fold_details(logger, train_df, val_df)
 
@@ -590,7 +528,7 @@ def main():
         n_aux = dummy_ds[0]['aux_feats'].shape[0]
         model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
 
-        if fold == 0 or fold == 1:
+        if fold == 0:
             save_metadata(session_dir, cfg.species_taxonomy.core_species, cfg.targets.cols, n_aux)
 
         n_upsampled = len(train_df)

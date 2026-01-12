@@ -96,8 +96,8 @@ UPSAMPLE_CONFIG = {
 # ===== TEMPORAL SPLIT STRATEGY =====
 SPLIT_CONFIG = {
     'holdout_pct': cfg.split.holdout_pct,
-    'sparse_threshold': cfg.split.sparse_threshold,
-    'small_threshold': cfg.split.small_threshold,
+    'stratification_key': cfg.split.stratification_key,
+    'min_train_per_combo': cfg.split.min_train_per_combo,
 }
 
 # ====================== AUSTRALIAN SEASONS ======================
@@ -130,9 +130,9 @@ def config_str():
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
         f"TAXONOMY_FEAT_WEIGHT: {TAXONOMY_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
-        f"STRATIFY: State + Dominant Species (Region-Aware)",
+        f"STRATIFY: {SPLIT_CONFIG['stratification_key']} (Coverage-Aware)",
         f"UPSAMPLE: Enabled={UPSAMPLE_CONFIG['enabled']} (target={UPSAMPLE_CONFIG['target_min_samples']})",
-        f"SPLIT: Adaptive temporal (sparse_threshold={SPLIT_CONFIG['sparse_threshold']})",
+        f"SPLIT: Coverage-Aware (min_train={SPLIT_CONFIG['min_train_per_combo']})",
         f"SEASONS: AU (Summer/Autumn/Winter/Spring)",
         f"SEASONAL_DRIFT: {UPSAMPLE_CONFIG['seasonal_drift']} (strength={UPSAMPLE_CONFIG['drift_strength']})",
         f"MIN_TRAIN_SAMPLES: {MIN_TRAIN_SAMPLES}",

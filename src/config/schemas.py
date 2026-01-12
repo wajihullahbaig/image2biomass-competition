@@ -84,15 +84,8 @@ class UpsampleConfig:
 @dataclass
 class SplitConfig:
     holdout_pct: float
-    sparse_threshold: int
-    small_threshold: int
-    # New optional keys to control unified training behavior
-    # Column name to group folds (e.g., 'GroupKey', 'SessionID')
-    groupby_key: str | None = None
-    # Column name used for stratification (e.g., 'State_Species')
-    stratification_key: str | None = None
-    # Minimum samples per combo guaranteed in training (for coverage-aware split)
-    min_train_per_combo: int = 2
+    stratification_key: str  # Key for coverage-aware splitting (e.g., 'Species_Season')
+    min_train_per_combo: int = 2  # Minimum samples per combo guaranteed in training
 
 @dataclass
 class SeasonsConfig:

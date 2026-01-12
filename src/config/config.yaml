@@ -94,9 +94,6 @@ upsample:
 
 split:
   holdout_pct: 0.15
-  sparse_threshold: 4
-  small_threshold: 6
-  groupby_key: null # Disabled - using coverage-aware split instead
   stratification_key: "Species_Season" # Key for coverage-aware splitting
   min_train_per_combo: 2 # Minimum samples per combo guaranteed in training
 

@@ -60,14 +60,15 @@ def plot_training_history(history, fold, session_dir):
     if 'holdout_loss_gdm' in history and len(history['holdout_loss_gdm']) > 0:
         axes[4].plot([float(x) for x in history['holdout_loss_gdm']], label='HO GDM', color='tab:olive', linestyle='--')
     
-    # Fallback to old naming if new naming not available
-    if not any(f'train_loss_{t}' in history for t in ['total', 'gdm']):
-        if 'train_loss_t' in history and len(history['train_loss_t']) > 0:
-            axes[4].plot([float(x) for x in history['train_loss_t']], label='Train Total', color='tab:blue')
-        if 'val_loss_t' in history and len(history['val_loss_t']) > 0:
-            axes[4].plot([float(x) for x in history['val_loss_t']], label='Val Total', color='tab:red')
+    # Green losses
+    if 'train_loss_green' in history and len(history['train_loss_green']) > 0:
+        axes[4].plot([float(x) for x in history['train_loss_green']], label='Train Green', color='tab:cyan', linestyle=':')
+    if 'val_loss_green' in history and len(history['val_loss_green']) > 0:
+        axes[4].plot([float(x) for x in history['val_loss_green']], label='Val Green', color='tab:brown', linestyle=':')
+    if 'holdout_loss_green' in history and len(history['holdout_loss_green']) > 0:
+        axes[4].plot([float(x) for x in history['holdout_loss_green']], label='HO Green', color='tab:gray', linestyle=':')
     
-    axes[4].set_title('Derived Losses (Total & GDM)')
+    axes[4].set_title('Primary Losses (Total, GDM, Green)')
 
     # 6. R2 Metrics (UPDATED)
     try_plot(5, 'train_r2', 'Train R2', 'tab:blue')
@@ -116,8 +117,8 @@ def plot_training_history(history, fold, session_dir):
     axes_b = axes_b.flatten()
     
     bio_map = [
-        ('loss_c', 'Clover Loss'), ('loss_d', 'Dead Loss'), ('loss_g', 'Green Loss'),
-        ('loss_t', 'Total Loss'), ('loss_gdm', 'GDM Loss')
+        ('loss_clover', 'Clover Loss'), ('loss_dead', 'Dead Loss'), ('loss_green', 'Green Loss'),
+        ('loss_total', 'Total Loss'), ('loss_gdm', 'GDM Loss')
     ]
     
     for idx, (suffix, title) in enumerate(bio_map):

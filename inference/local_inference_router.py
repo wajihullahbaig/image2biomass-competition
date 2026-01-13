@@ -15,10 +15,10 @@ from torchvision.utils import save_image
 import math
 
 import random
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
-torch.cuda.manual_seed_all(42)
+random.seed(313)
+np.random.seed(313)
+torch.manual_seed(313)
+torch.cuda.manual_seed_all(313)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 # ====================== CONFIGURATION ======================
@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260111_201727'
+MODEL_DIR = './logs/unified_holdout_20260113_190505'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256

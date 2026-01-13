@@ -72,6 +72,16 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(128, 3), # [Log_Total, Log_GDM, Log_Green]
         )
 
+        # 5b. Dead Ratio Head (indirect Dead via Total)
+        # Predicts Dead_to_Total ratio in [0,1]
+        self.dead_ratio_head = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, 1)
+        )
+
         self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
         
         self._init_biomass_head()
@@ -111,5 +121,8 @@ class BiomassUnifiedModel(nn.Module):
         log_green = log_preds[:, 2:3]
         biomass_out = torch.cat([log_total, log_gdm, log_green], dim=1)
         
-        return biomass_out, aux_out, species_logits, taxonomy_logits
+        # Dead-to-Total ratio in [0,1]
+        dead_ratio = torch.sigmoid(self.dead_ratio_head(combined_feats))
+        
+        return biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio
 

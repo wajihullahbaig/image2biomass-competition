@@ -64,7 +64,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         optimizer.zero_grad()
 
         with torch.amp.autocast('cuda'):
-            biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
+            biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio = model(images)
 
             bio_out_comp = biomass_out[:, :3]
             targ_comp = targets_log[:, :3]
@@ -101,7 +101,9 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             pred_green = torch.expm1(biomass_out[:, 2:3])
             
             pred_clover = torch.clamp(pred_gdm - pred_green, min=0)
-            pred_dead = torch.clamp(pred_total - pred_gdm, min=0)
+            # Indirect Dead via predicted ratio
+            pred_dead_ratio = dead_ratio.clamp(0.0, 1.0)
+            pred_dead = torch.clamp(pred_total * pred_dead_ratio, min=0)
             
             # Model predicts [Log_Total, Log_GDM, Log_Green], so targets_g has shape [B, 3]
             # targets_g[:, 0] = Total, targets_g[:, 1] = GDM, targets_g[:, 2] = Green
@@ -139,7 +141,13 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             loss_gdm = loss_gdm * cfg.training.biomass_feat_weight
             loss_green = loss_green * cfg.training.biomass_feat_weight
 
-            total_loss = loss_bio_comp + loss_aux + loss_sp + loss_tax + loss_total + loss_gdm + loss_green
+            # Ratio-based Dead loss (log space)
+            pred_dead_log = torch.log1p(pred_dead + 1e-8)
+            targ_dead_log = torch.log1p(targ_dead + 1e-8)
+            reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
+            loss_dead_indirect = reg(pred_dead_log, targ_dead_log) * cfg.training.biomass_feat_weight
+
+            total_loss = loss_bio_comp + loss_aux + loss_sp + loss_tax + loss_total + loss_gdm + loss_green + loss_dead_indirect
 
         if torch.isnan(total_loss):
             if logger:
@@ -172,6 +180,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             targ_dead_log = torch.log1p(targ_dead + 1e-8)
             metrics['train_loss_clover'] += nn.functional.mse_loss(pred_clover_log.squeeze(), targ_clover_log.squeeze()).item() * B
             metrics['train_loss_dead'] += nn.functional.mse_loss(pred_dead_log.squeeze(), targ_dead_log.squeeze()).item() * B
+            metrics['train_loss_dead_indirect'] += loss_dead_indirect.item() * B
             
             metrics['train_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
             metrics['train_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
@@ -228,25 +237,28 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
             accum_aux = 0
             accum_sp_probs = 0
             accum_tax_probs = 0
+            accum_dead_ratio = 0
             for view_name, transform_fn in tta_views:
                 img_aug = transform_fn(images)
                 if session_dir is not None:
                     save_tta_images(img_aug, view_name, batch_idx, fold, epoch, session_dir)
-                bio_out, aux_out, sp_logits, tax_logits = model(img_aug)
+                bio_out, aux_out, sp_logits, tax_logits, dead_ratio = model(img_aug)
                 accum_bio_linear += torch.expm1(bio_out)
                 accum_aux += aux_out
                 accum_sp_probs += torch.sigmoid(sp_logits)
                 accum_tax_probs += torch.softmax(tax_logits, dim=1)
+                accum_dead_ratio += dead_ratio
             avg_bio_linear = accum_bio_linear / len(tta_views)
             avg_aux = accum_aux / len(tta_views)
             avg_sp_probs = accum_sp_probs / len(tta_views)
             avg_tax_probs = accum_tax_probs / len(tta_views)
+            dead_ratio = accum_dead_ratio / len(tta_views)
             biomass_out = torch.log1p(avg_bio_linear)
             aux_out = avg_aux
             species_probs = avg_sp_probs
             taxonomy_log_probs = torch.log(avg_tax_probs + 1e-9)
         else:
-            biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
+            biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio = model(images)
 
         bio_out_comp = biomass_out[:, :3]
         targ_comp = targets_log[:, :3]
@@ -287,7 +299,9 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
         pred_green = torch.expm1(biomass_out[:, 2:3])
         
         pred_clover = torch.clamp(pred_gdm - pred_green, min=0)
-        pred_dead = torch.clamp(pred_total - pred_gdm, min=0)
+        # Indirect Dead via predicted ratio
+        pred_dead_ratio = dead_ratio.clamp(0.0, 1.0)
+        pred_dead = torch.clamp(pred_total * pred_dead_ratio, min=0)
         
         # Model predicts [Log_Total, Log_GDM, Log_Green], so targets_g has shape [B, 3]
         # targets_g[:, 0] = Total, targets_g[:, 1] = GDM, targets_g[:, 2] = Green
@@ -339,6 +353,7 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
         targ_dead_log = torch.log1p(targ_dead + 1e-8)
         metrics[f'{prefix}_loss_clover'] += nn.functional.mse_loss(pred_clover_log.squeeze(), targ_clover_log.squeeze()).item() * B
         metrics[f'{prefix}_loss_dead'] += nn.functional.mse_loss(pred_dead_log.squeeze(), targ_dead_log.squeeze()).item() * B
+        metrics[f'{prefix}_loss_dead_indirect'] += nn.functional.mse_loss(pred_dead_log.squeeze(), targ_dead_log.squeeze()).item() * B
         metrics[f'{prefix}_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
         metrics[f'{prefix}_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
         metrics[f'{prefix}_loss_int_mul']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
@@ -495,12 +510,13 @@ def main():
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
         val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
 
+        # Train targets must align with model outputs: [Total, GDM, Green]
         train_ds_base = TiledBiomassDataset(
             train_df,
             transform=train_transform,
             mode='training',
             tile_prob=cfg.augmentation.tile_prob,
-            target_cols=['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
+            target_cols=['Dry_Total_g', 'GDM_g', 'Dry_Green_g']
         )
         train_ds = TiledMixupDataset(train_ds_base, prob=cfg.augmentation.mixup_prob, alpha=cfg.augmentation.mixup_alpha)
 

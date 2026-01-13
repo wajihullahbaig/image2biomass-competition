@@ -118,7 +118,7 @@ def plot_training_history(history, fold, session_dir):
     
     bio_map = [
         ('loss_clover', 'Clover Loss'), ('loss_dead', 'Dead Loss'), ('loss_green', 'Green Loss'),
-        ('loss_total', 'Total Loss'), ('loss_gdm', 'GDM Loss')
+        ('loss_total', 'Total Loss'), ('loss_gdm', 'GDM Loss'), ('loss_dead_indirect', 'Dead Indirect Loss')
     ]
     
     for idx, (suffix, title) in enumerate(bio_map):
@@ -314,6 +314,7 @@ def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, curre
         ("Species",      fmt_num(train_metrics.get('train_sp')),   fmt_num(val_metrics.get('val_sp')),   fmt_num(hol_metrics.get('holdout_sp'))),
         ("Taxonomy",     fmt_num(train_metrics.get('train_tax')),  fmt_num(val_metrics.get('val_tax')),  fmt_num(hol_metrics.get('holdout_tax'))),
         ("R2",           fmt_num(train_metrics.get('train_r2')),   fmt_num(v_r2),                         fmt_num(h_r2)),
+        ("Dead (Indirect)", fmt_num(train_metrics.get('train_loss_dead_indirect')), fmt_num(val_metrics.get('val_loss_dead_indirect')), fmt_num(hol_metrics.get('holdout_loss_dead_indirect'))),
     ]
 
     # Compute column widths

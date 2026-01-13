@@ -107,8 +107,7 @@ class BiomassFeatureTransform:
         # Fit composite bins
         try:
             wts = cfg.targets.official_weights
-            #tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-            tgt_cols = ['Dry_Total_g']
+            tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
             comp = np.zeros(len(df), dtype=float)
             for col, wt in zip(tgt_cols, wts):
                 if col in df.columns:
@@ -142,8 +141,7 @@ class BiomassFeatureTransform:
         # Composite
         if self.comp_kbd is not None:
             wts = cfg.targets.official_weights
-            #tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-            tgt_cols = ['Dry_Total_g']
+            tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
             comp = np.zeros(len(df), dtype=float)
             for col, wt in zip(tgt_cols, wts):
                 if col in df.columns:
@@ -189,8 +187,7 @@ def apply_deterministic_features(df: pd.DataFrame) -> pd.DataFrame:
     # Create a global composite biomass bin column for use as a stratification key
     try:
         wts = cfg.targets.official_weights
-        #tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-        tgt_cols = ['Dry_Total_g']
+        tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
         comp = np.zeros(len(df_det), dtype=float)
         for col, wt in zip(tgt_cols, wts):
             if col in df_det.columns:

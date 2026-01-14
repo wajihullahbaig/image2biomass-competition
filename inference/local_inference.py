@@ -68,7 +68,7 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
     save_image(images_denorm, save_path, nrow=4, padding=2)
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name, num_aux=7, num_species=14, pretrained=False):
+    def __init__(self, backbone_name, num_aux=5, num_species=14, pretrained=False):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
@@ -168,7 +168,7 @@ class BiomassUnifiedModel(nn.Module):
         log_green = log_preds[:, 2:3]
         biomass_out = torch.cat([log_total, log_gdm, log_green], dim=1)
         # Ratio in [0,1]
-        dead_ratio = torch.sigmoid(self.dead_ratio_head(torch.cat([img_feats, aux_out, species_probs, taxonomy_probs], dim=1)))
+        dead_ratio = torch.sigmoid(self.dead_ratio_head(combined_feats))
         
         return biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio
 
@@ -362,7 +362,7 @@ def run_inference(use_tta=False):
     backbone_name = metadata.get('backbone')
     img_h = metadata.get('image_height', IMAGE_HEIGHT)
     img_w = metadata.get('image_width', IMAGE_WIDTH)
-    num_aux = metadata.get('num_aux', 7)  # Fallback to 7 for current checkpoints
+    num_aux = metadata.get('num_aux', 5)  # Default to 5 (NDVI, Height, Int_Mul, Int_Add, SpCount)
     print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux}")
 
     # 3. DISCOVER MODELS

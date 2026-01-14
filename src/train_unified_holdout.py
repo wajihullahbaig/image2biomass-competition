@@ -8,7 +8,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -398,6 +398,28 @@ def save_metadata(session_dir, species_list, target_cols, num_aux):
     return metadata
 
 
+def ensure_fold_coverage(train_df, val_df, group_col='SessionID', logger=None):
+    """
+    Ensure every Species present in the validation set is also in training.
+    If not, move the smallest session of that species from validation to training.
+    """
+    missed = set(val_df['Species'].unique()) - set(train_df['Species'].unique())
+    if not missed:
+        return train_df, val_df
+        
+    for sp in missed:
+        sp_val = val_df[val_df['Species'] == sp]
+        # Sort by number of samples to move the smallest session first to minimize impact on validation size
+        sessions = sp_val.groupby(group_col).size().sort_values().index.tolist()
+        if sessions:
+            sess_to_move = sessions[0]
+            mask = val_df[group_col] == sess_to_move
+            train_df = pd.concat([train_df, val_df[mask]], ignore_index=True)
+            val_df = val_df[~mask].reset_index(drop=True)
+            if logger:
+                logger.info(f"  [COVERAGE] Moved session {sess_to_move} ({sp}) from Val to Train.")
+    return train_df, val_df
+
 def main():
     session_dir = setup_logging(file_name_part="unified_holdout")
     logger = logging.getLogger("System Logger")
@@ -465,14 +487,20 @@ def main():
     if strat_key not in dev_df.columns:
         raise ValueError(f"Stratification key '{strat_key}' not found in dev_df.")
     
-    skf = StratifiedKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
-    splitter = skf.split(dev_df, dev_df[strat_key])
+    sgkf = StratifiedGroupKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
+    # Stratify by Species for the folds to ensure maximum species representation across folds
+    splitter = sgkf.split(dev_df, dev_df['Species'], groups=dev_df['SessionID'])
     fold_iter = [(dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) 
                  for train, val in splitter]
-    split_name = 'StratifiedKFold'
+    split_name = 'StratifiedGroupKFold-Species'
 
     per_fold_best = []
     for fold, (train_df_raw, val_df_raw) in enumerate(fold_iter):
+        logger.info(f"\n{'='*30} FOLD {fold+1}/{cfg.hyperparameters.n_folds} {'='*30}")
+        
+        # Ensure training coverage for this fold (Species-level)
+        #train_df_raw, val_df_raw = ensure_fold_coverage(train_df_raw, val_df_raw, logger=logger)
+        
         # Fit/Transform pipeline per fold
         ft = BiomassFeatureTransform(logger)
         train_df = ft.fit(train_df_raw)

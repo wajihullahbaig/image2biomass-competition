@@ -12,7 +12,7 @@ hyperparameters:
   n_folds: 5
   epochs: 30
   weight_decay: 0.05
-  early_stop_patience: 15
+  early_stop_patience: 10
   backbone: "timm/convnext_tiny.fb_in22k"
   min_train_samples: 50
   backbone_freeze_threshold: 200
@@ -42,7 +42,7 @@ features:
 
 loss:
   use_standardized_loss: true
-  use_weighted_regression_loss: true
+  use_weighted_regression_lossuse_weighted_regression_loss: true
   reg_loss_type: "smoothl1" # options: smoothl1, mse
 
 targets:
@@ -93,7 +93,7 @@ upsample:
   drift_strength: 0.15
 
 split:
-  holdout_pct: 0.15
+  holdout_pct: 0.20
   stratification_key: "Species_Season" # Key for coverage-aware splitting
   min_train_per_combo: 2 # Minimum samples per combo guaranteed in training
   # Coverage enforcement

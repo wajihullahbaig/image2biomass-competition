@@ -420,228 +420,166 @@ def coverage_aware_split(df, stratify_col='Species_Season',
                          ensure_species_train_coverage=True, species_col='Species',
                          min_train_per_species=1,
                          ensure_combo_train_coverage=True, combo_col='Season_State_Species',
-                         min_train_per_combo_key=1):
+                         min_train_per_combo_key=1,
+                         group_col='SessionID'):
     """
-    Coverage-prioritized splitting that guarantees minimum training 
-    representation for every stratification group.
-    
-    Algorithm:
-     1. Group by stratify_col (e.g., Species_Season)
-    3. For each group:
-       - If group size <= min_train_per_combo: ALL samples go to training
-         - Else: Reserve min_train_per_combo for training (randomized), rest are holdout candidates
-     4. Sample holdout from candidates (randomized)
-    5. Remaining candidates + reserved samples = training
+    Group-aware, coverage-prioritized splitting that guarantees minimum training 
+    representation for every stratification group while keeping sessions together.
     
     Args:
-        df: Input dataframe with all samples
-        stratify_col: Column for stratification (default: 'Species_Season')
-        min_train_per_combo: Minimum samples per combo reserved for training
+        df: Input dataframe
+        stratify_col: Column for stratification
+        min_train_per_combo: Min samples per combo reserved for training
         holdout_pct: Target percentage for holdout set
-        random_state: Random seed for reproducibility
-        logger: Optional logger for diagnostics
+        random_state: Random seed
+        logger: Optional logger
+        group_col: Column for grouping (e.g., 'SessionID'). If None, defaults to sample-level.
         
     Returns:
         train_df, holdout_df
     """
     np.random.seed(random_state)
+    df = df.copy()
     
-    # Ensure stratify column exists
+    # 1. Ensure columns exist
     if stratify_col not in df.columns:
-        if logger:
-            logger.warning(f"Column '{stratify_col}' not found. Creating it from Species + Season.")
         if 'Species' in df.columns and 'Season' in df.columns:
-            df = df.copy()
             df[stratify_col] = df['Species'].astype(str) + '_' + df['Season'].astype(str)
         else:
-            raise ValueError(f"Cannot create {stratify_col}: missing Species or Season columns")
+            raise ValueError(f"Missing columns for stratification: {stratify_col}")
+
+    if group_col and group_col not in df.columns:
+        if logger:
+            logger.warning(f"Group column '{group_col}' not found. Falling back to sample-level split.")
+        group_col = None
+
+    # 2. Group by session if group_col is provided
+    if group_col:
+        # For each group (session), we need to decide its stratification labels.
+        # We'll take the most frequent stratify_col, species_col, and combo_col for the session.
+        session_groups = df.groupby(group_col).agg({
+            stratify_col: lambda x: x.mode()[0] if not x.mode().empty else x.iloc[0],
+            species_col: lambda x: x.mode()[0] if not x.mode().empty else x.iloc[0],
+            combo_col: lambda x: x.mode()[0] if not x.mode().empty else x.iloc[0] if combo_col in df.columns else None,
+            'sample_id': 'count'  # To track session sizes
+        }).reset_index()
+        
+        # Rename for clarity in the splitting logic
+        session_groups = session_groups.rename(columns={'sample_id': 'n_samples'})
+        
+        # Mapping from SessionID to sample indices
+        group_to_indices = df.groupby(group_col).indices
+        
+        # Work with session labels instead of sample indices
+        working_df = session_groups
+        working_indices = session_groups.index.tolist()
+        index_to_original_indices = group_to_indices
+        mapping_key = group_col
+    else:
+        # Sample-level split (legacy mode)
+        working_df = df
+        working_indices = df.index.tolist()
+        index_to_original_indices = {i: [i] for i in working_indices}
+        mapping_key = 'sample_id'
+
+    # 3. Perform coverage-aware selection on the working indices
+    groups = working_df[stratify_col].unique()
+    n_total_samples = len(df)
+    target_holdout_samples = int(n_total_samples * holdout_pct)
     
-    # Get unique stratification groups
-    groups = df[stratify_col].unique()
-    n_total = len(df)
-    target_holdout = int(n_total * holdout_pct)
-    
-    reserved_train_idx = []  # Guaranteed training samples
-    holdout_candidates_idx = []  # Pool for holdout selection
-    
-    coverage_stats = {'full_coverage': [], 'partial_coverage': [], 'sparse': []}
+    reserved_train_idx = []  # Indices of working_df (sessions)
+    holdout_candidates_idx = [] 
     
     for group in groups:
-        group_mask = df[stratify_col] == group
-        group_idx = df[group_mask].index.tolist()
-        n_group = len(group_idx)
+        group_mask = working_df[stratify_col] == group
+        group_idx = working_df[group_mask].index.tolist()
         
-        if n_group <= min_train_per_combo:
-            # Sparse group: ALL go to training to ensure coverage
-            reserved_train_idx.extend(group_idx)
-            coverage_stats['sparse'].append((group, n_group))
-        else:
-            # Reserve minimum for training (randomized), rest are holdout candidates
-            np.random.shuffle(group_idx)
-            reserved_train_idx.extend(group_idx[:min_train_per_combo])
-            holdout_candidates_idx.extend(group_idx[min_train_per_combo:])
+        # Reserve up to min_train_per_combo sessions for training
+        n_to_reserve = min(len(group_idx), min_train_per_combo)
+        np.random.shuffle(group_idx)
+        
+        reserved_train_idx.extend(group_idx[:n_to_reserve])
+        holdout_candidates_idx.extend(group_idx[n_to_reserve:])
             
-            if n_group >= 2 * min_train_per_combo:
-                coverage_stats['full_coverage'].append((group, n_group))
-            else:
-                coverage_stats['partial_coverage'].append((group, n_group))
+    # Sample holdout from candidates until we hit the target size
+    np.random.shuffle(holdout_candidates_idx)
     
-    # Species-level training coverage enforcement before holdout sampling
-    # Ensures no species ends up unseen in training
-    if ensure_species_train_coverage and species_col in df.columns:
-        # Build current coverage sets
-        species_series = df[species_col].astype(str)
-        train_species_now = set(species_series.loc[reserved_train_idx].unique())
-        all_species = set(species_series.unique())
-        missing_species = [s for s in all_species if s not in train_species_now]
-
-        moved_count = 0
-        moved_detail = []
-        ordered_candidates = holdout_candidates_idx[:]
-
-        # Index mapping for quick lookups
-        species_by_idx = species_series.to_dict()
-
-        for sp in missing_species:
-            # Collect candidates of this species
-            sp_candidates = [idx for idx in ordered_candidates if species_by_idx.get(idx) == sp]
-            if len(sp_candidates) == 0:
-                # If a species has no candidates, it may already be fully reserved due to sparsity
-                continue
-            take_n = min(min_train_per_species, len(sp_candidates))
-            take_idxs = sp_candidates[:take_n]
-
-            # Move selected indices from candidate pool into reserved train
-            reserved_train_idx.extend(take_idxs)
-            holdout_candidates_idx = [idx for idx in holdout_candidates_idx if idx not in take_idxs]
-            moved_count += len(take_idxs)
-            moved_detail.append((sp, len(take_idxs)))
-
-        if logger and moved_count > 0:
-            logger.info(f"\nSpecies coverage enforcement: moved {moved_count} samples into training to cover missing species.")
-            for sp, cnt in moved_detail[:10]:
-                logger.info(f"  + {sp}: {cnt} sample(s)")
-            if len(moved_detail) > 10:
-                logger.info(f"  ... and {len(moved_detail)-10} more species")
-
-    # Species-level training coverage enforcement before holdout sampling
-    n_candidates = len(holdout_candidates_idx)
-    n_holdout = min(target_holdout, n_candidates)
+    holdout_idx = []
+    current_holdout_samples = 0
     
-    if n_holdout > 0:
-        holdout_idx = np.random.choice(holdout_candidates_idx, size=n_holdout, replace=False).tolist()
-        remaining_candidates = [idx for idx in holdout_candidates_idx if idx not in holdout_idx]
-    else:
-        holdout_idx = []
-        remaining_candidates = holdout_candidates_idx
-    
-    # Combo-level (Season-State-Species) coverage enforcement
-    if ensure_combo_train_coverage:
-        # Ensure the combo column exists; create if possible
-        if combo_col not in df.columns:
-            # Try to construct from Season, State, Species
-            needed = ['Season', 'State', 'Species']
-            if all(c in df.columns for c in needed):
-                df = df.copy()
-                df[combo_col] = df.apply(lambda r: f"{r['Season']}_{r['State']}_{str(r['Species'])}", axis=1)
-            else:
-                if logger:
-                    logger.warning(f"Combo coverage requested but '{combo_col}' missing and cannot be constructed; skipping.")
-                ensure_combo_train_coverage = False
-
-    if ensure_combo_train_coverage and combo_col in df.columns:
-        # Determine missing combos in training
-        all_combos = set(df[combo_col].astype(str).unique())
-        train_combos_now = set(df.loc[reserved_train_idx, combo_col].astype(str).unique())
-        missing_combos = [c for c in all_combos if c not in train_combos_now]
-
-        # Build map from index to combo for fast lookup
-        combo_by_idx = df[combo_col].astype(str).to_dict()
-
-        moved_combo_cnt = 0
-        moved_combo_detail = []
-        for cmb in missing_combos:
-            # Find candidates in remaining pool with this combo
-            cmb_candidates = [idx for idx in remaining_candidates if combo_by_idx.get(idx) == cmb]
-            if len(cmb_candidates) == 0:
-                # Try also from holdout_idx (if absolutely necessary, pull back one)
-                alt_candidates = [idx for idx in holdout_idx if combo_by_idx.get(idx) == cmb]
-                if len(alt_candidates) == 0:
-                    continue
-                take_n = min(min_train_per_combo_key, len(alt_candidates))
-                take_idxs = alt_candidates[:take_n]
-                # Move from holdout back to train
-                reserved_train_idx.extend(take_idxs)
-                holdout_idx = [idx for idx in holdout_idx if idx not in take_idxs]
-            else:
-                take_n = min(min_train_per_combo_key, len(cmb_candidates))
-                take_idxs = cmb_candidates[:take_n]
-                reserved_train_idx.extend(take_idxs)
-                remaining_candidates = [idx for idx in remaining_candidates if idx not in take_idxs]
-            moved_combo_cnt += len(take_idxs)
-            moved_combo_detail.append((cmb, len(take_idxs)))
-
-        if logger and moved_combo_cnt > 0:
-            logger.info(f"\nCombo coverage enforcement: moved {moved_combo_cnt} samples into training to cover missing {combo_col} combos.")
-            for cmb, cnt in moved_combo_detail[:10]:
-                logger.info(f"  + {cmb}: {cnt} sample(s)")
-            if len(moved_combo_detail) > 10:
-                logger.info(f"  ... and {len(moved_combo_detail)-10} more combos")
-
-    # Training = reserved + remaining candidates
-    train_idx = reserved_train_idx + remaining_candidates
-    
-    # Create dataframes
-    train_df = df.loc[train_idx].copy().reset_index(drop=True)
-    holdout_df = df.loc[holdout_idx].copy().reset_index(drop=True) if holdout_idx else pd.DataFrame()
-    
-    # Log coverage statistics
-    if logger:
-        logger.info(f"\n{'='*50}")
-        logger.info(f"COVERAGE-AWARE SPLIT RESULTS")
-        logger.info(f"{'='*50}")
-        logger.info(f"Total samples: {n_total}")
-        logger.info(f"Training samples: {len(train_df)} ({100*len(train_df)/n_total:.1f}%)")
-        logger.info(f"Holdout samples: {len(holdout_df)} ({100*len(holdout_df)/n_total:.1f}%)")
-        logger.info(f"\nStratification groups ({stratify_col}): {len(groups)}")
-        logger.info(f"  Full coverage (n >= {2*min_train_per_combo}): {len(coverage_stats['full_coverage'])}")
-        logger.info(f"  Partial coverage: {len(coverage_stats['partial_coverage'])}")
-        logger.info(f"  Sparse (all in train): {len(coverage_stats['sparse'])}")
+    for idx in holdout_candidates_idx:
+        # Get the mapping key (SessionID or index)
+        key = working_df.loc[idx, mapping_key]
+        session_sample_count = len(index_to_original_indices[key])
         
-        if coverage_stats['sparse']:
-            logger.info(f"\nSparse groups (100% in training):")
-            for grp, cnt in coverage_stats['sparse'][:10]:
-                logger.info(f"    {grp}: {cnt} samples")
-            if len(coverage_stats['sparse']) > 10:
-                logger.info(f"    ... and {len(coverage_stats['sparse'])-10} more")
-        
-        # Verify coverage
-        train_groups = set(train_df[stratify_col].unique())
-        missing_in_train = set(groups) - train_groups
-        if missing_in_train:
-            logger.warning(f"WARNING: Groups missing from training: {missing_in_train}")
+        if current_holdout_samples + session_sample_count <= target_holdout_samples:
+            holdout_idx.append(idx)
+            current_holdout_samples += session_sample_count
         else:
-            logger.info(f"\n✓ All {len(groups)} groups represented in training")
-        # Verify combo coverage
-        if ensure_combo_train_coverage and combo_col in df.columns:
-            all_combos = set(df[combo_col].astype(str).unique())
-            train_combos = set(train_df[combo_col].astype(str).unique())
-            missing_train_combos = all_combos - train_combos
-            if missing_train_combos:
-                logger.warning(f"WARNING: {combo_col} combos missing from training despite enforcement: {missing_train_combos}")
-            else:
-                logger.info(f"\n✓ Combo coverage: all {len(all_combos)} {combo_col} combos represented in training")
+            # If adding this session exceeds target, put it back to train
+            reserved_train_idx.append(idx)
+            
+    # 4. Species coverage enforcement (on working indices)
+    if ensure_species_train_coverage:
+        train_species = set(working_df.loc[reserved_train_idx, species_col].unique())
+        all_species = set(working_df[species_col].unique())
+        missing_species = all_species - train_species
+        
+        if missing_species and logger:
+            logger.warning(f"Species missing from training: {missing_species}. Pulling from holdout...")
+            
+        for sp in missing_species:
+            # Pull one session of this species back from holdout if available
+            sp_holdout = [i for i in holdout_idx if working_df.loc[i, species_col] == sp]
+            if sp_holdout:
+                take_idx = sp_holdout[0]
+                reserved_train_idx.append(take_idx)
+                holdout_idx.remove(take_idx)
+                if logger:
+                    logger.info(f"  Pushed 1 session of {sp} to training.")
+                
+    # 5. Combo coverage enforcement
+    if ensure_combo_train_coverage and combo_col in working_df.columns:
+        train_combos = set(working_df.loc[reserved_train_idx, combo_col].unique())
+        all_combos = set(working_df[combo_col].unique())
+        missing_combos = all_combos - train_combos
+        
+        for cmb in missing_combos:
+            cmb_holdout = [i for i in holdout_idx if working_df.loc[i, combo_col] == cmb]
+            if cmb_holdout:
+                take_idx = cmb_holdout[0]
+                reserved_train_idx.append(take_idx)
+                holdout_idx.remove(take_idx)
 
-        # Verify species-level coverage if requested
-        if ensure_species_train_coverage and species_col in train_df.columns and species_col in df.columns:
-            species_all = set(df[species_col].astype(str).unique())
-            species_train = set(train_df[species_col].astype(str).unique())
-            missing_species_train = species_all - species_train
-            if missing_species_train:
-                logger.warning(f"WARNING: Species missing from training despite enforcement: {missing_species_train}")
-            else:
-                logger.info(f"\n✓ Species coverage: all {len(species_all)} species represented in training")
+    # 6. Map working indices back to original sample indices
+    final_train_samples = []
+    for idx in reserved_train_idx:
+        key = working_df.loc[idx, mapping_key]
+        final_train_samples.extend(index_to_original_indices[key])
+        
+    final_holdout_samples = []
+    for idx in holdout_idx:
+        key = working_df.loc[idx, mapping_key]
+        final_holdout_samples.extend(index_to_original_indices[key])
+        
+    train_df = df.loc[final_train_samples].copy().reset_index(drop=True)
+    holdout_df = df.loc[final_holdout_samples].copy().reset_index(drop=True) if final_holdout_samples else pd.DataFrame()
     
+    if logger:
+        logger.info(f"Split Summary (Grouped by {group_col if group_col else 'None'}):")
+        logger.info(f"  Train: {len(train_df)} samples, {train_df[group_col].nunique() if group_col else 'N/A'} groups")
+        logger.info(f"  Holdout: {len(holdout_df)} samples, {holdout_df[group_col].nunique() if group_col else 'N/A'} groups")
+        
+        # Verify leakage
+        if group_col:
+            train_groups = set(train_df[group_col].unique())
+            holdout_groups = set(holdout_df[group_col].unique())
+            leaky = train_groups & holdout_groups
+            if leaky:
+                logger.error(f"LEAKAGE DETECTED: {len(leaky)} groups shared between train and holdout!")
+            else:
+                logger.info(f"✓ No leakage detected between train and holdout.")
+
     return train_df, holdout_df
 
 

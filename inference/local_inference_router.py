@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260114_165629'
+MODEL_DIR = './logs/unified_holdout_20260114_202848'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -68,7 +68,7 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
 
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name, num_aux=7, num_species=14, pretrained=False):
+    def __init__(self, backbone_name, num_aux=5, num_species=14, pretrained=False):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
@@ -120,7 +120,16 @@ class BiomassUnifiedModel(nn.Module):
             # Transition to 128
             nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(128, 3), # [Log_C, Log_D, Log_G]
+            nn.Linear(128, 3), # [Log_Total, Log_GDM, Log_Green]
+        )
+
+        # Dead Ratio Head (predicts Dead_to_Total in [0,1])
+        self.dead_ratio_head = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, 1)
         )
         
         self.log_clamp = torch.log1p(torch.tensor(BIOMASS_CLAMP))
@@ -160,7 +169,10 @@ class BiomassUnifiedModel(nn.Module):
         log_green = log_preds[:, 2:3]
         biomass_out = torch.cat([log_total, log_gdm, log_green], dim=1)
         
-        return biomass_out, aux_out, species_logits, taxonomy_logits
+        # Dead-to-Total ratio in [0,1]
+        dead_ratio = torch.sigmoid(self.dead_ratio_head(combined_feats))
+        
+        return biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio
 
 # ====================== TTA HELPERS ======================
 def get_largest_rotated_crop(h, w, angle):
@@ -203,12 +215,12 @@ def no_tta(model, image, batch_idx=0):
         save_tta_images(image, batch_idx, 'original')
     
     with torch.no_grad():
-        log_bio, aux, sp, tax_logits = model(image)
+        log_bio, aux, sp, tax_logits, dead_ratio = model(image)
         # Extract Confidence
         probs = torch.softmax(tax_logits, dim=1)
         conf, _ = torch.max(probs, dim=1)
         
-    return log_bio, conf
+    return log_bio, conf, dead_ratio
     
 def apply_tta(model, image, batch_idx=0):
     """
@@ -218,6 +230,7 @@ def apply_tta(model, image, batch_idx=0):
     
     all_biomass_linear = [] 
     all_confidences = []
+    all_dead_ratios = []
 
     # TTA Policy: 5 Views with names for saving
     tta_views = [
@@ -237,7 +250,7 @@ def apply_tta(model, image, batch_idx=0):
                 save_tta_images(img_aug, batch_idx, view_name)
             
             # Forward Pass
-            log_bio, aux, sp, tax_logits = model(img_aug) 
+            log_bio, aux, sp, tax_logits, dead_ratio = model(img_aug) 
             
             # Convert to Linear Grams
             lin_bio = torch.expm1(log_bio)
@@ -248,6 +261,7 @@ def apply_tta(model, image, batch_idx=0):
             probs = torch.softmax(tax_logits, dim=1) 
             conf, _ = torch.max(probs, dim=1) 
             all_confidences.append(conf)
+            all_dead_ratios.append(dead_ratio)
 
     # AGGREGATION
     # Average Biomass (Linear Space)
@@ -255,11 +269,12 @@ def apply_tta(model, image, batch_idx=0):
     
     # Average Confidence
     avg_confidence = torch.stack(all_confidences).mean(0)
+    avg_dead_ratio = torch.stack(all_dead_ratios).mean(0)
             
     # Convert to Log for consistency with return signature
     avg_bio_log = torch.log1p(avg_bio_linear)
             
-    return avg_bio_log, avg_confidence
+    return avg_bio_log, avg_confidence, avg_dead_ratio
 
 # ====================== DATASET ======================
 class TestDataset(Dataset):
@@ -346,7 +361,7 @@ def run_inference(USE_TTA=True):
     backbone_name = metadata.get('backbone')
     img_h = metadata.get('image_height', IMAGE_HEIGHT)
     img_w = metadata.get('image_width', IMAGE_WIDTH)
-    num_aux = metadata.get('num_aux', 7)  # Fallback to 7 for current checkpoints
+    num_aux = metadata.get('num_aux', 5)  # Default to 5 (NDVI, Height, Int_Mul, Int_Add, SpCount)
     print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux}")
 
     # 3. DISCOVER MODELS
@@ -387,14 +402,15 @@ def run_inference(USE_TTA=True):
                 
                 # Choose TTA or no TTA
                 if USE_TTA:
-                    log_pred, conf = apply_tta(model, imgs, batch_idx)
+                    log_pred, conf, dead_ratio = apply_tta(model, imgs, batch_idx)
                 else:
-                    log_pred, conf = no_tta(model, imgs, batch_idx)
+                    log_pred, conf, dead_ratio = no_tta(model, imgs, batch_idx)
                 
                 # Convert to Linear for averaging
                 lin_pred = torch.expm1(log_pred)
+                ratios_np = dead_ratio.cpu().numpy()
                 
-                fold_preds.append(lin_pred.cpu().numpy())
+                fold_preds.append(np.concatenate([lin_pred.cpu().numpy(), ratios_np], axis=1))
                 fold_confs.append(conf.cpu().numpy())
                 
                 if i == 0: 
@@ -433,7 +449,7 @@ def run_inference(USE_TTA=True):
     # 5. WEIGHTED ENSEMBLE CALCULATION (components only)
     print("Calculating Taxonomy-Weighted Ensemble...")
     
-    # Shape: [N_Models, N_Samples, 3]
+    # Shape: [N_Models, N_Samples, 4] (Total, GDM, Green, DeadRatio)
     E = np.stack(ensemble_preds, axis=0)
     # Shape: [N_Models, N_Samples]
     W = W_raw
@@ -445,17 +461,18 @@ def run_inference(USE_TTA=True):
     numerator = np.sum(E * W_expanded, axis=0)
     denominator = np.sum(W_expanded, axis=0) + 1e-8
     
-    avg_components = numerator / denominator  # [N_Samples, 3]
-    avg_components = np.maximum(avg_components, 0)
+    avg_out = numerator / denominator  # [N_Samples, 4]
+    avg_out = np.maximum(avg_out, 0)
 
-    # 6. DERIVE 5 targets from 3 predictions
-    pred_total = avg_components[:, 0]
-    pred_gdm = avg_components[:, 1] 
-    pred_green = avg_components[:, 2]
+    # 6. DERIVE 5 targets from 4 predictions
+    pred_total = avg_out[:, 0]
+    pred_gdm = avg_out[:, 1] 
+    pred_green = avg_out[:, 2]
+    avg_dead_ratio = np.clip(avg_out[:, 3], 0.0, 1.0)
     
     # Ensure no negative values
     pred_clover = np.maximum(0, pred_gdm - pred_green)
-    pred_dead = np.maximum(0, pred_total - pred_gdm)
+    pred_dead = np.maximum(0, pred_total * avg_dead_ratio)
 
     final_df = pd.DataFrame({
         'Dry_Green_g': pred_green,

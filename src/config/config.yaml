@@ -96,6 +96,8 @@ split:
   holdout_pct: 0.15
   stratification_key: "Species_Season" # Key for coverage-aware splitting
   min_train_per_combo: 2 # Minimum samples per combo guaranteed in training
+  temporal_aware: True
+  time_col: "Sampling_Date"
 
 seasons:
   month_map:

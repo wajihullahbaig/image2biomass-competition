@@ -434,12 +434,13 @@ def main():
     # Import the coverage-aware splitting function
     from common import coverage_aware_split
     
-    # Create coverage-aware splits - ensures all species×season combos in training
     dev_df, hold_df = coverage_aware_split(
         df, 
         stratify_col=strat_key,
         min_train_per_combo=min_train_per_combo,
         holdout_pct=holdout_pct,
+        temporal_aware=cfg.split.temporal_aware,
+        time_col=cfg.split.time_col,
         random_state=313,
         logger=logger
     )

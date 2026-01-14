@@ -26,6 +26,11 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
     
     all_data = pd.concat([train_df, val_df, holdout_df], ignore_index=True)
     
+    # Define consistent color mapping
+    COLOR_MAP = {'train': 'green', 'validation': 'blue', 'holdout': 'red'}
+    split_order = ['train', 'validation', 'holdout']
+    plot_colors = [COLOR_MAP[s] for s in split_order]
+    
     # 1. TEMPORAL LEAKAGE CHECK
     plt.figure(figsize=(24, 12))  # Increased size for better readability
     plt.style.use('default')  # Ensure clean styling
@@ -35,7 +40,8 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
     
     # Timeline plot
     plt.subplot(2, 4, 1)
-    for split, color in [('train', 'blue'), ('validation', 'red'), ('holdout', 'green')]:
+    for split in split_order:
+        color = COLOR_MAP[split]
         split_data = all_data[all_data['split'] == split]
         dates = split_data['Sampling_Date']
         y_vals = np.random.normal(0, 0.1, len(dates))  # Add jitter
@@ -100,25 +106,34 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
     # 3. SPECIES DISTRIBUTION
     plt.subplot(2, 4, 3)
     species_cross = pd.crosstab(all_data['Species'], all_data['split'])
-    ax3 = species_cross.plot(kind='bar', ax=plt.gca(), color=['blue', 'red', 'green'], alpha=0.8)
+    # Reorder columns to ensure correct coloring
+    cols = [c for c in split_order if c in species_cross.columns]
+    species_cross = species_cross[cols]
+    current_colors = [COLOR_MAP[c] for c in cols]
+    
+    ax3 = species_cross.plot(kind='bar', ax=plt.gca(), color=current_colors, alpha=0.8)
     plt.title('Species Distribution Across Splits', fontsize=12, fontweight='bold')
     plt.xlabel('Species', fontsize=10)
     plt.ylabel('Count', fontsize=10)
     plt.xticks(rotation=45, fontsize=9, ha='right')
     plt.yticks(fontsize=9)
-    plt.legend(['Train', 'Validation', 'Holdout'], fontsize=9)
+    plt.legend([s.capitalize() for s in cols], fontsize=9)
     plt.grid(True, alpha=0.3, axis='y')
     
     # 4. STATE DISTRIBUTION
     plt.subplot(2, 4, 4)
     state_cross = pd.crosstab(all_data['State'], all_data['split'])
-    ax4 = state_cross.plot(kind='bar', ax=plt.gca(), color=['blue', 'red', 'green'], alpha=0.8)
+    cols = [c for c in split_order if c in state_cross.columns]
+    state_cross = state_cross[cols]
+    current_colors = [COLOR_MAP[c] for c in cols]
+    
+    ax4 = state_cross.plot(kind='bar', ax=plt.gca(), color=current_colors, alpha=0.8)
     plt.title('State Distribution Across Splits', fontsize=12, fontweight='bold')
     plt.xlabel('State', fontsize=10)
     plt.ylabel('Count', fontsize=10)
     plt.xticks(rotation=45, fontsize=9, ha='right')
     plt.yticks(fontsize=9)
-    plt.legend(['Train', 'Validation', 'Holdout'], fontsize=9)
+    plt.legend([s.capitalize() for s in cols], fontsize=9)
     plt.grid(True, alpha=0.3, axis='y')
     
     # 5. STRATIFICATION QUALITY (State_Species)
@@ -128,8 +143,12 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
         strat_cross = pd.crosstab(all_data[strat_key], all_data['split'], margins=True)
         # Show top 15 most common groups
         top_groups = strat_cross.iloc[:-1, -1].sort_values(ascending=False).head(15)
-        strat_subset = strat_cross.loc[top_groups.index, ['train', 'validation', 'holdout']]
-        ax5 = strat_subset.plot(kind='bar', ax=plt.gca(), color=['blue', 'red', 'green'], alpha=0.8)
+        # Reorder columns to ensure correct coloring
+        cols = [c for c in split_order if c in strat_cross.columns]
+        strat_subset = strat_cross.loc[top_groups.index, cols]
+        current_colors = [COLOR_MAP[c] for c in cols]
+        
+        ax5 = strat_subset.plot(kind='bar', ax=plt.gca(), color=current_colors, alpha=0.8)
         plt.title(f'Top 15 {strat_key} Groups', fontsize=12, fontweight='bold')
         plt.xlabel(strat_key, fontsize=10)
         plt.ylabel('Count', fontsize=10)
@@ -138,7 +157,7 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
                  for label in ax5.get_xticklabels()]
         plt.xticks(range(len(labels)), labels, rotation=45, fontsize=8, ha='right')
         plt.yticks(fontsize=9)
-        plt.legend(['Train', 'Validation', 'Holdout'], fontsize=9)
+        plt.legend([s.capitalize() for s in cols], fontsize=9)
         plt.grid(True, alpha=0.3, axis='y')
     
     # 6. ALL 5 BIOMASS TARGETS DISTRIBUTION (log+1 scale)
@@ -149,10 +168,10 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
     if available_cols:
         # Plot training data only with different colors per target
         train_data = all_data[all_data['split'] == 'train']
-        colors = ['#2ecc71', '#e74c3c', '#9b59b6', '#3498db', '#f39c12']  # Green, Red, Purple, Blue, Orange
+        target_colors = ['#2ecc71', '#e74c3c', '#9b59b6', '#3498db', '#f39c12']  # Green, Red, Purple, Blue, Orange
         labels = ['Green', 'Dead', 'Clover', 'GDM', 'Total']
         
-        for i, (col, color, label) in enumerate(zip(available_cols, colors, labels)):
+        for i, (col, color, label) in enumerate(zip(available_cols, target_colors, labels)):
             if col in train_data.columns:
                 values = np.log1p(train_data[col].fillna(0))
                 plt.hist(values, bins=25, alpha=0.5, color=color, label=label, density=True)
@@ -169,26 +188,32 @@ def visualize_data_splits(train_df, val_df, holdout_df, session_dir, fold=None, 
     plt.subplot(2, 4, 7)
     if 'Season' in all_data.columns:
         season_cross = pd.crosstab(all_data['Season'], all_data['split'])
-        ax7 = season_cross.plot(kind='bar', ax=plt.gca(), color=['blue', 'red', 'green'], alpha=0.8)
+        cols = [c for c in split_order if c in season_cross.columns]
+        season_cross = season_cross[cols]
+        current_colors = [COLOR_MAP[c] for c in cols]
+        
+        ax7 = season_cross.plot(kind='bar', ax=plt.gca(), color=current_colors, alpha=0.8)
         plt.title('Season Distribution Across Splits', fontsize=12, fontweight='bold')
         plt.xlabel('Season', fontsize=10)
         plt.ylabel('Count', fontsize=10)
         plt.xticks(rotation=45, fontsize=9, ha='right')
         plt.yticks(fontsize=9)
-        plt.legend(['Train', 'Validation', 'Holdout'], fontsize=9)
+        plt.legend([s.capitalize() for s in cols], fontsize=9)
         plt.grid(True, alpha=0.3, axis='y')
     
     # 8. DATE RANGE SUMMARY
     plt.subplot(2, 4, 8)
+    # Ensure splits are in order
     date_ranges = all_data.groupby('split')['Sampling_Date'].agg(['min', 'max'])
+    date_ranges = date_ranges.reindex(split_order).dropna()
     
     # Create a timeline showing date ranges
     y_pos = range(len(date_ranges))
-    colors = ['blue', 'green', 'red']  # holdout, train, validation
     
     for i, (split, row) in enumerate(date_ranges.iterrows()):
+        color = COLOR_MAP[split]
         plt.barh(i, (row['max'] - row['min']).days, 
-                left=row['min'], color=colors[i], alpha=0.8, 
+                left=row['min'], color=color, alpha=0.8, 
                 label=f"{split}: {row['min'].strftime('%m/%d/%y')} to {row['max'].strftime('%m/%d/%y')}")
     
     plt.yticks(y_pos, date_ranges.index, fontsize=9)
@@ -223,8 +248,8 @@ def visualize_multi_target_distributions(all_data, plots_dir, fold=None):
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     axes = axes.flatten()
     
-    # User requested colors: train:green, validation:red, holdout:blue
-    colors = {'train': '#2ecc71', 'validation': '#e74c3c', 'holdout': '#3498db'}
+    # User requested colors: train:green, validation:blue, holdout:red
+    colors = {'train': 'green', 'validation': 'blue', 'holdout': 'red'}
     split_labels = {'train': 'Train', 'validation': 'Validation', 'holdout': 'Holdout'}
     
     for i, col in enumerate(available_cols):
@@ -376,8 +401,8 @@ def visualize_cross_validation_splits(fold_splits, full_df, session_dir):
         train_dates = full_df.iloc[train_idx]['Sampling_Date']
         val_dates = full_df.iloc[val_idx]['Sampling_Date']
         
-        plt.hist(train_dates, bins=20, alpha=0.6, label=f'Train (n={len(train_idx)})', color='blue')
-        plt.hist(val_dates, bins=20, alpha=0.6, label=f'Val (n={len(val_idx)})', color='red') 
+        plt.hist(train_dates, bins=20, alpha=0.6, label=f'Train (n={len(train_idx)})', color='green')
+        plt.hist(val_dates, bins=20, alpha=0.6, label=f'Val (n={len(val_idx)})', color='blue') 
         plt.title(f'Fold {fold+1}: Temporal Distribution')
         plt.legend()
         plt.xticks(rotation=45)
@@ -395,8 +420,8 @@ def visualize_cross_validation_splits(fold_splits, full_df, session_dir):
         x = np.arange(len(all_species))
         width = 0.35
         
-        plt.bar(x - width/2, train_counts, width, label='Train', color='blue', alpha=0.7)
-        plt.bar(x + width/2, val_counts, width, label='Val', color='red', alpha=0.7)
+        plt.bar(x - width/2, train_counts, width, label='Train', color='green', alpha=0.7)
+        plt.bar(x + width/2, val_counts, width, label='Val', color='blue', alpha=0.7)
         plt.title(f'Fold {fold+1}: Species Distribution')
         plt.xticks(x, all_species, rotation=45)
         plt.legend()
@@ -412,8 +437,8 @@ def visualize_cross_validation_splits(fold_splits, full_df, session_dir):
         val_state_counts = [val_states.get(st, 0) for st in all_states]
         
         x = np.arange(len(all_states))
-        plt.bar(x - width/2, train_state_counts, width, label='Train', color='blue', alpha=0.7)
-        plt.bar(x + width/2, val_state_counts, width, label='Val', color='red', alpha=0.7)
+        plt.bar(x - width/2, train_state_counts, width, label='Train', color='green', alpha=0.7)
+        plt.bar(x + width/2, val_state_counts, width, label='Val', color='blue', alpha=0.7)
         plt.title(f'Fold {fold+1}: State Distribution')
         plt.xticks(x, all_states)
         plt.legend()

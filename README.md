@@ -5,5 +5,4 @@ https://www.kaggle.com/competitions/csiro-biomass/discussion?sort=votes
 
 ## 1
 
-Kaggle: State_Sampling_Date, f4, f1 fold only, routed predictor 0.44
-Kaggle: State_Sampling_Date, f4, f 1,2,3,4, routed predictor 0.46
+Kaggle: folds 5, f1 only, routed predictor: 0.56 

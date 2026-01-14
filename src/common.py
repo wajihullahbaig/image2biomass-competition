@@ -418,7 +418,9 @@ def coverage_aware_split(df, stratify_col='Species_Season',
                          min_train_per_combo=2, holdout_pct=0.15, 
                          random_state=42, logger=None,
                          ensure_species_train_coverage=True, species_col='Species',
-                         min_train_per_species=1):
+                         min_train_per_species=1,
+                         ensure_combo_train_coverage=True, combo_col='Season_State_Species',
+                         min_train_per_combo_key=1):
     """
     Coverage-prioritized splitting that guarantees minimum training 
     representation for every stratification group.
@@ -522,7 +524,7 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             if len(moved_detail) > 10:
                 logger.info(f"  ... and {len(moved_detail)-10} more species")
 
-    # Sample holdout from candidates
+    # Species-level training coverage enforcement before holdout sampling
     n_candidates = len(holdout_candidates_idx)
     n_holdout = min(target_holdout, n_candidates)
     
@@ -533,6 +535,59 @@ def coverage_aware_split(df, stratify_col='Species_Season',
         holdout_idx = []
         remaining_candidates = holdout_candidates_idx
     
+    # Combo-level (Season-State-Species) coverage enforcement
+    if ensure_combo_train_coverage:
+        # Ensure the combo column exists; create if possible
+        if combo_col not in df.columns:
+            # Try to construct from Season, State, Species
+            needed = ['Season', 'State', 'Species']
+            if all(c in df.columns for c in needed):
+                df = df.copy()
+                df[combo_col] = df.apply(lambda r: f"{r['Season']}_{r['State']}_{str(r['Species'])}", axis=1)
+            else:
+                if logger:
+                    logger.warning(f"Combo coverage requested but '{combo_col}' missing and cannot be constructed; skipping.")
+                ensure_combo_train_coverage = False
+
+    if ensure_combo_train_coverage and combo_col in df.columns:
+        # Determine missing combos in training
+        all_combos = set(df[combo_col].astype(str).unique())
+        train_combos_now = set(df.loc[reserved_train_idx, combo_col].astype(str).unique())
+        missing_combos = [c for c in all_combos if c not in train_combos_now]
+
+        # Build map from index to combo for fast lookup
+        combo_by_idx = df[combo_col].astype(str).to_dict()
+
+        moved_combo_cnt = 0
+        moved_combo_detail = []
+        for cmb in missing_combos:
+            # Find candidates in remaining pool with this combo
+            cmb_candidates = [idx for idx in remaining_candidates if combo_by_idx.get(idx) == cmb]
+            if len(cmb_candidates) == 0:
+                # Try also from holdout_idx (if absolutely necessary, pull back one)
+                alt_candidates = [idx for idx in holdout_idx if combo_by_idx.get(idx) == cmb]
+                if len(alt_candidates) == 0:
+                    continue
+                take_n = min(min_train_per_combo_key, len(alt_candidates))
+                take_idxs = alt_candidates[:take_n]
+                # Move from holdout back to train
+                reserved_train_idx.extend(take_idxs)
+                holdout_idx = [idx for idx in holdout_idx if idx not in take_idxs]
+            else:
+                take_n = min(min_train_per_combo_key, len(cmb_candidates))
+                take_idxs = cmb_candidates[:take_n]
+                reserved_train_idx.extend(take_idxs)
+                remaining_candidates = [idx for idx in remaining_candidates if idx not in take_idxs]
+            moved_combo_cnt += len(take_idxs)
+            moved_combo_detail.append((cmb, len(take_idxs)))
+
+        if logger and moved_combo_cnt > 0:
+            logger.info(f"\nCombo coverage enforcement: moved {moved_combo_cnt} samples into training to cover missing {combo_col} combos.")
+            for cmb, cnt in moved_combo_detail[:10]:
+                logger.info(f"  + {cmb}: {cnt} sample(s)")
+            if len(moved_combo_detail) > 10:
+                logger.info(f"  ... and {len(moved_combo_detail)-10} more combos")
+
     # Training = reserved + remaining candidates
     train_idx = reserved_train_idx + remaining_candidates
     
@@ -567,6 +622,15 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             logger.warning(f"WARNING: Groups missing from training: {missing_in_train}")
         else:
             logger.info(f"\n✓ All {len(groups)} groups represented in training")
+        # Verify combo coverage
+        if ensure_combo_train_coverage and combo_col in df.columns:
+            all_combos = set(df[combo_col].astype(str).unique())
+            train_combos = set(train_df[combo_col].astype(str).unique())
+            missing_train_combos = all_combos - train_combos
+            if missing_train_combos:
+                logger.warning(f"WARNING: {combo_col} combos missing from training despite enforcement: {missing_train_combos}")
+            else:
+                logger.info(f"\n✓ Combo coverage: all {len(all_combos)} {combo_col} combos represented in training")
 
         # Verify species-level coverage if requested
         if ensure_species_train_coverage and species_col in train_df.columns and species_col in df.columns:

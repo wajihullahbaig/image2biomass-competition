@@ -86,6 +86,13 @@ class SplitConfig:
     holdout_pct: float
     stratification_key: str  # Key for coverage-aware splitting (e.g., 'Species_Season')
     min_train_per_combo: int = 2  # Minimum samples per combo guaranteed in training
+    # Coverage enforcement flags
+    ensure_species_train_coverage: bool = True
+    species_col: str = "Species"
+    min_train_per_species: int = 1
+    ensure_combo_train_coverage: bool = True
+    combo_col: str = "Season_State_Species"
+    min_train_per_combo_key: int = 1
 
 @dataclass
 class SeasonsConfig:

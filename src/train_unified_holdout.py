@@ -440,7 +440,13 @@ def main():
         min_train_per_combo=min_train_per_combo,
         holdout_pct=holdout_pct,
         random_state=313,
-        logger=logger
+        logger=logger,
+        ensure_species_train_coverage=cfg.split.ensure_species_train_coverage,
+        species_col=cfg.split.species_col,
+        min_train_per_species=cfg.split.min_train_per_species,
+        ensure_combo_train_coverage=cfg.split.ensure_combo_train_coverage,
+        combo_col=cfg.split.combo_col,
+        min_train_per_combo_key=cfg.split.min_train_per_combo_key
     )
     
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)

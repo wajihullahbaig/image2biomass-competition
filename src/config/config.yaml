@@ -96,6 +96,13 @@ split:
   holdout_pct: 0.15
   stratification_key: "Species_Season" # Key for coverage-aware splitting
   min_train_per_combo: 2 # Minimum samples per combo guaranteed in training
+  # Coverage enforcement
+  ensure_species_train_coverage: true
+  species_col: "Species"
+  min_train_per_species: 1
+  ensure_combo_train_coverage: true
+  combo_col: "Season_State_Species"
+  min_train_per_combo_key: 1
 
 seasons:
   month_map:

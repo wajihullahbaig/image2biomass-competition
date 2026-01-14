@@ -439,8 +439,6 @@ def main():
         stratify_col=strat_key,
         min_train_per_combo=min_train_per_combo,
         holdout_pct=holdout_pct,
-        temporal_aware=cfg.split.temporal_aware,
-        time_col=cfg.split.time_col,
         random_state=313,
         logger=logger
     )
@@ -537,7 +535,7 @@ def main():
             target_cols=['Dry_Total_g', 'GDM_g', 'Dry_Green_g']
         )
 
-        train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=not cfg.split.temporal_aware, num_workers=0, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
         holdout_loader = DataLoader(holdout_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 

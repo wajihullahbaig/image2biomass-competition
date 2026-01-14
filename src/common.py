@@ -416,7 +416,6 @@ def add_species_columns(df):
 
 def coverage_aware_split(df, stratify_col='Species_Season', 
                          min_train_per_combo=2, holdout_pct=0.15, 
-                         temporal_aware=False, time_col='Sampling_Date',
                          random_state=42, logger=None,
                          ensure_species_train_coverage=True, species_col='Species',
                          min_train_per_species=1):
@@ -424,17 +423,12 @@ def coverage_aware_split(df, stratify_col='Species_Season',
     Coverage-prioritized splitting that guarantees minimum training 
     representation for every stratification group.
     
-    If temporal_aware is True, it ensures that training set gets older 
-    samples and holdout set gets newer samples.
-    
     Algorithm:
-    1. Sort by time_col if temporal_aware is True.
-    2. Group by stratify_col (e.g., Species_Season)
+     1. Group by stratify_col (e.g., Species_Season)
     3. For each group:
        - If group size <= min_train_per_combo: ALL samples go to training
-       - Else: Reserve min_train_per_combo for training (oldest if temporal_aware), 
-         rest are holdout candidates
-    4. Sample holdout from candidates (latest if temporal_aware)
+         - Else: Reserve min_train_per_combo for training (randomized), rest are holdout candidates
+     4. Sample holdout from candidates (randomized)
     5. Remaining candidates + reserved samples = training
     
     Args:
@@ -442,8 +436,6 @@ def coverage_aware_split(df, stratify_col='Species_Season',
         stratify_col: Column for stratification (default: 'Species_Season')
         min_train_per_combo: Minimum samples per combo reserved for training
         holdout_pct: Target percentage for holdout set
-        temporal_aware: Whether to split chronologically
-        time_col: Column representing time (required if temporal_aware=True)
         random_state: Random seed for reproducibility
         logger: Optional logger for diagnostics
         
@@ -461,19 +453,6 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             df[stratify_col] = df['Species'].astype(str) + '_' + df['Season'].astype(str)
         else:
             raise ValueError(f"Cannot create {stratify_col}: missing Species or Season columns")
-    
-    # Handle temporal awareness
-    if temporal_aware:
-        if time_col not in df.columns:
-            raise ValueError(f"temporal_aware=True but {time_col} not in dataframe")
-        
-        # Sort by time_col ascending (oldest first)
-        df = df.copy()
-        df[time_col] = pd.to_datetime(df[time_col])
-        df = df.sort_values(by=time_col).reset_index(drop=True)
-        
-        if logger:
-            logger.info(f"Temporal awareness enabled. Data sorted by {time_col}.")
     
     # Get unique stratification groups
     groups = df[stratify_col].unique()
@@ -495,12 +474,8 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             reserved_train_idx.extend(group_idx)
             coverage_stats['sparse'].append((group, n_group))
         else:
-            # Reserve minimum for training, rest are holdout candidates
-            if not temporal_aware:
-                np.random.shuffle(group_idx)
-                
-            # If temporal_aware, group_idx is already sorted by time (due to df sort)
-            # Take the earliest ones for training
+            # Reserve minimum for training (randomized), rest are holdout candidates
+            np.random.shuffle(group_idx)
             reserved_train_idx.extend(group_idx[:min_train_per_combo])
             holdout_candidates_idx.extend(group_idx[min_train_per_combo:])
             
@@ -520,12 +495,7 @@ def coverage_aware_split(df, stratify_col='Species_Season',
 
         moved_count = 0
         moved_detail = []
-        if temporal_aware:
-            # Candidate pool already respects global time order through df sort
-            # We will take the earliest candidate(s) per missing species
-            ordered_candidates = sorted(holdout_candidates_idx)
-        else:
-            ordered_candidates = holdout_candidates_idx[:]
+        ordered_candidates = holdout_candidates_idx[:]
 
         # Index mapping for quick lookups
         species_by_idx = species_series.to_dict()
@@ -537,7 +507,7 @@ def coverage_aware_split(df, stratify_col='Species_Season',
                 # If a species has no candidates, it may already be fully reserved due to sparsity
                 continue
             take_n = min(min_train_per_species, len(sp_candidates))
-            take_idxs = sp_candidates[:take_n] if temporal_aware else sp_candidates[:take_n]
+            take_idxs = sp_candidates[:take_n]
 
             # Move selected indices from candidate pool into reserved train
             reserved_train_idx.extend(take_idxs)
@@ -557,14 +527,7 @@ def coverage_aware_split(df, stratify_col='Species_Season',
     n_holdout = min(target_holdout, n_candidates)
     
     if n_holdout > 0:
-        if temporal_aware:
-            # Pick the latest samples from the candidate pool
-            # Since df is sorted by time, larger indices = later times
-            holdout_candidates_idx.sort()
-            holdout_idx = holdout_candidates_idx[-n_holdout:]
-        else:
-            holdout_idx = np.random.choice(holdout_candidates_idx, size=n_holdout, replace=False).tolist()
-        
+        holdout_idx = np.random.choice(holdout_candidates_idx, size=n_holdout, replace=False).tolist()
         remaining_candidates = [idx for idx in holdout_candidates_idx if idx not in holdout_idx]
     else:
         holdout_idx = []
@@ -580,7 +543,7 @@ def coverage_aware_split(df, stratify_col='Species_Season',
     # Log coverage statistics
     if logger:
         logger.info(f"\n{'='*50}")
-        logger.info(f"COVERAGE-AWARE SPLIT RESULTS (Temporal: {temporal_aware})")
+        logger.info(f"COVERAGE-AWARE SPLIT RESULTS")
         logger.info(f"{'='*50}")
         logger.info(f"Total samples: {n_total}")
         logger.info(f"Training samples: {len(train_df)} ({100*len(train_df)/n_total:.1f}%)")
@@ -596,15 +559,6 @@ def coverage_aware_split(df, stratify_col='Species_Season',
                 logger.info(f"    {grp}: {cnt} samples")
             if len(coverage_stats['sparse']) > 10:
                 logger.info(f"    ... and {len(coverage_stats['sparse'])-10} more")
-        
-        if temporal_aware and not holdout_df.empty:
-            t_train_max = train_df[time_col].max()
-            t_hold_min = holdout_df[time_col].min()
-            logger.info(f"\nTemporal Separation:")
-            logger.info(f"  Train Max Date: {t_train_max}")
-            logger.info(f"  Holdout Min Date: {t_hold_min}")
-            if t_hold_min < t_train_max:
-                logger.warning(f"  WARNING: Some overlap in dates (expected if groups are sparse)")
         
         # Verify coverage
         train_groups = set(train_df[stratify_col].unique())

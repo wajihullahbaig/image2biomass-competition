@@ -417,7 +417,9 @@ def add_species_columns(df):
 def coverage_aware_split(df, stratify_col='Species_Season', 
                          min_train_per_combo=2, holdout_pct=0.15, 
                          temporal_aware=False, time_col='Sampling_Date',
-                         random_state=42, logger=None):
+                         random_state=42, logger=None,
+                         ensure_species_train_coverage=True, species_col='Species',
+                         min_train_per_species=1):
     """
     Coverage-prioritized splitting that guarantees minimum training 
     representation for every stratification group.
@@ -507,6 +509,49 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             else:
                 coverage_stats['partial_coverage'].append((group, n_group))
     
+    # Species-level training coverage enforcement before holdout sampling
+    # Ensures no species ends up unseen in training
+    if ensure_species_train_coverage and species_col in df.columns:
+        # Build current coverage sets
+        species_series = df[species_col].astype(str)
+        train_species_now = set(species_series.loc[reserved_train_idx].unique())
+        all_species = set(species_series.unique())
+        missing_species = [s for s in all_species if s not in train_species_now]
+
+        moved_count = 0
+        moved_detail = []
+        if temporal_aware:
+            # Candidate pool already respects global time order through df sort
+            # We will take the earliest candidate(s) per missing species
+            ordered_candidates = sorted(holdout_candidates_idx)
+        else:
+            ordered_candidates = holdout_candidates_idx[:]
+
+        # Index mapping for quick lookups
+        species_by_idx = species_series.to_dict()
+
+        for sp in missing_species:
+            # Collect candidates of this species
+            sp_candidates = [idx for idx in ordered_candidates if species_by_idx.get(idx) == sp]
+            if len(sp_candidates) == 0:
+                # If a species has no candidates, it may already be fully reserved due to sparsity
+                continue
+            take_n = min(min_train_per_species, len(sp_candidates))
+            take_idxs = sp_candidates[:take_n] if temporal_aware else sp_candidates[:take_n]
+
+            # Move selected indices from candidate pool into reserved train
+            reserved_train_idx.extend(take_idxs)
+            holdout_candidates_idx = [idx for idx in holdout_candidates_idx if idx not in take_idxs]
+            moved_count += len(take_idxs)
+            moved_detail.append((sp, len(take_idxs)))
+
+        if logger and moved_count > 0:
+            logger.info(f"\nSpecies coverage enforcement: moved {moved_count} samples into training to cover missing species.")
+            for sp, cnt in moved_detail[:10]:
+                logger.info(f"  + {sp}: {cnt} sample(s)")
+            if len(moved_detail) > 10:
+                logger.info(f"  ... and {len(moved_detail)-10} more species")
+
     # Sample holdout from candidates
     n_candidates = len(holdout_candidates_idx)
     n_holdout = min(target_holdout, n_candidates)
@@ -568,6 +613,16 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             logger.warning(f"WARNING: Groups missing from training: {missing_in_train}")
         else:
             logger.info(f"\n✓ All {len(groups)} groups represented in training")
+
+        # Verify species-level coverage if requested
+        if ensure_species_train_coverage and species_col in train_df.columns and species_col in df.columns:
+            species_all = set(df[species_col].astype(str).unique())
+            species_train = set(train_df[species_col].astype(str).unique())
+            missing_species_train = species_all - species_train
+            if missing_species_train:
+                logger.warning(f"WARNING: Species missing from training despite enforcement: {missing_species_train}")
+            else:
+                logger.info(f"\n✓ Species coverage: all {len(species_all)} species represented in training")
     
     return train_df, holdout_df
 

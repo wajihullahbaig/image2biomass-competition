@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/stratified_holdout_20260108_140418'
+MODEL_DIR = './logs/unified_holdout_20260115_104140'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -120,7 +120,7 @@ class BiomassUnifiedModel(nn.Module):
             # Transition to 128
             nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(128, 3), # [Log_C, Log_D, Log_G]
+            nn.Linear(128, 3), # [Log_Total, Log_GDM, Log_Green]
         )
         # Dead Ratio Head (predicts Dead_to_Total in [0,1])
         self.dead_ratio_head = nn.Sequential(
@@ -404,34 +404,39 @@ def run_inference(use_tta=False):
                 else:
                     log_pred, _, dead_ratio = no_tta(model, imgs, batch_idx)
                 
-                # Convert back to Linear Grams for averaging
-                preds_linear = torch.expm1(log_pred)
-                ratios_np = dead_ratio.cpu().numpy()
+                # Convert to Linear for averaging
+                preds_linear = torch.expm1(log_pred)  # [total, gdm, green]
+                dead_ratio_np = dead_ratio.cpu().numpy()
                 
-                fold_preds.append(np.concatenate([preds_linear.cpu().numpy(), ratios_np], axis=1))
+
+                pred_total = preds_linear[:, 0:1].cpu().numpy()
+                pred_dead = pred_total * dead_ratio_np
+                
+                # Store [total, gdm, green, dead] for ensemble averaging
+                fold_preds.append(np.concatenate([preds_linear.cpu().numpy(), pred_dead], axis=1))
                 if i == 0: 
                     final_clean_ids.extend(ids)
                     
         ensemble_preds_g.append(np.concatenate(fold_preds, axis=0))
         print(f"  ✓ Completed\n")
         
-    # 5. AVERAGE ENSEMBLE (Linear Space) over 3 predictions + ratio
+    # 5. AVERAGE ENSEMBLE (Linear Space) over 4 predictions
     print("Averaging ensemble predictions...")
-    all_preds = np.mean(ensemble_preds_g, axis=0)  # shape [N,4] => [Total,GDM,Green,DeadRatio] (order from model)
+    all_preds = np.mean(ensemble_preds_g, axis=0)  # shape [N,4] => [Total,GDM,Green,Dead] (order from model)
     all_preds = np.maximum(all_preds, 0)
     avg_total = all_preds[:, 0]
     avg_gdm = all_preds[:, 1]
     avg_green = all_preds[:, 2]
-    avg_dead_ratio = np.clip(all_preds[:, 3], 0.0, 1.0)
+    avg_dead = all_preds[:, 3]  # Already computed as total*ratio per model
 
-    # 6. DERIVE 5 targets from 3 predictions
+    # 6. DERIVE 5 targets from 4 predictions (Dead already computed per model)
     pred_total = avg_total
     pred_gdm = avg_gdm
     pred_green = avg_green
+    pred_dead = avg_dead  # Already computed as total*ratio per model
     
     # Ensure no negative values
     pred_clover = np.maximum(0, pred_gdm - pred_green)
-    pred_dead = np.maximum(0, pred_total * avg_dead_ratio)
 
     # 7. EXPORT in correct order [green, dead, clover, gdm, total]
     final_df = pd.DataFrame({

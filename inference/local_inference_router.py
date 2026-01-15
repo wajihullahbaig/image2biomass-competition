@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260114_202848'
+MODEL_DIR = './logs/unified_holdout_20260115_104140'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -407,10 +407,15 @@ def run_inference(USE_TTA=True):
                     log_pred, conf, dead_ratio = no_tta(model, imgs, batch_idx)
                 
                 # Convert to Linear for averaging
-                lin_pred = torch.expm1(log_pred)
-                ratios_np = dead_ratio.cpu().numpy()
+                lin_pred = torch.expm1(log_pred)  # [total, gdm, green]
+                dead_ratio_np = dead_ratio.cpu().numpy()
                 
-                fold_preds.append(np.concatenate([lin_pred.cpu().numpy(), ratios_np], axis=1))
+                # Apply your hypothesis: dead = total * dead_ratio for THIS model
+                pred_total = lin_pred[:, 0:1].cpu().numpy()
+                pred_dead = pred_total * dead_ratio_np
+                
+                # Store [total, gdm, green, dead] for ensemble averaging
+                fold_preds.append(np.concatenate([lin_pred.cpu().numpy(), pred_dead], axis=1))
                 fold_confs.append(conf.cpu().numpy())
                 
                 if i == 0: 
@@ -446,10 +451,10 @@ def run_inference(USE_TTA=True):
     print("="*80 + "\n")
     # ================================================================
 
-    # 5. WEIGHTED ENSEMBLE CALCULATION (components only)
+    # 5. WEIGHTED ENSEMBLE CALCULATION 
     print("Calculating Taxonomy-Weighted Ensemble...")
     
-    # Shape: [N_Models, N_Samples, 4] (Total, GDM, Green, DeadRatio)
+    # Shape: [N_Models, N_Samples, 4] (Total, GDM, Green, Dead)
     E = np.stack(ensemble_preds, axis=0)
     # Shape: [N_Models, N_Samples]
     W = W_raw
@@ -457,22 +462,21 @@ def run_inference(USE_TTA=True):
     # Expand Weights for broadcasting: [N_Models, N_Samples, 1]
     W_expanded = W[:, :, np.newaxis]
     
-    # Weighted Average over components: Sum(Pred * Weight) / Sum(Weight)
+    # Weighted Average: Sum(Pred * Weight) / Sum(Weight)
     numerator = np.sum(E * W_expanded, axis=0)
     denominator = np.sum(W_expanded, axis=0) + 1e-8
     
     avg_out = numerator / denominator  # [N_Samples, 4]
     avg_out = np.maximum(avg_out, 0)
 
-    # 6. DERIVE 5 targets from 4 predictions
+    # 6. DERIVE 5 targets from 4 predictions (Dead already computed per model)
     pred_total = avg_out[:, 0]
     pred_gdm = avg_out[:, 1] 
     pred_green = avg_out[:, 2]
-    avg_dead_ratio = np.clip(avg_out[:, 3], 0.0, 1.0)
+    pred_dead = avg_out[:, 3]  # Already computed as total*ratio per model
     
     # Ensure no negative values
     pred_clover = np.maximum(0, pred_gdm - pred_green)
-    pred_dead = np.maximum(0, pred_total * avg_dead_ratio)
 
     final_df = pd.DataFrame({
         'Dry_Green_g': pred_green,

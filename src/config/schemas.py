@@ -33,6 +33,10 @@ class TrainingConfig:
     aux_feat_weight: float
     species_feat_weight: float
     taxonomy_feat_weight: float
+    overfitting_penalty_alpha: float = 0.5
+    # Exponential moving average decay for smoothing scheduler score (0..1)
+    # Higher values -> smoother (less responsive). Default: 0.9
+    ema_decay: float = 0.9
 
 @dataclass
 class AugmentationConfig:

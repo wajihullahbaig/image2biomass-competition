@@ -644,6 +644,10 @@ def main():
         aux_mean_t = torch.tensor(aux_mean_np, dtype=torch.float32, device=cfg.device).view(1, -1) if aux_data.shape[1] > 0 else None
         aux_std_t = torch.tensor(aux_std_np, dtype=torch.float32, device=cfg.device).view(1, -1) if aux_data.shape[1] > 0 else None
 
+        # EMA state for scheduler stability (epoch-level score smoothing)
+        ema_score_prev = None
+        ema_decay = getattr(cfg.training, 'ema_decay', 0.9) if hasattr(cfg, 'training') else 0.9
+
         for epoch in range(cfg.hyperparameters.epochs):
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, criterion_reg, criterion_species, criterion_tax,
@@ -666,11 +670,19 @@ def main():
 
             v_r2 = val_metrics['val_r2']
             h_r2 = hol_metrics['holdout_r2']
-            avg_r2 = (v_r2 + h_r2) / 2
+            # Original consistency-based score (average minus consistency penalty)
+            avg_r2 = (v_r2 + h_r2) / 2.0
             consistency_penalty = 0.5 * abs(v_r2 - h_r2)
             current_score = avg_r2 - consistency_penalty
             score_gap = abs(v_r2 - h_r2)
-            scheduler.step(current_score)
+
+            # Smooth the score with EMA before updating the LR scheduler
+            if ema_score_prev is None:
+                ema_score = current_score
+            else:
+                ema_score = ema_decay * ema_score_prev + (1.0 - ema_decay) * current_score
+            ema_score_prev = ema_score
+            scheduler.step(ema_score)
 
             log_msg = get_formatted_loss_log(epoch,
                                              train_metrics,

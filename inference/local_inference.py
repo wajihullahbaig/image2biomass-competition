@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260115_104140'
+MODEL_DIR = './logs/unified_holdout_20260115_195150'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -37,7 +37,7 @@ FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 32
-BIOMASS_CLAMP = 3000.0
+BIOMASS_CLAMP = 1000.0
 
 # FEATURE FLAGS
 USE_TTA = True            # Enable/Disable Test-Time Augmentation

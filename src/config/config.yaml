@@ -9,7 +9,7 @@ preprocessing:
 hyperparameters:
   batch_size: 64
   learning_rate: 0.00025
-  n_folds: 3
+  n_folds: 4
   epochs: 20
   weight_decay: 0.05
   early_stop_patience: 10

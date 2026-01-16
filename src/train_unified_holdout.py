@@ -489,7 +489,7 @@ def main():
     
     sgkf = StratifiedGroupKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
     # Stratify by Species for the folds to ensure maximum species representation across folds
-    splitter = sgkf.split(dev_df, dev_df['Species'], groups=dev_df['SessionID'])
+    splitter = sgkf.split(dev_df, dev_df['Species'], groups=dev_df['State'])
     fold_iter = [(dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) 
                  for train, val in splitter]
     split_name = 'StratifiedGroupKFold-Species'
@@ -604,7 +604,7 @@ def main():
             {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
         ]
         optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.85, patience=5, threshold=1e-3, min_lr=1e-6)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.85, patience=3, threshold=1e-3, min_lr=1e-6)
 
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()

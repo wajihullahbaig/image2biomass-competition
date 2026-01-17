@@ -48,19 +48,10 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.6),
             nn.Linear(32, self.num_species)
         )
-
-        # 4. Taxonomy Head (Coarse-Grained: 3 classes - Legume, Grass, Weed)
-        self.taxonomy_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 16),
-            nn.LayerNorm(16),
-            nn.ReLU(),
-            nn.Dropout(0.6),
-            nn.Linear(16, 3) 
-        )
         
         # 5. Biomass Head
-        # Inputs: Backbone + Aux + Specie+ Taxonomy
-        input_dim = self.backbone_dim + self.num_aux + self.num_species + 3
+        # Inputs: Backbone + Aux + Specie
+        input_dim = self.backbone_dim + self.num_aux + self.num_species
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, self.fusion_dim),
@@ -93,18 +84,15 @@ class BiomassUnifiedModel(nn.Module):
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
-        taxonomy_logits = self.taxonomy_head(img_feats)
-        taxonomy_probs = torch.softmax(taxonomy_logits, dim=1)
-        
         aux_out = self.aux_head(img_feats) 
         
-        # Fusion: Include Taxonomy Probs
-        combined_feats = torch.cat([img_feats, aux_out, species_probs, taxonomy_probs], dim=1)
+        # Fusion
+        combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         
         # Biomass Prediction (Green, Dead, Clover)
         log_preds_raw = self.biomass_head(combined_feats)
         # softplus ensures positivity, clamp ensures we don't blow up expm1
         biomass_out = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
         
-        return biomass_out, aux_out, species_logits, taxonomy_logits
+        return biomass_out, aux_out, species_logits
 

@@ -36,7 +36,6 @@ FUSION_DIM = cfg.training.fusion_dim
 BIOMASS_FEAT_WEIGHT = cfg.training.biomass_feat_weight
 AUX_FEAT_WEIGHT = cfg.training.aux_feat_weight
 SPECIES_FEAT_WEIGHT = cfg.training.species_feat_weight
-TAXONOMY_FEAT_WEIGHT = cfg.training.taxonomy_feat_weight
 
 # --- Augmentation & Tiling Settings ---
 TILE_PROB = cfg.augmentation.tile_prob
@@ -52,7 +51,6 @@ USE_SPECIES_COUNT_FEATURE = cfg.features.use_species_count_feature
 # ====================== SPECIES & TAXONOMY ======================
 CORE_SPECIES = cfg.species_taxonomy.core_species
 GROUP_DEFINITIONS = cfg.species_taxonomy.groups
-TAXONOMY_IDXS = cfg.species_taxonomy.taxonomy_idxs
 
 # ====================== IMPROVED STRATIFICATION ======================
 def get_key1_specie_pair(row, key1='State',flip=False) -> str:
@@ -128,7 +126,6 @@ def config_str():
         f"FUSION_DIM: {FUSION_DIM}",
         f"AUX_FEAT_WEIGHT: {AUX_FEAT_WEIGHT}",
         f"SPECIES_FEAT_WEIGHT: {SPECIES_FEAT_WEIGHT}",
-        f"TAXONOMY_FEAT_WEIGHT: {TAXONOMY_FEAT_WEIGHT}",
         f"BIOMASS_FEAT_WEIGHT: {BIOMASS_FEAT_WEIGHT}",
         f"STRATIFY: {SPLIT_CONFIG['stratification_key']} (Coverage-Aware)",
         f"UPSAMPLE: Enabled={UPSAMPLE_CONFIG['enabled']} (target={UPSAMPLE_CONFIG['target_min_samples']})",

@@ -99,18 +99,10 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(32, num_species)
         )
 
-        # 4. Taxonomy Head (Coarse-Grained: 3 classes - Legume, Grass, Weed)
-        self.taxonomy_head = nn.Sequential(
-            nn.Linear(self.backbone_dim, 16),
-            nn.LayerNorm(16),
-            nn.ReLU(),
-            nn.Dropout(0.6),
-            nn.Linear(16, 3) 
-        )
         
         # 5. Biomass Head
-        # Inputs: Backbone + Aux(3) + Species(14) + Taxonomy(3)
-        input_dim = self.backbone_dim + num_aux + num_species + 3
+        # Inputs: Backbone + Aux(3) + Species(14)
+        input_dim = self.backbone_dim + num_aux + num_species
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
@@ -142,19 +134,15 @@ class BiomassUnifiedModel(nn.Module):
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
-        taxonomy_logits = self.taxonomy_head(img_feats)
-        taxonomy_probs = torch.softmax(taxonomy_logits, dim=1)
-        
-        aux_out = self.aux_head(img_feats) 
-            
-        combined_feats = torch.cat([img_feats, aux_out, species_probs, taxonomy_probs], dim=1)
+        # Fusion: Include Species probs
+        combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         
         # Biomass Prediction (Green, Dead, Clover)
         log_preds_raw = self.biomass_head(combined_feats)
         # softplus ensures positivity, clamp ensures we don't blow up expm1
         biomass_out = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
         
-        return biomass_out, aux_out, species_logits, taxonomy_logits
+        return biomass_out, aux_out, species_logits
 
 
 # ====================== TTA HELPERS ======================
@@ -198,9 +186,9 @@ def no_tta(model, image, batch_idx=0):
         save_tta_images(image, batch_idx, 'original')
     
     with torch.no_grad():
-        biomass_out, aux, sp, tax_logits = model(image)
-        # Extract Confidence
-        probs = torch.softmax(tax_logits, dim=1)
+        biomass_out, aux, sp_logits = model(image)
+        # Extract Confidence from Species Logits (Max Probability)
+        probs = torch.sigmoid(sp_logits)
         conf, _ = torch.max(probs, dim=1)
         
     return biomass_out, conf
@@ -232,7 +220,7 @@ def apply_tta(model, image, batch_idx=0):
                 save_tta_images(img_aug, batch_idx, view_name)
             
             # Predict independent components
-            biomass_out, aux, sp, tax_logits = model(img_aug) 
+            biomass_out, aux, sp_logits = model(img_aug) 
             
             # Linear space components
             bio_lin = torch.expm1(biomass_out)
@@ -248,8 +236,8 @@ def apply_tta(model, image, batch_idx=0):
             full_bio_lin = torch.cat([green_lin, dead_lin, clover_lin, gdm_lin, total_lin], dim=1)
             all_biomass_linear.append(full_bio_lin)
             
-            # Extract Confidence
-            probs = torch.softmax(tax_logits, dim=1) 
+            # Extract Confidence from Species
+            probs = torch.sigmoid(sp_logits) 
             conf, _ = torch.max(probs, dim=1) 
             all_confidences.append(conf)
 

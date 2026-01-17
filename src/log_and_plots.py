@@ -13,6 +13,9 @@ def plot_training_history(history, fold, session_dir):
     fig, axes = plt.subplots(2, 4, figsize=(24, 10))
     axes = axes.flatten()
     
+    # Hide the last axes (we only have 7 plots now)
+    axes[7].set_visible(False)
+    
     def try_plot(ax_idx, key, label, color, style='-'):
         if key in history and len(history[key]) > 0:
             data = [float(x) for x in history[key] if x is not None]
@@ -94,11 +97,6 @@ def plot_training_history(history, fold, session_dir):
     axes[6].set_title('Learning Rate')
     axes[6].set_yscale('log')
 
-    # 8. Taxonomy Loss
-    try_plot(7, 'train_tax', 'Train', 'tab:blue')
-    try_plot(7, 'val_tax', 'Val', 'tab:red')
-    try_plot(7, 'holdout_tax', 'Holdout', 'tab:green')
-    axes[7].set_title('Taxonomy Loss')
 
     for ax in axes:
         if ax.get_legend_handles_labels()[0]:
@@ -313,7 +311,6 @@ def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, curre
         ("Biomass",      fmt_num(train_metrics.get('train_bio')),  fmt_num(val_metrics.get('val_bio')),  fmt_num(hol_metrics.get('holdout_bio'))),
         ("Aux",          fmt_num(train_metrics.get('train_aux')),  fmt_num(val_metrics.get('val_aux')),  fmt_num(hol_metrics.get('holdout_aux'))),
         ("Species",      fmt_num(train_metrics.get('train_sp')),   fmt_num(val_metrics.get('val_sp')),   fmt_num(hol_metrics.get('holdout_sp'))),
-        ("Taxonomy",     fmt_num(train_metrics.get('train_tax')),  fmt_num(val_metrics.get('val_tax')),  fmt_num(hol_metrics.get('holdout_tax'))),
         ("HSV",          fmt_num(train_metrics.get('train_loss_hsv')), fmt_num(val_metrics.get('val_loss_hsv')), fmt_num(hol_metrics.get('holdout_loss_hsv'))),
         ("R2",           fmt_num(train_metrics.get('train_r2')),   fmt_num(v_r2),                         fmt_num(h_r2)),
     ]
@@ -419,7 +416,6 @@ def log_fold_summary_tables(logger, fold, history, best_epoch):
         ('Biomass',      'train_bio',  'val_bio',  'holdout_bio'),
         ('Aux',          'train_aux',  'val_aux',  'holdout_aux'),
         ('Species',      'train_sp',   'val_sp',   'holdout_sp'),
-        ('Taxonomy',     'train_tax',  'val_tax',  'holdout_tax'),
         ('HSV',          'train_loss_hsv', 'val_loss_hsv', 'holdout_loss_hsv'),
         ('R2',           'train_r2',   'val_r2',   'holdout_r2'),
     ]

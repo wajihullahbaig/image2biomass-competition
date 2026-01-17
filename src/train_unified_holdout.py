@@ -20,7 +20,6 @@ from common import (
     calculate_scheduler_score, get_season, load_data, get_image_data_transforms, save_batch_images,
     save_hsv_mask_batch,
     set_seed, calculate_global_weighted_r2,
-    get_taxonomy_targets,
     rotate_crop_resize, save_tta_images
 )
 from feature_transform import BiomassFeatureTransform, apply_deterministic_features
@@ -36,7 +35,7 @@ from dataset import TiledBiomassDataset, TiledMixupDataset
 from models import BiomassUnifiedModel
 
 
-def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, criterion_tax, cfg, epoch, session_dir=None, logger=None,
+def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, cfg, epoch, session_dir=None, logger=None,
                     bio_mean=None, bio_std=None, aux_mean=None, aux_std=None, official_weights_t=None):
     model.train()
     metrics = defaultdict(float)
@@ -62,12 +61,11 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             save_batch_images(images, fold=0, batch_idx=batch_idx, session_dir=session_dir, max_batches_to_save=5)
             save_hsv_mask_batch(images, fold=0, batch_idx=batch_idx, session_dir=session_dir, max_batches_to_save=5)
 
-        taxonomy_targets = get_taxonomy_targets(species_vec)
         optimizer.zero_grad()
 
         with torch.amp.autocast('cuda'):
             # Model now returns [Log_Green, Log_Dead, Log_Clover]
-            biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
+            biomass_out, aux_out, species_logits = model(images)
 
             # Linear space components for derivation
             pred_green_lin = torch.expm1(biomass_out[:, 0:1])
@@ -142,13 +140,10 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
                 t_aux = (t_aux - aux_mean) / (aux_std + eps)
             loss_aux = nn.MSELoss()(p_aux, t_aux) * cfg.training.aux_feat_weight
 
-            # --- Species / Taxonomy Losses ---
+            # --- Species Loss ---
             loss_sp = nn.BCEWithLogitsLoss()(species_logits, species_vec) * cfg.training.species_feat_weight
-            tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
-            tax_log_probs = torch.nn.functional.log_softmax(taxonomy_logits, dim=1)
-            loss_tax = nn.KLDivLoss(reduction='batchmean')(tax_log_probs, tax_targets_norm) * cfg.training.taxonomy_feat_weight
 
-            total_loss = loss_bio + loss_aux + loss_sp + loss_tax
+            total_loss = loss_bio + loss_aux + loss_sp
 
         if torch.isnan(total_loss):
             if logger:
@@ -177,7 +172,6 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_bio']  += loss_bio.item() * B
         metrics['train_aux']  += loss_aux.item() * B
         metrics['train_sp']   += loss_sp.item() * B
-        metrics['train_tax']  += loss_tax.item() * B
         
         # Individual losses for tracking
         metrics['train_loss_green']  += l_green.item() * B
@@ -204,7 +198,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
 
 
 @torch.no_grad()
-def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg, prefix='val', use_tta=False, epoch=0, fold=0, session_dir=None,
+def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val', use_tta=False, epoch=0, fold=0, session_dir=None,
              bio_mean=None, bio_std=None, aux_mean=None, aux_std=None, official_weights_t=None):
     model.eval()
     metrics = defaultdict(float)
@@ -223,32 +217,28 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
         targets_g = batch['targets'].to(cfg.device)
         aux_feats = batch['aux_feats'].to(cfg.device)
         species_vec = batch['species_id'].to(cfg.device)
-        taxonomy_targets = get_taxonomy_targets(species_vec)
 
         if use_tta:
             accum_bio_linear = 0
             accum_aux = 0
             accum_sp_probs = 0
-            accum_tax_probs = 0
             for view_name, transform_fn in tta_views:
                 img_aug = transform_fn(images)
                 if session_dir is not None:
                     save_tta_images(img_aug, view_name, batch_idx, fold, epoch, session_dir)
                 # Model now returns [Log_Green, Log_Dead, Log_Clover]
-                bio_out_tta, aux_out_tta, sp_logits_tta, tax_logits_tta = model(img_aug)
+                bio_out_tta, aux_out_tta, sp_logits_tta = model(img_aug)
                 accum_bio_linear += torch.expm1(bio_out_tta) # Sum linear predictions
                 accum_aux += aux_out_tta
                 accum_sp_probs += torch.sigmoid(sp_logits_tta)
-                accum_tax_probs += torch.softmax(tax_logits_tta, dim=1)
             
             avg_bio_linear = accum_bio_linear / len(tta_views)
             biomass_out = torch.log1p(avg_bio_linear) # Convert back to log for loss
             aux_out = accum_aux / len(tta_views)
             species_probs = accum_sp_probs / len(tta_views)
-            taxonomy_log_probs = torch.log(accum_tax_probs + 1e-9)
         else:
             # Model now returns [Log_Green, Log_Dead, Log_Clover]
-            biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
+            biomass_out, aux_out, species_logits = model(images)
 
         # Linear space components for derivation from model output
         pred_green_lin = torch.expm1(biomass_out[:, 0:1])
@@ -321,25 +311,19 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
             t_aux = (t_aux - aux_mean) / (aux_std + eps)
         loss_aux = criterion_reg(p_aux, t_aux) * cfg.training.aux_feat_weight
 
-        # --- Species / Taxonomy Losses ---
+        # --- Species Loss ---
         if use_tta:
             loss_sp = nn.BCELoss()(species_probs, species_vec) * cfg.training.species_feat_weight
-            tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
-            loss_tax = criterion_tax(taxonomy_log_probs, tax_targets_norm) * cfg.training.taxonomy_feat_weight
         else:
             loss_sp = criterion_species(species_logits, species_vec) * cfg.training.species_feat_weight
-            tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
-            tax_log_probs = torch.nn.functional.log_softmax(taxonomy_logits, dim=1)
-            loss_tax = criterion_tax(tax_log_probs, tax_targets_norm) * cfg.training.taxonomy_feat_weight
 
-        total_loss = loss_bio + loss_aux + loss_sp + loss_tax
+        total_loss = loss_bio + loss_aux + loss_sp
 
         B = images.size(0)
         metrics[f'{prefix}_loss'] += total_loss.item() * B
         metrics[f'{prefix}_bio'] += loss_bio.item() * B
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
-        metrics[f'{prefix}_tax'] += loss_tax.item() * B
         
         # Individual losses for tracking
         metrics[f'{prefix}_loss_green']  += l_green.item() * B
@@ -599,7 +583,6 @@ def main():
 
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()
-        criterion_tax = nn.KLDivLoss(reduction='batchmean')
 
         history = defaultdict(list)
         best_fold_score = -float('inf')
@@ -645,19 +628,19 @@ def main():
 
         for epoch in range(cfg.hyperparameters.epochs):
             train_metrics = train_one_epoch(
-                model, train_loader, optimizer, criterion_reg, criterion_species, criterion_tax,
+                model, train_loader, optimizer, criterion_reg, criterion_species,
                 cfg, epoch, session_dir=session_dir, logger=logger,
                 bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t,
                 official_weights_t=official_weights_t
             )
 
             val_metrics = validate(
-                model, val_loader, criterion_reg, criterion_species, criterion_tax, cfg, prefix='val', use_tta=False,
+                model, val_loader, criterion_reg, criterion_species, cfg, prefix='val', use_tta=False,
                 bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t, official_weights_t=official_weights_t
             )
 
             hol_metrics = validate(
-                model, holdout_loader, criterion_reg, criterion_species, criterion_tax, cfg,
+                model, holdout_loader, criterion_reg, criterion_species, cfg,
                 prefix='holdout', use_tta=cfg.training.use_tta,
                 epoch=epoch, fold=fold, session_dir=session_dir,
                 bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t, official_weights_t=official_weights_t

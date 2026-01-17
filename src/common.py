@@ -26,7 +26,6 @@ IMAGE_WIDTH = cfg.preprocessing.image_width
 CORE_SPECIES = cfg.species_taxonomy.core_species
 GROUP_DEFINITIONS = cfg.species_taxonomy.groups
 N_FOLDS = cfg.hyperparameters.n_folds
-TAXONOMY_IDXS = cfg.species_taxonomy.taxonomy_idxs
 UPSAMPLE_CONFIG = {
     'enabled': cfg.upsample.enabled,
     'target_min_samples': cfg.upsample.target_min_samples,
@@ -916,18 +915,6 @@ def save_hsv_mask_batch(images, fold, batch_idx, session_dir, max_batches_to_sav
         save_path = os.path.join(save_dir, f'batch_{batch_idx:03d}_hsv.jpg')
         cv2.imwrite(save_path, combined)
 
-def get_taxonomy_targets(species_vec):
-    """
-    Converts 14-dim species probability vector to 3-dim Taxonomy vector.
-    Order: [Legume, Grass, Weed]
-    
-    Uses indices defined in configs.py to ensure consistency with CORE_SPECIES.
-    """
-    legume_prob = species_vec[:, TAXONOMY_IDXS['legume']].sum(dim=1, keepdim=True)
-    grass_prob  = species_vec[:, TAXONOMY_IDXS['grass']].sum(dim=1, keepdim=True)
-    weed_prob   = species_vec[:, TAXONOMY_IDXS['weed']].sum(dim=1, keepdim=True)
-    
-    return torch.cat([legume_prob, grass_prob, weed_prob], dim=1)
 
 def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
     """Save TTA-augmented images for visualization."""
@@ -961,88 +948,48 @@ def build_weighted_sampler_from_df(df, key='State_Species', cap_quantile=0.95):
     sampler = torch.utils.data.WeightedRandomSampler(w_tensor, num_samples=len(df), replacement=True)
     return sampler
 
-
 def calculate_scheduler_score(
     train_r2,
     val_r2,
     holdout_r2,
     ema_score_prev=None,
     ema_decay=0.9,
-    method='symmetric_gap',
+    method='weighted_val',
     gap_weights=None
 ):
     """
-    Calculate smoothed score for LR scheduler based on train/val/holdout comparison.
-    
-    Args:
-        train_r2: Training R² score
-        val_r2: Validation R² score
-        holdout_r2: Holdout R² score
-        ema_score_prev: Previous EMA score (None for first epoch)
-        ema_decay: EMA decay factor (default: 0.9)
-        method: Scoring method - one of:
-            - 'symmetric_gap': Penalize any divergence between train and test sets
-            - 'overfit_penalty': Only penalize when train > val/holdout (overfitting)
-            - 'generalization': Focus on overall performance with generalization penalty
-        gap_weights: Tuple of (val_weight, holdout_weight) for gap penalties
-                     Default: (0.25, 0.25) for symmetric_gap and generalization
-                              (0.5, 0.5) for overfit_penalty
-    
-    Returns:
-        tuple: (ema_score, score_gap, current_score)
-            - ema_score: Smoothed score for scheduler.step()
-            - score_gap: Gap metric for monitoring
-            - current_score: Raw score before EMA smoothing
+    Revised Score Calculation for R^2 Maximization.
+    Removes gap penalties that prematurely kill learning rates.
     """
     
-    # Set default weights based on method
-    if gap_weights is None:
-        if method == 'overfit_penalty':
-            gap_weights = (0.5, 0.5)
-        else:
-            gap_weights = (0.25, 0.25)
+    # method is largely ignored now, we focus on weighted validation
     
-    val_weight, holdout_weight = gap_weights
+    # STRATEGY: 
+    # We want the scheduler to step only if the model stops improving 
+    # on unseen data.
     
-    # Calculate score based on selected method
-    if method == 'symmetric_gap':
-        # Penalize any divergence between train and test sets
-        train_val_gap = abs(train_r2 - val_r2)
-        train_hol_gap = abs(train_r2 - holdout_r2)
+    # 1. Primary Metric: Validation Set (Standard check)
+    # 2. Secondary Metric: Holdout Set (Sanity check)
+    
+    # If using 'weighted_val', we trust the Validation set more, 
+    # but smooth it with Holdout to prevent overfitting to the specific validation fold.
+    score_mix = (0.6 * val_r2) + (0.4 * holdout_r2)
+    
+    # OPTIONAL: Hard Overfit Gate
+    # Only if Train is significantly better (e.g., > 0.3 gap) do we start worrying.
+    # Otherwise, let the model run.
+    if (train_r2 - val_r2) > 0.3:
+        score_mix -= 0.05 # Small penalty, not a run-killer
         
-        avg_r2 = (val_r2 + holdout_r2) / 2.0
-        gap_penalty = val_weight * train_val_gap + holdout_weight * train_hol_gap
-        current_score = avg_r2 - gap_penalty
-        
-        score_gap = max(train_val_gap, train_hol_gap)
+    current_score = score_mix
     
-    elif method == 'overfit_penalty':
-        # Only penalize when training performance exceeds validation/holdout
-        overfit_val = max(0, train_r2 - val_r2)
-        overfit_hol = max(0, train_r2 - holdout_r2)
-        
-        avg_r2 = (val_r2 + holdout_r2) / 2.0
-        overfit_penalty = val_weight * overfit_val + holdout_weight * overfit_hol
-        current_score = avg_r2 - overfit_penalty
-        
-        score_gap = overfit_val + overfit_hol
-    
-    elif method == 'generalization':
-        # Focus on generalization: how well val/holdout match train
-        avg_r2 = (train_r2 + val_r2 + holdout_r2) / 3.0
-        generalization_gap = (abs(train_r2 - val_r2) + abs(train_r2 - holdout_r2)) / 2.0
-        current_score = avg_r2 - (val_weight + holdout_weight) * generalization_gap
-        
-        score_gap = generalization_gap
-    
-    else:
-        raise ValueError(f"Unknown method: {method}. Choose from: 'symmetric_gap', 'overfit_penalty', 'generalization'")
-    
-    # Apply EMA smoothing
+    # Calculate gap just for logging, NOT for the score
+    score_gap = abs(train_r2 - val_r2)
+
+    # Apply EMA smoothing (Keep this, it is good for stability)
     if ema_score_prev is None:
         ema_score = current_score
     else:
         ema_score = ema_decay * ema_score_prev + (1.0 - ema_decay) * current_score
     
     return ema_score, score_gap, current_score
-

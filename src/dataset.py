@@ -1,9 +1,10 @@
 # dataset.py
 # dataset_tiled.py - Enhanced Dataset with Tile-Based Augmentation
 import os
-import torch
-import numpy as np
 import pandas as pd
+import numpy as np
+import cv2
+import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms.functional as TF
@@ -11,7 +12,11 @@ from torchvision import transforms
 import random
 
 # Local Imports
-from common import CORE_SPECIES
+from common import (
+    CORE_SPECIES,
+    get_season, load_data, get_image_data_transforms,
+    get_hsv_green_mask
+)
 
 class TiledBiomassDataset(Dataset):
     """
@@ -187,17 +192,21 @@ class TiledBiomassDataset(Dataset):
             targets_scale = 0.25  # Each tile has 1/4 of total biomass
             sample_id_suffix = f"_TILE{tile_idx}"
         
+        # Calculate HSV Green Score before normalization/tensorization
+        hsv_score = self._get_green_mask_count(final_image, sample_id=row['sample_id'] + sample_id_suffix)
+
         # Apply downstream transforms (rotation, color jitter, normalization)
         if self.transform:
-            final_image = self.transform(final_image)
+            final_transformed_image = self.transform(final_image)
         else:
             raise ValueError("No transform provided.")
         
         # Handle test mode
         if self.is_test:
             return {
-                'image': final_image, 
-                'sample_id': row['sample_id'] + sample_id_suffix
+                'image': final_transformed_image, 
+                'sample_id': row['sample_id'] + sample_id_suffix,
+                'hsv_score': hsv_score
             }
         
         # ===== TARGETS & FEATURES =====
@@ -206,22 +215,33 @@ class TiledBiomassDataset(Dataset):
         scaled_targets = raw_targets * targets_scale
         targets = torch.tensor(scaled_targets)
         
-        # Auxiliary features (unchanged by tiling)
-        aux_values = row[self.aux_cols].values
-        aux_feats = torch.tensor(np.nan_to_num(aux_values.astype(np.float32)))
+        # Auxiliary features + HSV Green Score
+        hsv_score = self._get_green_mask_count(final_image, sample_id=row['sample_id'] + sample_id_suffix)
+        aux_values = np.append(row[self.aux_cols].values.astype(np.float32), [hsv_score])
+        aux_feats = torch.tensor(np.nan_to_num(aux_values), dtype=torch.float32)
         
         # Species vector (unchanged by tiling)
         species_vec = torch.tensor(row[self.species_cols].values.astype(np.float32))
         
         return {
-            'image': final_image,
+            'image': final_transformed_image,
             'targets': targets,
             'aux_feats': aux_feats,
             'species_id': species_vec,
             'sample_id': row['sample_id'] + sample_id_suffix,
             'is_tiled': use_tiling,
-            'tile_scale': targets_scale
+            'tile_scale': targets_scale,
+            'hsv_score': hsv_score
         }
+
+    def _get_green_mask_count(self, image, sample_id=None):
+        """
+        Calculates green pixel percentage using HSV color space.
+        Uses shared logic from common.py
+        """
+        img_np = np.array(image)
+        _, hsv_score = get_hsv_green_mask(img_np)
+        return hsv_score
 
 
 class TiledMixupDataset(Dataset):
@@ -252,15 +272,18 @@ class TiledMixupDataset(Dataset):
         lam = np.random.beta(self.alpha, self.alpha)
         
         # Mix images
-        mixed_img = lam * sample1['image'] + (1 - lam) * sample2['image']
+        mixed_img = (lam * sample1['image'] + (1 - lam) * sample2['image']).to(torch.float32)
         
         # Mix targets (handles tiled targets correctly)
-        mixed_targets = lam * sample1['targets'] + (1 - lam) * sample2['targets']
+        mixed_targets = (lam * sample1['targets'] + (1 - lam) * sample2['targets']).to(torch.float32)
         
         # Mix auxiliary features
-        mixed_aux = lam * sample1['aux_feats'] + (1 - lam) * sample2['aux_feats']
-        mixed_species = lam * sample1['species_id'] + (1 - lam) * sample2['species_id']
+        mixed_aux = (lam * sample1['aux_feats'] + (1 - lam) * sample2['aux_feats']).to(torch.float32)
+        mixed_species = (lam * sample1['species_id'] + (1 - lam) * sample2['species_id']).to(torch.float32)
         
+        # Mix HSV Green Score
+        mixed_hsv = float(lam * sample1.get('hsv_score', 0.0) + (1 - lam) * sample2.get('hsv_score', 0.0))
+
         return {
             'image': mixed_img,
             'targets': mixed_targets,
@@ -268,7 +291,8 @@ class TiledMixupDataset(Dataset):
             'species_id': mixed_species,
             'sample_id': f"{sample1['sample_id']}_MIX_{sample2['sample_id']}",
             'is_tiled': sample1.get('is_tiled', False) or sample2.get('is_tiled', False),
-            'tile_scale': (sample1.get('tile_scale', 1.0) + sample2.get('tile_scale', 1.0)) / 2
+            'tile_scale': (sample1.get('tile_scale', 1.0) + sample2.get('tile_scale', 1.0)) / 2,
+            'hsv_score': mixed_hsv
         }
 
 

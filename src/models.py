@@ -59,7 +59,7 @@ class BiomassUnifiedModel(nn.Module):
         )
         
         # 5. Biomass Head
-        # Inputs: Backbone + Aux(3) + Species(14) + Taxonomy(3)
+        # Inputs: Backbone + Aux + Specie+ Taxonomy
         input_dim = self.backbone_dim + self.num_aux + self.num_species + 3
                 
         self.biomass_head = nn.Sequential(
@@ -69,17 +69,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.6),
             nn.Linear(self.fusion_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, 3), # [Log_Total, Log_GDM, Log_Green]
-        )
-
-        # 5b. Dead Ratio Head (indirect Dead via Total)
-        # Predicts Dead_to_Total ratio in [0,1]
-        self.dead_ratio_head = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(64, 1)
+            nn.Linear(128, 3), # [Green, Dead, Clover]
         )
 
         self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
@@ -91,9 +81,9 @@ class BiomassUnifiedModel(nn.Module):
         nn.init.xavier_uniform_(last_layer.weight)
         with torch.no_grad():
             last_layer.bias.fill_(0)
-            last_layer.bias[0] = 4.0 # ~50g total
-            last_layer.bias[1] = 3.5 # ~30g gdm
-            last_layer.bias[2] = 3.0 # ~20g green
+            last_layer.bias[0] = 3.0 # ~20g green
+            last_layer.bias[1] = 2.0 # ~7g dead
+            last_layer.bias[2] = 2.5 # ~12g clover
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -111,18 +101,10 @@ class BiomassUnifiedModel(nn.Module):
         # Fusion: Include Taxonomy Probs
         combined_feats = torch.cat([img_feats, aux_out, species_probs, taxonomy_probs], dim=1)
         
-        # Biomass Prediction
+        # Biomass Prediction (Green, Dead, Clover)
         log_preds_raw = self.biomass_head(combined_feats)
         # softplus ensures positivity, clamp ensures we don't blow up expm1
-        log_preds = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
+        biomass_out = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
         
-        log_total = log_preds[:, 0:1]
-        log_gdm = log_preds[:, 1:2] 
-        log_green = log_preds[:, 2:3]
-        biomass_out = torch.cat([log_total, log_gdm, log_green], dim=1)
-        
-        # Dead-to-Total ratio in [0,1]
-        dead_ratio = torch.sigmoid(self.dead_ratio_head(combined_feats))
-        
-        return biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio
+        return biomass_out, aux_out, species_logits, taxonomy_logits
 

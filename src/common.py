@@ -9,9 +9,11 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torchvision import transforms
 from torchvision.utils import save_image
+import cv2
 from PIL import ImageFilter
 from sklearn.preprocessing import KBinsDiscretizer
 
@@ -281,7 +283,7 @@ def engineer_features(wide, logger):
     # Feature Engineering (Auxiliary Inputs)
     wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'])
     wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
-    wide['Interaction_Add'] = wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']
+    wide['Interaction_Add'] = (wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']) / 2.0
 
     # Species richness (per-sample count) and soft labels
     # Always compute an internal count for soft-label normalization
@@ -850,6 +852,70 @@ def save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=
     
     save_path = os.path.join(images_dir, f'batch_{batch_idx:03d}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
+
+def get_hsv_green_mask(image_numpy):
+    """
+    Calculates green mask using HSV color space logic.
+    Input: RGB Image as numpy array (H, W, 3)
+    Returns: binary_mask, hsv_score
+    """
+    # Convert to BGR for OpenCV
+    img_bgr = cv2.cvtColor(image_numpy, cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    
+    # Define green range (Hue: 35-85, Sat/Val > 50)
+    lower_green = np.array([35, 50, 50])
+    upper_green = np.array([85, 255, 255])
+    
+    mask = cv2.inRange(hsv, lower_green, upper_green)
+    
+    # Calculate score
+    green_count = cv2.countNonZero(mask)
+    total_pixels = mask.shape[0] * mask.shape[1]
+    hsv_score = green_count / (total_pixels + 1e-9)
+    
+    return mask, hsv_score
+
+def save_hsv_mask_batch(images, fold, batch_idx, session_dir, max_batches_to_save=5):
+    """
+    Save a batch of images alongside their HSV masks as a grid.
+    """
+    if batch_idx >= max_batches_to_save:
+        return
+    
+    save_dir = os.path.join(session_dir, 'hsv_masks', f'fold{fold}')
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Denormalize batches
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(images.device)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(images.device)
+    images_torch = torch.clamp(images * std + mean, 0, 1)
+    
+    # Move to CPU and numpy
+    imgs_np = (images_torch.permute(0, 2, 3, 1).cpu().numpy() * 255).astype(np.uint8)
+    
+    rows = []
+    for i in range(min(len(imgs_np), 4)): # Limit to 4 images per grid for clarity
+        img = imgs_np[i]
+        mask, score = get_hsv_green_mask(img)
+        
+        # 1. Original BGR
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        # 2. Mask to BGR
+        mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        # 3. Result
+        res = cv2.bitwise_and(bgr, bgr, mask=mask)
+        
+        # Add score text to original
+        cv2.putText(bgr, f"Score: {score:.3f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        row = np.hstack([bgr, mask_bgr, res])
+        rows.append(row)
+        
+    if rows:
+        combined = np.vstack(rows)
+        save_path = os.path.join(save_dir, f'batch_{batch_idx:03d}_hsv.jpg')
+        cv2.imwrite(save_path, combined)
 
 def get_taxonomy_targets(species_vec):
     """

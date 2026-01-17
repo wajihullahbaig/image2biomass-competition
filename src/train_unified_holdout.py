@@ -18,6 +18,7 @@ from config.loader import cfg,yaml_path
 from configs import config_str
 from common import (
     get_season, load_data, get_image_data_transforms, save_batch_images,
+    save_hsv_mask_batch,
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
     rotate_crop_resize, save_tta_images
@@ -59,95 +60,95 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
 
         if epoch == 0 and batch_idx < 5 and session_dir:
             save_batch_images(images, fold=0, batch_idx=batch_idx, session_dir=session_dir, max_batches_to_save=5)
+            save_hsv_mask_batch(images, fold=0, batch_idx=batch_idx, session_dir=session_dir, max_batches_to_save=5)
 
         taxonomy_targets = get_taxonomy_targets(species_vec)
         optimizer.zero_grad()
 
         with torch.amp.autocast('cuda'):
-            biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio = model(images)
+            # Model now returns [Log_Green, Log_Dead, Log_Clover]
+            biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
 
-            bio_out_comp = biomass_out[:, :3]
-            targ_comp = targets_log[:, :3]
+            # Linear space components for derivation
+            pred_green_lin = torch.expm1(biomass_out[:, 0:1])
+            pred_dead_lin  = torch.expm1(biomass_out[:, 1:2])
+            pred_clover_lin = torch.expm1(biomass_out[:, 2:3])
+            
+            # Derived linear targets (deterministic)
+            pred_gdm_lin   = pred_green_lin + pred_clover_lin
+            pred_total_lin = pred_gdm_lin + pred_dead_lin
+            
+            # Log-space derived for loss calculation
+            pred_gdm_log   = torch.log1p(pred_gdm_lin)
+            pred_total_log = torch.log1p(pred_total_lin)
+
+            # Ground Truth (targets_g is [Green, Dead, Clover] from dataset)
+            targ_green_lin = targets_g[:, 0:1]
+            targ_dead_lin  = targets_g[:, 1:2]
+            targ_clover_lin = targets_g[:, 2:3]
+            
+            targ_gdm_lin   = targ_green_lin + targ_clover_lin
+            targ_total_lin = targ_gdm_lin + targ_dead_lin
+            
+            targ_green_log = torch.log1p(targ_green_lin)
+            targ_dead_log  = torch.log1p(targ_dead_lin)
+            targ_clover_log = torch.log1p(targ_clover_lin)
+            targ_gdm_log   = torch.log1p(targ_gdm_lin)
+            targ_total_log = torch.log1p(targ_total_lin)
+
+            # --- Regression Loss (Log Space) ---
+            reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
+            
+            # Prepare prediction/target pairs for [Green, Dead, Clover, GDM, Total]
+            p_green, t_green = biomass_out[:, 0:1], targ_green_log
+            p_dead,  t_dead  = biomass_out[:, 1:2], targ_dead_log
+            p_clover, t_clover = biomass_out[:, 2:3], targ_clover_log
+            p_gdm,   t_gdm   = pred_gdm_log, targ_gdm_log
+            p_total, t_total = pred_total_log, targ_total_log
+            
             if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
-                bio_out_comp = (bio_out_comp - bio_mean[:, :3]) / (bio_std[:, :3] + 1e-9)
-                targ_comp = (targ_comp - bio_mean[:, :3]) / (bio_std[:, :3] + 1e-9)
+                eps = 1e-9
+                p_green = (p_green - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + eps)
+                t_green = (t_green - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + eps)
+                p_dead  = (p_dead  - bio_mean[:, 1:2]) / (bio_std[:, 1:2] + eps)
+                t_dead  = (t_dead  - bio_mean[:, 1:2]) / (bio_std[:, 1:2] + eps)
+                p_clover= (p_clover- bio_mean[:, 2:3]) / (bio_std[:, 2:3] + eps)
+                t_clover= (t_clover- bio_mean[:, 2:3]) / (bio_std[:, 2:3] + eps)
+                p_gdm   = (p_gdm   - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + eps)
+                t_gdm   = (t_gdm   - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + eps)
+                p_total = (p_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
+                t_total = (t_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
 
+            l_green  = reg(p_green, t_green)
+            l_dead   = reg(p_dead,  t_dead)
+            l_clover = reg(p_clover, t_clover)
+            l_gdm    = reg(p_gdm,   t_gdm)
+            l_total  = reg(p_total, t_total)
+            
             if cfg.loss.use_weighted_regression_loss and official_weights_t is not None:
-                comp_weights = official_weights_t[:3]
-                per_el = (
-                    torch.nn.functional.smooth_l1_loss(bio_out_comp, targ_comp, reduction='none')
-                    if cfg.loss.reg_loss_type == 'smoothl1'
-                    else torch.nn.functional.mse_loss(bio_out_comp, targ_comp, reduction='none')
-                )
-                per_target_mean = per_el.mean(dim=0)
-                loss_bio_comp = (per_target_mean * comp_weights).sum() * cfg.training.biomass_feat_weight
-            else:
-                loss_bio_comp = nn.MSELoss()(bio_out_comp, targ_comp) * cfg.training.biomass_feat_weight
+                l_green  = l_green  * official_weights_t[0]
+                l_dead   = l_dead   * official_weights_t[1]
+                l_clover = l_clover * official_weights_t[2]
+                l_gdm    = l_gdm    * official_weights_t[3]
+                l_total  = l_total  * official_weights_t[4]
+            
+            loss_bio = (l_green + l_dead + l_clover + l_gdm + l_total) * cfg.training.biomass_feat_weight
 
+            # --- Auxiliary Loss ---
+            p_aux, t_aux = aux_out, aux_feats
             if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
-                aux_out_std = (aux_out - aux_mean) / (aux_std + 1e-9)
-                aux_targ_std = (aux_feats - aux_mean) / (aux_std + 1e-9)
-                loss_aux = nn.MSELoss()(aux_out_std, aux_targ_std) * cfg.training.aux_feat_weight
-            else:
-                loss_aux = nn.MSELoss()(aux_out, aux_feats) * cfg.training.aux_feat_weight
+                eps = 1e-9
+                p_aux = (p_aux - aux_mean) / (aux_std + eps)
+                t_aux = (t_aux - aux_mean) / (aux_std + eps)
+            loss_aux = nn.MSELoss()(p_aux, t_aux) * cfg.training.aux_feat_weight
 
+            # --- Species / Taxonomy Losses ---
             loss_sp = nn.BCEWithLogitsLoss()(species_logits, species_vec) * cfg.training.species_feat_weight
             tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
             tax_log_probs = torch.nn.functional.log_softmax(taxonomy_logits, dim=1)
             loss_tax = nn.KLDivLoss(reduction='batchmean')(tax_log_probs, tax_targets_norm) * cfg.training.taxonomy_feat_weight
 
-            pred_total = torch.expm1(biomass_out[:, 0:1])
-            pred_gdm = torch.expm1(biomass_out[:, 1:2])
-            pred_green = torch.expm1(biomass_out[:, 2:3])
-            
-            pred_clover = torch.clamp(pred_gdm - pred_green, min=0)
-            # Indirect Dead via predicted ratio
-            pred_dead_ratio = dead_ratio.clamp(0.0, 1.0)
-            pred_dead = torch.clamp(pred_total * pred_dead_ratio, min=0)
-            
-            # Model predicts [Log_Total, Log_GDM, Log_Green], so targets_g has shape [B, 3]
-            # targets_g[:, 0] = Total, targets_g[:, 1] = GDM, targets_g[:, 2] = Green
-            targ_total = targets_g[:, 0:1]  # Index 0: Total (model's first prediction)
-            targ_gdm = targets_g[:, 1:2]    # Index 1: GDM (model's second prediction)
-            targ_green = targets_g[:, 2:3]  # Index 2: Green (model's third prediction)
-            
-            # Derive the other targets for loss calculation
-            targ_dead = torch.clamp(targ_total - targ_gdm, min=0)
-            targ_clover = torch.clamp(targ_gdm - targ_green, min=0)
-            
-            if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
-                # Use original target order for bio_mean/bio_std: [Green, Dead, Clover, GDM, Total]
-                pred_total_std = (biomass_out[:, 0:1] - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + 1e-9)
-                targ_total_std = (torch.log1p(targ_total) - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + 1e-9)
-                pred_gdm_std = (biomass_out[:, 1:2] - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + 1e-9)
-                targ_gdm_std = (torch.log1p(targ_gdm) - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + 1e-9)
-                pred_green_std = (biomass_out[:, 2:3] - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + 1e-9)
-                targ_green_std = (torch.log1p(targ_green) - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + 1e-9)
-                reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
-                loss_total = reg(pred_total_std, targ_total_std)
-                loss_gdm = reg(pred_gdm_std, targ_gdm_std)
-                loss_green = reg(pred_green_std, targ_green_std)
-            else:
-                reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
-                loss_total = reg(biomass_out[:, 0:1], torch.log1p(targ_total))
-                loss_gdm = reg(biomass_out[:, 1:2], torch.log1p(targ_gdm))
-                loss_green = reg(biomass_out[:, 2:3], torch.log1p(targ_green))
-
-            if cfg.loss.use_weighted_regression_loss and official_weights_t is not None:
-                loss_total = loss_total * official_weights_t[4]  # Total is at index 4 in original order
-                loss_gdm = loss_gdm * official_weights_t[3]      # GDM is at index 3 in original order  
-                loss_green = loss_green * official_weights_t[0]  # Green is at index 0 in original order
-            loss_total = loss_total * cfg.training.biomass_feat_weight
-            loss_gdm = loss_gdm * cfg.training.biomass_feat_weight
-            loss_green = loss_green * cfg.training.biomass_feat_weight
-
-            # Ratio-based Dead loss (log space)
-            pred_dead_log = torch.log1p(pred_dead + 1e-8)
-            targ_dead_log = torch.log1p(targ_dead + 1e-8)
-            reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
-            loss_dead_indirect = reg(pred_dead_log, targ_dead_log) * cfg.training.biomass_feat_weight
-
-            total_loss = loss_bio_comp + loss_aux + loss_sp + loss_tax + loss_total + loss_gdm + loss_green + loss_dead_indirect
+            total_loss = loss_bio + loss_aux + loss_sp + loss_tax
 
         if torch.isnan(total_loss):
             if logger:
@@ -161,50 +162,43 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         scaler.step(optimizer)
         scaler.update()
 
+        with torch.no_grad():
+            # biomass_out is [Log_Green, Log_Dead, Log_Clover]
+            # pred_gdm_log, pred_total_log are derived
+            preds_5_log = torch.cat([biomass_out, pred_gdm_log, pred_total_log], dim=1)
+            targs_5_log = torch.cat([targ_green_log, targ_dead_log, targ_clover_log, targ_gdm_log, targ_total_log], dim=1)
+            
+            all_preds_log.append(preds_5_log.cpu().numpy())
+            all_targets_full.append(targs_5_log.cpu().numpy())
+
+        # Update metrics
         B = images.size(0)
         metrics['train_loss'] += total_loss.item() * B
-        metrics['train_bio'] += loss_bio_comp.item() * B
-        metrics['train_aux'] += loss_aux.item() * B
-        metrics['train_sp']  += loss_sp.item() * B
-        metrics['train_tax'] += loss_tax.item() * B
-
-        with torch.no_grad():
-            metrics['train_loss_total'] += nn.functional.mse_loss(biomass_out[:, 0:1], torch.log1p(targ_total)).item() * B
-            metrics['train_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 1:2], torch.log1p(targ_gdm)).item() * B
-            metrics['train_loss_green'] += nn.functional.mse_loss(biomass_out[:, 2:3], torch.log1p(targ_green)).item() * B
-            
-            # Derived losses
-            pred_clover_log = torch.log1p(pred_clover + 1e-8)
-            pred_dead_log = torch.log1p(pred_dead + 1e-8)
-            targ_clover_log = torch.log1p(targ_clover + 1e-8) 
-            targ_dead_log = torch.log1p(targ_dead + 1e-8)
-            metrics['train_loss_clover'] += nn.functional.mse_loss(pred_clover_log.squeeze(), targ_clover_log.squeeze()).item() * B
-            metrics['train_loss_dead'] += nn.functional.mse_loss(pred_dead_log.squeeze(), targ_dead_log.squeeze()).item() * B
-            metrics['train_loss_dead_indirect'] += loss_dead_indirect.item() * B
-            
-            metrics['train_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
-            metrics['train_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
-            metrics['train_loss_int_mul']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
-            metrics['train_loss_int_add']  += nn.functional.mse_loss(aux_out[:, 3], aux_feats[:, 3]).item() * B
-
-        # Stack 5 predictions in correct order: [green, dead, clover, gdm, total]
-        pred_green_log = torch.log1p(pred_green + 1e-8)
-        pred_dead_log = torch.log1p(pred_dead + 1e-8) 
-        pred_clover_log = torch.log1p(pred_clover + 1e-8)
-        preds_full = torch.cat([pred_green_log, pred_dead_log, pred_clover_log, biomass_out[:, 1:2], biomass_out[:, 0:1]], dim=1)
-        all_preds_log.append(preds_full.detach().cpu())
-
-        # Targets in same order: [green, dead, clover, gdm, total]
-        targets_full_lin = torch.cat([targ_green, targ_dead, targ_clover, targ_gdm, targ_total], dim=1)
-        all_targets_full.append(targets_full_lin.detach().cpu())
+        metrics['train_bio']  += loss_bio.item() * B
+        metrics['train_aux']  += loss_aux.item() * B
+        metrics['train_sp']   += loss_sp.item() * B
+        metrics['train_tax']  += loss_tax.item() * B
+        
+        # Individual losses for tracking
+        metrics['train_loss_green']  += l_green.item() * B
+        metrics['train_loss_dead']   += l_dead.item() * B
+        metrics['train_loss_clover'] += l_clover.item() * B
+        metrics['train_loss_gdm']    += l_gdm.item() * B
+        metrics['train_loss_total']  += l_total.item() * B
+        metrics['train_loss_ndvi']    += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
+        metrics['train_loss_h']       += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
+        metrics['train_loss_int_mul'] += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
+        metrics['train_loss_int_add'] += nn.functional.mse_loss(aux_out[:, 3], aux_feats[:, 3]).item() * B
+        metrics['train_loss_hsv']     += nn.functional.mse_loss(aux_out[:, -1], aux_feats[:, -1]).item() * B
 
         pbar.set_postfix({'L': total_loss.item()})
 
     N = len(loader.dataset)
     final_metrics = {k: v / N for k, v in metrics.items()}
-    preds_log = torch.cat(all_preds_log).numpy()
+    preds_log = np.concatenate(all_preds_log)
     preds_linear = np.expm1(preds_log)
-    targets_linear = torch.cat(all_targets_full).numpy()
+    targets_log = np.concatenate(all_targets_full)
+    targets_linear = np.expm1(targets_log)
     final_metrics['train_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, cfg.targets.official_weights)
     return final_metrics
 
@@ -227,7 +221,6 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
     for batch_idx, batch in enumerate(loader):
         images = batch['image'].to(cfg.device)
         targets_g = batch['targets'].to(cfg.device)
-        targets_log = torch.log1p(targets_g)
         aux_feats = batch['aux_feats'].to(cfg.device)
         species_vec = batch['species_id'].to(cfg.device)
         taxonomy_targets = get_taxonomy_targets(species_vec)
@@ -237,53 +230,98 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
             accum_aux = 0
             accum_sp_probs = 0
             accum_tax_probs = 0
-            accum_dead_ratio = 0
             for view_name, transform_fn in tta_views:
                 img_aug = transform_fn(images)
                 if session_dir is not None:
                     save_tta_images(img_aug, view_name, batch_idx, fold, epoch, session_dir)
-                bio_out, aux_out, sp_logits, tax_logits, dead_ratio = model(img_aug)
-                accum_bio_linear += torch.expm1(bio_out)
-                accum_aux += aux_out
-                accum_sp_probs += torch.sigmoid(sp_logits)
-                accum_tax_probs += torch.softmax(tax_logits, dim=1)
-                accum_dead_ratio += dead_ratio
+                # Model now returns [Log_Green, Log_Dead, Log_Clover]
+                bio_out_tta, aux_out_tta, sp_logits_tta, tax_logits_tta = model(img_aug)
+                accum_bio_linear += torch.expm1(bio_out_tta) # Sum linear predictions
+                accum_aux += aux_out_tta
+                accum_sp_probs += torch.sigmoid(sp_logits_tta)
+                accum_tax_probs += torch.softmax(tax_logits_tta, dim=1)
+            
             avg_bio_linear = accum_bio_linear / len(tta_views)
-            avg_aux = accum_aux / len(tta_views)
-            avg_sp_probs = accum_sp_probs / len(tta_views)
-            avg_tax_probs = accum_tax_probs / len(tta_views)
-            dead_ratio = accum_dead_ratio / len(tta_views)
-            biomass_out = torch.log1p(avg_bio_linear)
-            aux_out = avg_aux
-            species_probs = avg_sp_probs
-            taxonomy_log_probs = torch.log(avg_tax_probs + 1e-9)
+            biomass_out = torch.log1p(avg_bio_linear) # Convert back to log for loss
+            aux_out = accum_aux / len(tta_views)
+            species_probs = accum_sp_probs / len(tta_views)
+            taxonomy_log_probs = torch.log(accum_tax_probs + 1e-9)
         else:
-            biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio = model(images)
+            # Model now returns [Log_Green, Log_Dead, Log_Clover]
+            biomass_out, aux_out, species_logits, taxonomy_logits = model(images)
 
-        bio_out_comp = biomass_out[:, :3]
-        targ_comp = targets_log[:, :3]
+        # Linear space components for derivation from model output
+        pred_green_lin = torch.expm1(biomass_out[:, 0:1])
+        pred_dead_lin  = torch.expm1(biomass_out[:, 1:2])
+        pred_clover_lin = torch.expm1(biomass_out[:, 2:3])
+        
+        pred_gdm_lin   = pred_green_lin + pred_clover_lin
+        pred_total_lin = pred_gdm_lin + pred_dead_lin
+        
+        pred_gdm_log   = torch.log1p(pred_gdm_lin)
+        pred_total_log = torch.log1p(pred_total_lin)
+
+        # Ground Truth (targets_g is [Green, Dead, Clover] from dataset)
+        targ_green_lin = targets_g[:, 0:1]
+        targ_dead_lin  = targets_g[:, 1:2]
+        targ_clover_lin = targets_g[:, 2:3]
+        
+        targ_gdm_lin   = targ_green_lin + targ_clover_lin
+        targ_total_lin = targ_gdm_lin + targ_dead_lin
+        
+        targ_green_log = torch.log1p(targ_green_lin)
+        targ_dead_log  = torch.log1p(targ_dead_lin)
+        targ_clover_log = torch.log1p(targ_clover_lin)
+        targ_gdm_log   = torch.log1p(targ_gdm_lin)
+        targ_total_log = torch.log1p(targ_total_lin)
+
+        # --- Regression Loss (Log Space) ---
+        reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
+        
+        # Prepare prediction/target pairs for [Green, Dead, Clover, GDM, Total]
+        p_green, t_green = biomass_out[:, 0:1], targ_green_log
+        p_dead,  t_dead  = biomass_out[:, 1:2], targ_dead_log
+        p_clover, t_clover = biomass_out[:, 2:3], targ_clover_log
+        p_gdm,   t_gdm   = pred_gdm_log, targ_gdm_log
+        p_total, t_total = pred_total_log, targ_total_log
+        
         if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
-            bio_out_comp = (bio_out_comp - bio_mean[:, :3]) / (bio_std[:, :3] + 1e-9)
-            targ_comp = (targ_comp - bio_mean[:, :3]) / (bio_std[:, :3] + 1e-9)
+            eps = 1e-9
+            p_green = (p_green - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + eps)
+            t_green = (t_green - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + eps)
+            p_dead  = (p_dead  - bio_mean[:, 1:2]) / (bio_std[:, 1:2] + eps)
+            t_dead  = (t_dead  - bio_mean[:, 1:2]) / (bio_std[:, 1:2] + eps)
+            p_clover= (p_clover- bio_mean[:, 2:3]) / (bio_std[:, 2:3] + eps)
+            t_clover= (t_clover- bio_mean[:, 2:3]) / (bio_std[:, 2:3] + eps)
+            p_gdm   = (p_gdm   - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + eps)
+            t_gdm   = (t_gdm   - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + eps)
+            p_total = (p_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
+            t_total = (t_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
+
+        l_green  = reg(p_green, t_green)
+        l_dead   = reg(p_dead,  t_dead)
+        l_clover = reg(p_clover, t_clover)
+        l_gdm    = reg(p_gdm,   t_gdm)
+        l_total  = reg(p_total, t_total)
+        
         if cfg.loss.use_weighted_regression_loss and official_weights_t is not None:
-            comp_weights = official_weights_t[:3]
-            per_el = (
-                torch.nn.functional.smooth_l1_loss(bio_out_comp, targ_comp, reduction='none')
-                if cfg.loss.reg_loss_type == 'smoothl1'
-                else torch.nn.functional.mse_loss(bio_out_comp, targ_comp, reduction='none')
-            )
-            per_target_mean = per_el.mean(dim=0)
-            loss_bio = (per_target_mean * comp_weights).sum() * cfg.training.biomass_feat_weight
-        else:
-            loss_bio = criterion_reg(bio_out_comp, targ_comp) * cfg.training.biomass_feat_weight
+            l_green  = l_green  * official_weights_t[0]
+            l_dead   = l_dead   * official_weights_t[1]
+            l_clover = l_clover * official_weights_t[2]
+            l_gdm    = l_gdm    * official_weights_t[3]
+            l_total  = l_total  * official_weights_t[4]
+        
+        loss_bio = (l_green + l_dead + l_clover + l_gdm + l_total) * cfg.training.biomass_feat_weight
 
+        # --- Auxiliary Loss ---
+        p_aux, t_aux = aux_out, aux_feats
         if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
-            aux_out_std = (aux_out - aux_mean) / (aux_std + 1e-9)
-            aux_targ_std = (aux_feats - aux_mean) / (aux_std + 1e-9)
-            loss_aux = criterion_reg(aux_out_std, aux_targ_std) * cfg.training.aux_feat_weight
-        else:
-            loss_aux = criterion_reg(aux_out, aux_feats) * cfg.training.aux_feat_weight
+            eps = 1e-9
+            p_aux = (p_aux - aux_mean) / (aux_std + eps)
+            t_aux = (t_aux - aux_mean) / (aux_std + eps)
+        loss_aux = criterion_reg(p_aux, t_aux) * cfg.training.aux_feat_weight
 
+        # --- Species / Taxonomy Losses ---
         if use_tta:
             loss_sp = nn.BCELoss()(species_probs, species_vec) * cfg.training.species_feat_weight
             tax_targets_norm = taxonomy_targets / (taxonomy_targets.sum(dim=1, keepdim=True) + 1e-9)
@@ -294,47 +332,7 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
             tax_log_probs = torch.nn.functional.log_softmax(taxonomy_logits, dim=1)
             loss_tax = criterion_tax(tax_log_probs, tax_targets_norm) * cfg.training.taxonomy_feat_weight
 
-        pred_total = torch.expm1(biomass_out[:, 0:1])
-        pred_gdm = torch.expm1(biomass_out[:, 1:2])
-        pred_green = torch.expm1(biomass_out[:, 2:3])
-        
-        pred_clover = torch.clamp(pred_gdm - pred_green, min=0)
-        # Indirect Dead via predicted ratio
-        pred_dead_ratio = dead_ratio.clamp(0.0, 1.0)
-        pred_dead = torch.clamp(pred_total * pred_dead_ratio, min=0)
-        
-        # Model predicts [Log_Total, Log_GDM, Log_Green], so targets_g has shape [B, 3]
-        # targets_g[:, 0] = Total, targets_g[:, 1] = GDM, targets_g[:, 2] = Green
-        targ_total = targets_g[:, 0:1]  # Index 0: Total (model's first prediction)
-        targ_gdm = targets_g[:, 1:2]    # Index 1: GDM (model's second prediction)
-        targ_green = targets_g[:, 2:3]  # Index 2: Green (model's third prediction)
-        
-        # Derive the other targets for R2 calculation
-        targ_dead = torch.clamp(targ_total - targ_gdm, min=0)
-        targ_clover = torch.clamp(targ_gdm - targ_green, min=0)
-        if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
-            # Use original target order for bio_mean/bio_std: [Green, Dead, Clover, GDM, Total]
-            pred_total_std = (biomass_out[:, 0:1] - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + 1e-9)
-            targ_total_std = (torch.log1p(targ_total) - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + 1e-9)
-            pred_gdm_std = (biomass_out[:, 1:2] - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + 1e-9)
-            targ_gdm_std = (torch.log1p(targ_gdm) - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + 1e-9)
-            pred_green_std = (biomass_out[:, 2:3] - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + 1e-9)
-            targ_green_std = (torch.log1p(targ_green) - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + 1e-9)
-            reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
-            loss_total = reg(pred_total_std, targ_total_std)
-            loss_gdm = reg(pred_gdm_std, targ_gdm_std)
-            loss_green = reg(pred_green_std, targ_green_std)
-        else:
-            reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
-            loss_total = reg(biomass_out[:, 0:1], torch.log1p(targ_total))
-            loss_gdm = reg(biomass_out[:, 1:2], torch.log1p(targ_gdm))
-            loss_green = reg(biomass_out[:, 2:3], torch.log1p(targ_green))
-
-        if cfg.loss.use_weighted_regression_loss and official_weights_t is not None:
-            loss_total = loss_total * official_weights_t[4]  # Total is at index 4 in original order
-            loss_gdm = loss_gdm * official_weights_t[3]      # GDM is at index 3 in original order
-            loss_green = loss_green * official_weights_t[0]  # Green is at index 0 in original order
-        total_loss = loss_bio + loss_aux + loss_sp + loss_tax + (loss_total + loss_gdm) * cfg.training.biomass_feat_weight
+        total_loss = loss_bio + loss_aux + loss_sp + loss_tax
 
         B = images.size(0)
         metrics[f'{prefix}_loss'] += total_loss.item() * B
@@ -342,39 +340,33 @@ def validate(model, loader, criterion_reg, criterion_species, criterion_tax, cfg
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
         metrics[f'{prefix}_tax'] += loss_tax.item() * B
-        metrics[f'{prefix}_loss_total'] += nn.functional.mse_loss(biomass_out[:, 0:1], torch.log1p(targ_total)).item() * B
-        metrics[f'{prefix}_loss_gdm'] += nn.functional.mse_loss(biomass_out[:, 1:2], torch.log1p(targ_gdm)).item() * B
-        metrics[f'{prefix}_loss_green'] += nn.functional.mse_loss(biomass_out[:, 2:3], torch.log1p(targ_green)).item() * B
         
-        # Derived losses
-        pred_clover_log = torch.log1p(pred_clover + 1e-8)
-        pred_dead_log = torch.log1p(pred_dead + 1e-8)
-        targ_clover_log = torch.log1p(targ_clover + 1e-8) 
-        targ_dead_log = torch.log1p(targ_dead + 1e-8)
-        metrics[f'{prefix}_loss_clover'] += nn.functional.mse_loss(pred_clover_log.squeeze(), targ_clover_log.squeeze()).item() * B
-        metrics[f'{prefix}_loss_dead'] += nn.functional.mse_loss(pred_dead_log.squeeze(), targ_dead_log.squeeze()).item() * B
-        metrics[f'{prefix}_loss_dead_indirect'] += nn.functional.mse_loss(pred_dead_log.squeeze(), targ_dead_log.squeeze()).item() * B
+        # Individual losses for tracking
+        metrics[f'{prefix}_loss_green']  += l_green.item() * B
+        metrics[f'{prefix}_loss_dead']   += l_dead.item() * B
+        metrics[f'{prefix}_loss_clover'] += l_clover.item() * B
+        metrics[f'{prefix}_loss_gdm']    += l_gdm.item() * B
+        metrics[f'{prefix}_loss_total']  += l_total.item() * B
+
         metrics[f'{prefix}_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
         metrics[f'{prefix}_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
         metrics[f'{prefix}_loss_int_mul']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
         metrics[f'{prefix}_loss_int_add']  += nn.functional.mse_loss(aux_out[:, 3], aux_feats[:, 3]).item() * B
+        metrics[f'{prefix}_loss_hsv']      += nn.functional.mse_loss(aux_out[:, -1], aux_feats[:, -1]).item() * B
 
-        # Stack 5 predictions in correct order: [green, dead, clover, gdm, total]
-        pred_green_log = torch.log1p(pred_green + 1e-8)
-        pred_dead_log = torch.log1p(pred_dead + 1e-8) 
-        pred_clover_log = torch.log1p(pred_clover + 1e-8)
-        preds_full = torch.cat([pred_green_log, pred_dead_log, pred_clover_log, biomass_out[:, 1:2], biomass_out[:, 0:1]], dim=1)
-        all_preds_log.append(preds_full.cpu())
-        
-        # Targets in same order: [green, dead, clover, gdm, total]
-        targets_full_lin = torch.cat([targ_green, targ_dead, targ_clover, targ_gdm, targ_total], dim=1)
-        all_targets_full.append(targets_full_lin.cpu())
+        # Accumulate for R2 calculation
+        with torch.no_grad():
+            preds_5_log = torch.cat([biomass_out, pred_gdm_log, pred_total_log], dim=1)
+            targs_5_log = torch.cat([targ_green_log, targ_dead_log, targ_clover_log, targ_gdm_log, targ_total_log], dim=1)
+            all_preds_log.append(preds_5_log.cpu().numpy())
+            all_targets_full.append(targs_5_log.cpu().numpy())
 
     N = len(loader.dataset)
     final_metrics = {k: v / N for k, v in metrics.items()}
-    preds_log = torch.cat(all_preds_log).numpy()
+    preds_log = np.concatenate(all_preds_log)
     preds_linear = np.expm1(preds_log)
-    targets_linear = torch.cat(all_targets_full).numpy()
+    targets_log = np.concatenate(all_targets_full)
+    targets_linear = np.expm1(targets_log)
     final_metrics[f'{prefix}_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, cfg.targets.official_weights)
     return final_metrics
 
@@ -543,13 +535,13 @@ def main():
         train_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_train.csv"), index=False)
         val_df.to_csv(os.path.join(splits_dir, f"fold{fold+1}_val.csv"), index=False)
 
-        # Train targets must align with model outputs: [Total, GDM, Green]
+        # Train targets must align with model outputs: [Green, Dead, Clover]
         train_ds_base = TiledBiomassDataset(
             train_df,
             transform=train_transform,
             mode='training',
             tile_prob=cfg.augmentation.tile_prob,
-            target_cols=['Dry_Total_g', 'GDM_g', 'Dry_Green_g']
+            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
         )
         train_ds = TiledMixupDataset(train_ds_base, prob=cfg.augmentation.mixup_prob, alpha=cfg.augmentation.mixup_alpha)
 
@@ -558,7 +550,7 @@ def main():
             transform=val_transform,
             mode='validation',
             tile_prob=0.0,
-            target_cols=['Dry_Total_g', 'GDM_g', 'Dry_Green_g']
+            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
         )
 
         holdout_ds = TiledBiomassDataset(
@@ -566,14 +558,14 @@ def main():
             transform=val_transform,
             mode='validation',
             tile_prob=0.0,
-            target_cols=['Dry_Total_g', 'GDM_g', 'Dry_Green_g']
+            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
         )
 
         train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
         holdout_loader = DataLoader(holdout_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
-        dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation', target_cols=['Dry_Total_g', 'GDM_g', 'Dry_Green_g'])
+        dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation', target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g'])
         n_aux = dummy_ds[0]['aux_feats'].shape[0]
         model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
 
@@ -638,11 +630,15 @@ def main():
         if aux_data.shape[1] > 0:
             aux_mean_np = aux_data.mean(axis=0)
             aux_std_np = aux_data.std(axis=0)
+            # Add HSV stats (mean=0.0, std=1.0 as it is already a 0-1 score)
+            aux_mean_np = np.append(aux_mean_np, [0.0])
+            aux_std_np = np.append(aux_std_np, [1.0])
         else:
-            aux_mean_np = np.array([], dtype=float)
-            aux_std_np = np.array([], dtype=float)
-        aux_mean_t = torch.tensor(aux_mean_np, dtype=torch.float32, device=cfg.device).view(1, -1) if aux_data.shape[1] > 0 else None
-        aux_std_t = torch.tensor(aux_std_np, dtype=torch.float32, device=cfg.device).view(1, -1) if aux_data.shape[1] > 0 else None
+            aux_mean_np = np.array([0.0], dtype=float)
+            aux_std_np = np.array([1.0], dtype=float)
+
+        aux_mean_t = torch.tensor(aux_mean_np, dtype=torch.float32, device=cfg.device).view(1, -1)
+        aux_std_t = torch.tensor(aux_std_np, dtype=torch.float32, device=cfg.device).view(1, -1)
 
         # EMA state for scheduler stability (epoch-level score smoothing)
         ema_score_prev = None

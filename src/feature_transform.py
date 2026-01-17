@@ -72,7 +72,7 @@ class BiomassFeatureTransform:
         # Deterministic auxiliary features
         df['Height_Ave_cm_log'] = np.log1p(df['Height_Ave_cm'].astype(float))
         df['Interaction_Mul'] = df['Pre_GSHH_NDVI'].astype(float) * df['Height_Ave_cm_log']
-        df['Interaction_Add'] = df['Pre_GSHH_NDVI'].astype(float) + df['Height_Ave_cm_log']
+        df['Interaction_Add'] = (df['Pre_GSHH_NDVI'].astype(float) + df['Height_Ave_cm_log']) / 2.0
         
         # Session/Season keys (purely deterministic groupings)
         df['SessionID'] = df.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)

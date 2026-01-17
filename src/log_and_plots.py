@@ -118,7 +118,7 @@ def plot_training_history(history, fold, session_dir):
     
     bio_map = [
         ('loss_clover', 'Clover Loss'), ('loss_dead', 'Dead Loss'), ('loss_green', 'Green Loss'),
-        ('loss_total', 'Total Loss'), ('loss_gdm', 'GDM Loss'), ('loss_dead_indirect', 'Dead Indirect Loss')
+        ('loss_total', 'Total Loss'), ('loss_gdm', 'GDM Loss')
     ]
     
     for idx, (suffix, title) in enumerate(bio_map):
@@ -129,12 +129,13 @@ def plot_training_history(history, fold, session_dir):
     plt.close()
 
     # 2. Aux Components
-    fig_a, axes_a = plt.subplots(1, 4, figsize=(24, 5))
+    fig_a, axes_a = plt.subplots(2, 3, figsize=(18, 10))
     axes_a = axes_a.flatten()
     
     aux_map = [
         ('loss_ndvi', 'NDVI Loss'), ('loss_h', 'Height Loss'), 
-        ('loss_int_mul', 'Interaction Mul Loss'), ('loss_int_add', 'Interaction Add Loss')
+        ('loss_int_mul', 'Interaction Mul Loss'), ('loss_int_add', 'Interaction Add Loss'),
+        ('loss_hsv', 'HSV Green Loss')
     ]
     
     for idx, (suffix, title) in enumerate(aux_map):
@@ -313,8 +314,8 @@ def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, curre
         ("Aux",          fmt_num(train_metrics.get('train_aux')),  fmt_num(val_metrics.get('val_aux')),  fmt_num(hol_metrics.get('holdout_aux'))),
         ("Species",      fmt_num(train_metrics.get('train_sp')),   fmt_num(val_metrics.get('val_sp')),   fmt_num(hol_metrics.get('holdout_sp'))),
         ("Taxonomy",     fmt_num(train_metrics.get('train_tax')),  fmt_num(val_metrics.get('val_tax')),  fmt_num(hol_metrics.get('holdout_tax'))),
+        ("HSV",          fmt_num(train_metrics.get('train_loss_hsv')), fmt_num(val_metrics.get('val_loss_hsv')), fmt_num(hol_metrics.get('holdout_loss_hsv'))),
         ("R2",           fmt_num(train_metrics.get('train_r2')),   fmt_num(v_r2),                         fmt_num(h_r2)),
-        ("Dead (Indirect)", fmt_num(train_metrics.get('train_loss_dead_indirect')), fmt_num(val_metrics.get('val_loss_dead_indirect')), fmt_num(hol_metrics.get('holdout_loss_dead_indirect'))),
     ]
 
     # Compute column widths
@@ -419,6 +420,7 @@ def log_fold_summary_tables(logger, fold, history, best_epoch):
         ('Aux',          'train_aux',  'val_aux',  'holdout_aux'),
         ('Species',      'train_sp',   'val_sp',   'holdout_sp'),
         ('Taxonomy',     'train_tax',  'val_tax',  'holdout_tax'),
+        ('HSV',          'train_loss_hsv', 'val_loss_hsv', 'holdout_loss_hsv'),
         ('R2',           'train_r2',   'val_r2',   'holdout_r2'),
     ]
 

@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260115_104140'
+MODEL_DIR = './logs/unified_holdout_20260117_164753'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -122,15 +122,9 @@ class BiomassUnifiedModel(nn.Module):
             nn.ReLU(),
             nn.Linear(128, 3), # [Log_Total, Log_GDM, Log_Green]
         )
-
-        # Dead Ratio Head (predicts Dead_to_Total in [0,1])
-        self.dead_ratio_head = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(64, 1)
-        )
+        
+        self.log_clamp = torch.log1p(torch.tensor(BIOMASS_CLAMP))
+        self._init_biomass_head()
         
         self.log_clamp = torch.log1p(torch.tensor(BIOMASS_CLAMP))
 
@@ -141,9 +135,9 @@ class BiomassUnifiedModel(nn.Module):
         nn.init.xavier_uniform_(last_layer.weight)
         with torch.no_grad():
             last_layer.bias.fill_(0)
-            last_layer.bias[0] = 4.0 # ~50g total
-            last_layer.bias[1] = 3.5 # ~30g gdm
-            last_layer.bias[2] = 3.0 # ~20g green
+            last_layer.bias[0] = 100.0 # Green
+            last_layer.bias[1] = 20.0 # Dead
+            last_layer.bias[2] = 50 # Clover
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -159,20 +153,12 @@ class BiomassUnifiedModel(nn.Module):
             
         combined_feats = torch.cat([img_feats, aux_out, species_probs, taxonomy_probs], dim=1)
         
-        # Biomass Prediction
+        # Biomass Prediction (Green, Dead, Clover)
         log_preds_raw = self.biomass_head(combined_feats)
         # softplus ensures positivity, clamp ensures we don't blow up expm1
-        log_preds = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
+        biomass_out = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
         
-        log_total = log_preds[:, 0:1]
-        log_gdm = log_preds[:, 1:2] 
-        log_green = log_preds[:, 2:3]
-        biomass_out = torch.cat([log_total, log_gdm, log_green], dim=1)
-        
-        # Dead-to-Total ratio in [0,1]
-        dead_ratio = torch.sigmoid(self.dead_ratio_head(combined_feats))
-        
-        return biomass_out, aux_out, species_logits, taxonomy_logits, dead_ratio
+        return biomass_out, aux_out, species_logits, taxonomy_logits
 
 # ====================== TTA HELPERS ======================
 def get_largest_rotated_crop(h, w, angle):
@@ -205,22 +191,19 @@ def rotate_crop_resize(img, angle):
 
 def no_tta(model, image, batch_idx=0):
     """
-    Single pass inference with PHYSICS BARRIER.
-    Safe against exploding gradients or hallucinations.
+    Single pass inference.
     """
     model.eval()
     
-    # Save original image
     if SAVE_IMAGES:
         save_tta_images(image, batch_idx, 'original')
     
     with torch.no_grad():
-        log_bio, aux, sp, tax_logits, dead_ratio = model(image)
-        # Extract Confidence
+        biomass_out, aux, sp, tax_logits = model(image)
         probs = torch.softmax(tax_logits, dim=1)
         conf, _ = torch.max(probs, dim=1)
         
-    return log_bio, conf, dead_ratio
+    return biomass_out, conf
     
 def apply_tta(model, image, batch_idx=0):
     """
@@ -230,8 +213,6 @@ def apply_tta(model, image, batch_idx=0):
     
     all_biomass_linear = [] 
     all_confidences = []
-    all_dead_ratios = []
-
     # TTA Policy: 5 Views with names for saving
     tta_views = [
         ('identity', lambda x: x),
@@ -249,32 +230,33 @@ def apply_tta(model, image, batch_idx=0):
             if SAVE_IMAGES:
                 save_tta_images(img_aug, batch_idx, view_name)
             
-            # Forward Pass
-            log_bio, aux, sp, tax_logits, dead_ratio = model(img_aug) 
+            # Predict independent components
+            biomass_out, aux, sp, tax_logits = model(img_aug) 
             
-            # Convert to Linear Grams
-            lin_bio = torch.expm1(log_bio)
+            # Linear space components
+            bio_lin = torch.expm1(biomass_out)
+            green_lin = bio_lin[:, 0:1]
+            dead_lin  = bio_lin[:, 1:2]
+            clover_lin = bio_lin[:, 2:3]
             
-            all_biomass_linear.append(lin_bio)
+            # Derive derived targets
+            gdm_lin = green_lin + clover_lin
+            total_lin = gdm_lin + dead_lin
+            
+            # Resulting 5 linear targets
+            full_bio_lin = torch.cat([green_lin, dead_lin, clover_lin, gdm_lin, total_lin], dim=1)
+            all_biomass_linear.append(full_bio_lin)
             
             # Extract Confidence
             probs = torch.softmax(tax_logits, dim=1) 
             conf, _ = torch.max(probs, dim=1) 
             all_confidences.append(conf)
-            all_dead_ratios.append(dead_ratio)
 
     # AGGREGATION
-    # Average Biomass (Linear Space)
     avg_bio_linear = torch.stack(all_biomass_linear).mean(0)
-    
-    # Average Confidence
     avg_confidence = torch.stack(all_confidences).mean(0)
-    avg_dead_ratio = torch.stack(all_dead_ratios).mean(0)
             
-    # Convert to Log for consistency with return signature
-    avg_bio_log = torch.log1p(avg_bio_linear)
-            
-    return avg_bio_log, avg_confidence, avg_dead_ratio
+    return avg_bio_linear, avg_confidence
 
 # ====================== DATASET ======================
 class TestDataset(Dataset):
@@ -402,20 +384,21 @@ def run_inference(USE_TTA=True):
                 
                 # Choose TTA or no TTA
                 if USE_TTA:
-                    log_pred, conf, dead_ratio = apply_tta(model, imgs, batch_idx)
+                    preds_linear_5, conf = apply_tta(model, imgs, batch_idx)
+                    preds_linear_5 = preds_linear_5.cpu().numpy()
                 else:
-                    log_pred, conf, dead_ratio = no_tta(model, imgs, batch_idx)
+                    # No-TTA: manually derive
+                    biomass_out, conf = no_tta(model, imgs, batch_idx)
+                    bio_lin = torch.expm1(biomass_out)
+                    green_lin = bio_lin[:, 0:1]
+                    dead_lin  = bio_lin[:, 1:2]
+                    clover_lin = bio_lin[:, 2:3]
+                    gdm_lin = green_lin + clover_lin
+                    total_lin = gdm_lin + dead_lin
+                    preds_linear_5 = torch.cat([green_lin, dead_lin, clover_lin, gdm_lin, total_lin], dim=1).cpu().numpy()
                 
-                # Convert to Linear for averaging
-                lin_pred = torch.expm1(log_pred)  # [total, gdm, green]
-                dead_ratio_np = dead_ratio.cpu().numpy()
-                
-                # Apply your hypothesis: dead = total * dead_ratio for THIS model
-                pred_total = lin_pred[:, 0:1].cpu().numpy()
-                pred_dead = pred_total * dead_ratio_np
-                
-                # Store [total, gdm, green, dead] for ensemble averaging
-                fold_preds.append(np.concatenate([lin_pred.cpu().numpy(), pred_dead], axis=1))
+                # Store [green, dead, clover, gdm, total]
+                fold_preds.append(preds_linear_5)
                 fold_confs.append(conf.cpu().numpy())
                 
                 if i == 0: 
@@ -466,17 +449,23 @@ def run_inference(USE_TTA=True):
     numerator = np.sum(E * W_expanded, axis=0)
     denominator = np.sum(W_expanded, axis=0) + 1e-8
     
-    avg_out = numerator / denominator  # [N_Samples, 4]
+    avg_out = numerator / denominator  # [N_Samples, 5]
     avg_out = np.maximum(avg_out, 0)
 
-    # 6. DERIVE 5 targets from 4 predictions (Dead already computed per model)
-    pred_total = avg_out[:, 0]
-    pred_gdm = avg_out[:, 1] 
-    pred_green = avg_out[:, 2]
-    pred_dead = avg_out[:, 3]  # Already computed as total*ratio per model
+    # 6. MAP 5 targets from averaged predictions
+    # Order in avg_out: [Green, Dead, Clover, GDM, Total]
+    pred_green = avg_out[:, 0]
+    pred_dead = avg_out[:, 1]
+    pred_clover = avg_out[:, 2]
+    pred_gdm = avg_out[:, 3]
+    pred_total = avg_out[:, 4]
     
     # Ensure no negative values
-    pred_clover = np.maximum(0, pred_gdm - pred_green)
+    pred_total = np.maximum(0, pred_total)
+    pred_gdm = np.maximum(0, pred_gdm)
+    pred_green = np.maximum(0, pred_green)
+    pred_dead = np.maximum(0, pred_dead)
+    pred_clover = np.maximum(0, pred_clover)
 
     final_df = pd.DataFrame({
         'Dry_Green_g': pred_green,

@@ -17,7 +17,7 @@ import json
 from config.loader import cfg,yaml_path
 from configs import config_str
 from common import (
-    get_season, load_data, get_image_data_transforms, save_batch_images,
+    calculate_scheduler_score, get_season, load_data, get_image_data_transforms, save_batch_images,
     save_hsv_mask_batch,
     set_seed, calculate_global_weighted_r2,
     get_taxonomy_targets,
@@ -459,8 +459,7 @@ def main():
         species_col=cfg.split.species_col,
         min_train_per_species=cfg.split.min_train_per_species,
         ensure_combo_train_coverage=cfg.split.ensure_combo_train_coverage,
-        combo_col=cfg.split.combo_col,
-        min_train_per_combo_key=cfg.split.min_train_per_combo_key
+        combo_col=cfg.split.combo_col        
     )
     
     species_col = 'species_id' if 'species_id' in df.columns else ('Species' if 'Species' in df.columns else None)
@@ -663,21 +662,26 @@ def main():
                 epoch=epoch, fold=fold, session_dir=session_dir,
                 bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t, official_weights_t=official_weights_t
             )
+            ema_score_prev = None
 
+            t_r2 = train_metrics['train_r2']
             v_r2 = val_metrics['val_r2']
             h_r2 = hol_metrics['holdout_r2']
-            # Original consistency-based score (average minus consistency penalty)
-            avg_r2 = (v_r2 + h_r2) / 2.0
-            consistency_penalty = 0.5 * abs(v_r2 - h_r2)
-            current_score = avg_r2 - consistency_penalty
-            score_gap = abs(v_r2 - h_r2)
 
-            # Smooth the score with EMA before updating the LR scheduler
-            if ema_score_prev is None:
-                ema_score = current_score
-            else:
-                ema_score = ema_decay * ema_score_prev + (1.0 - ema_decay) * current_score
+            # Calculate score with selected method
+            ema_score, score_gap, raw_score = calculate_scheduler_score(
+                train_r2=t_r2,
+                val_r2=v_r2,
+                holdout_r2=h_r2,
+                ema_score_prev=ema_score_prev,
+                ema_decay=0.9,
+                method='symmetric_gap',  # or 'overfit_penalty' or 'generalization'
+                gap_weights=(0.25, 0.25) 
+            )
+            current_score = ema_score
             ema_score_prev = ema_score
+
+            # Step the scheduler
             scheduler.step(ema_score)
 
             log_msg = get_formatted_loss_log(epoch,

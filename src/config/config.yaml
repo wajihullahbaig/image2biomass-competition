@@ -105,7 +105,6 @@ split:
   min_train_per_species: 2
   ensure_combo_train_coverage: true
   combo_col: "Season_State_Species"
-  min_train_per_combo_key: 2
 
 seasons:
   month_map:

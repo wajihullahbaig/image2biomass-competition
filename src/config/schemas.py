@@ -96,7 +96,6 @@ class SplitConfig:
     min_train_per_species: int = 1
     ensure_combo_train_coverage: bool = True
     combo_col: str = "Season_State_Species"
-    min_train_per_combo_key: int = 1
 
 @dataclass
 class SeasonsConfig:

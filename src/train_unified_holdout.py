@@ -604,7 +604,7 @@ def main():
             {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
         ]
         optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.85, patience=3, threshold=1e-3, min_lr=1e-6)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.85, patience=5, threshold=1e-3, min_lr=1e-6)
 
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()

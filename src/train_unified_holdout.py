@@ -20,7 +20,7 @@ from common import (
     calculate_scheduler_score, get_season, load_data, get_image_data_transforms, save_batch_images,
     save_hsv_mask_batch,
     set_seed, calculate_global_weighted_r2,
-    rotate_crop_resize, save_tta_images
+    rotate_crop_resize, save_tta_images, build_weighted_sampler_from_df
 )
 from feature_transform import BiomassFeatureTransform, apply_deterministic_features
 
@@ -544,7 +544,8 @@ def main():
             target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
         )
 
-        train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=True, num_workers=0, pin_memory=True)
+        sampler = build_weighted_sampler_from_df(train_df, key='State_Species')
+        train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, sampler=sampler, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
         holdout_loader = DataLoader(holdout_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
@@ -644,9 +645,7 @@ def main():
                 prefix='holdout', use_tta=cfg.training.use_tta,
                 epoch=epoch, fold=fold, session_dir=session_dir,
                 bio_mean=bio_mean_t, bio_std=bio_std_t, aux_mean=aux_mean_t, aux_std=aux_std_t, official_weights_t=official_weights_t
-            )
-            ema_score_prev = None
-
+            )            
             t_r2 = train_metrics['train_r2']
             v_r2 = val_metrics['val_r2']
             h_r2 = hol_metrics['holdout_r2']

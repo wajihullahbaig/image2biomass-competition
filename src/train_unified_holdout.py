@@ -464,7 +464,7 @@ def main():
     
     sgkf = StratifiedGroupKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
     # Stratify by Species for the folds to ensure maximum species representation across folds
-    splitter = sgkf.split(dev_df, dev_df['Species'], groups=dev_df['State'])
+    splitter = sgkf.split(dev_df, dev_df['State'], groups=dev_df['Sampling_Date'])
     fold_iter = [(dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) 
                  for train, val in splitter]
     split_name = 'StratifiedGroupKFold-Species'
@@ -494,7 +494,7 @@ def main():
         from visualize_splits import analyze_splits_in_training
         try:
             analyze_splits_in_training(train_df, val_df, hold_df, session_dir, fold, group_col=None)
-            logger.info("Split analysis visualizations saved to split_analysis/")
+            logger.info("Split analysis visualizations saved to split_analysis/")            
         except Exception as e:
             logger.warning(f"Could not generate split analysis: {e}")
 

@@ -978,8 +978,8 @@ def calculate_scheduler_score(
     # OPTIONAL: Hard Overfit Gate
     # Only if Train is significantly better (e.g., > 0.3 gap) do we start worrying.
     # Otherwise, let the model run.
-    if (train_r2 - val_r2) > 0.3:
-        score_mix -= 0.05 # Small penalty, not a run-killer
+    #if (train_r2 - val_r2) > 0.3:
+    #    score_mix -= 0.05 # Small penalty, not a run-killer
         
     current_score = score_mix
     

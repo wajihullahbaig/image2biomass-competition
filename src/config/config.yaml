@@ -7,7 +7,7 @@ preprocessing:
   image_width: 512
 
 hyperparameters:
-  batch_size: 64
+  batch_size: 32
   learning_rate: 0.00025
   n_folds: 4
   epochs: 20
@@ -16,21 +16,20 @@ hyperparameters:
   backbone: timm/convnext_small.fb_in22k
   min_train_samples: 50
   backbone_freeze_threshold: 200
-  max_grad_norm: 6.0
-  backbone_lr_factor: 0.75
+  max_grad_norm: 1.0
+  backbone_lr_factor: 0.85
 
 training:
   freeze_backbone: true
-  backbone_freeze_fraction: 0.7
+  backbone_freeze_fraction: 0.85
   use_tta: true
   fusion_dim: 256
   biomass_feat_weight: 12.0
   aux_feat_weight: 8.0
   species_feat_weight: 5.0
-  taxonomy_feat_weight: 0.5
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
-  ema_decay: 0.9
+  ema_decay: 0.7
 
 augmentation:
   tile_prob: 0.05
@@ -88,23 +87,26 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 25
+  target_min_samples: 20
   method: "smart"
-  noise_scale: 0.025
+  noise_scale: 0.05
   seasonal_drift: true
   day_shift_prob: 0.6
   drift_strength: 0.15
 
 split:
-  holdout_pct: 0.20
+  holdout_pct: 0.30
   stratification_key: "Species_Season" # Key for coverage-aware splitting
-  min_train_per_combo: 2 # Minimum samples per combo guaranteed in training
+  min_train_per_combo: 3 # Minimum samples per combo guaranteed in training
   # Coverage enforcement
   ensure_species_train_coverage: true
   species_col: "Species"
-  min_train_per_species: 2
+  min_train_per_species: 3
   ensure_combo_train_coverage: true
   combo_col: "Season_State_Species"
+  min_train_per_combo_key: 3
+  group_stratification_col: "State"
+  group_col: "Sampling_Date"
 
 seasons:
   month_map:

@@ -32,7 +32,6 @@ class TrainingConfig:
     biomass_feat_weight: float
     aux_feat_weight: float
     species_feat_weight: float
-    taxonomy_feat_weight: float
     overfitting_penalty_alpha: float = 0.5
     # Exponential moving average decay for smoothing scheduler score (0..1)
     # Higher values -> smoother (less responsive). Default: 0.9
@@ -96,6 +95,12 @@ class SplitConfig:
     min_train_per_species: int = 1
     ensure_combo_train_coverage: bool = True
     combo_col: str = "Season_State_Species"
+    min_train_per_combo_key: int = 2
+    ensure_holdout_coverage: bool = True
+    min_holdout_per_species: int = 1
+    min_holdout_per_combo: int = 1
+    group_stratification_col: str = "State"
+    group_col: str = "Sampling_Date"
 
 @dataclass
 class SeasonsConfig:

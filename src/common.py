@@ -421,10 +421,15 @@ def coverage_aware_split(df, stratify_col='Species_Season',
                          ensure_species_train_coverage=True, species_col='Species',
                          min_train_per_species=1,
                          ensure_combo_train_coverage=True, combo_col='Season_State_Species',
+                         min_train_per_combo_key=1,
+                         ensure_holdout_coverage=True,
+                         min_holdout_per_species=1,
+                         min_holdout_per_combo=1,
                          group_col='SessionID'):
     """
-    Group-aware, coverage-prioritized splitting that guarantees minimum training 
-    representation for every stratification group while keeping sessions together.
+    Group-aware, bidirectional coverage-prioritized splitting that guarantees minimum 
+    representation for both training and holdout across key stratification dimensions 
+    while keeping sessions together and avoiding leakage.
     
     Args:
         df: Input dataframe
@@ -433,6 +438,15 @@ def coverage_aware_split(df, stratify_col='Species_Season',
         holdout_pct: Target percentage for holdout set
         random_state: Random seed
         logger: Optional logger
+        ensure_species_train_coverage: Ensure all species in training
+        species_col: Column containing species information
+        min_train_per_species: Min training samples per species
+        ensure_combo_train_coverage: Ensure all combos in training
+        combo_col: Column for combo coverage (e.g., 'Season_State_Species')
+        min_train_per_combo_key: Min training samples per combo
+        ensure_holdout_coverage: Ensure representative holdout coverage
+        min_holdout_per_species: Min holdout samples per species
+        min_holdout_per_combo: Min holdout samples per combo
         group_col: Column for grouping (e.g., 'SessionID'). If None, defaults to sample-level.
         
     Returns:
@@ -482,33 +496,70 @@ def coverage_aware_split(df, stratify_col='Species_Season',
         index_to_original_indices = {i: [i] for i in working_indices}
         mapping_key = 'sample_id'
 
-    # 3. Perform coverage-aware selection on the working indices
+    # 3. Bidirectional coverage-aware allocation
     groups = working_df[stratify_col].unique()
     n_total_samples = len(df)
     target_holdout_samples = int(n_total_samples * holdout_pct)
     
     reserved_train_idx = []  # Indices of working_df (sessions)
-    holdout_candidates_idx = [] 
+    reserved_holdout_idx = []  # Indices reserved specifically for holdout coverage
+    remaining_idx = []  # Flexible allocation pool
     
+    coverage_stats = {
+        'train_guaranteed': {},
+        'holdout_guaranteed': {},
+        'insufficient_data': []
+    }
+    
+    # Phase 1: Guarantee minimum coverage for both train and holdout
     for group in groups:
         group_mask = working_df[stratify_col] == group
         group_idx = working_df[group_mask].index.tolist()
-        
-        # Reserve up to min_train_per_combo sessions for training
-        n_to_reserve = min(len(group_idx), min_train_per_combo)
         np.random.shuffle(group_idx)
         
-        reserved_train_idx.extend(group_idx[:n_to_reserve])
-        holdout_candidates_idx.extend(group_idx[n_to_reserve:])
+        # Calculate requirements
+        train_needed = min(len(group_idx), min_train_per_combo)
+        holdout_needed = min(len(group_idx) - train_needed, 
+                           min_holdout_per_combo if ensure_holdout_coverage else 0)
+        
+        # Check if we have enough data
+        total_needed = train_needed + holdout_needed
+        if len(group_idx) < total_needed:
+            if logger:
+                logger.warning(f"Group {group}: only {len(group_idx)} sessions, need {total_needed} "
+                             f"(train:{train_needed}, holdout:{holdout_needed}). Prioritizing training.")
+            coverage_stats['insufficient_data'].append({
+                'group': group, 
+                'available': len(group_idx), 
+                'needed': total_needed
+            })
+            holdout_needed = max(0, len(group_idx) - train_needed)
+        
+        # Allocate
+        reserved_train_idx.extend(group_idx[:train_needed])
+        if holdout_needed > 0:
+            reserved_holdout_idx.extend(group_idx[train_needed:train_needed + holdout_needed])
+            remaining_idx.extend(group_idx[train_needed + holdout_needed:])
+        else:
+            remaining_idx.extend(group_idx[train_needed:])
             
-    # Sample holdout from candidates until we hit the target size
-    np.random.shuffle(holdout_candidates_idx)
+        coverage_stats['train_guaranteed'][group] = train_needed
+        coverage_stats['holdout_guaranteed'][group] = holdout_needed
     
-    holdout_idx = []
-    current_holdout_samples = 0
+    # Phase 2: Flexible allocation from remaining pool to meet target holdout size
+    holdout_idx = reserved_holdout_idx.copy()
     
-    for idx in holdout_candidates_idx:
-        # Get the mapping key (SessionID or index)
+    # Calculate current sample counts (not session counts)
+    current_train_samples = sum(len(index_to_original_indices[working_df.loc[idx, mapping_key]]) 
+                              for idx in reserved_train_idx)
+    current_holdout_samples = sum(len(index_to_original_indices[working_df.loc[idx, mapping_key]]) 
+                                for idx in holdout_idx)
+    
+    # Allocate remaining sessions to reach target holdout size
+    np.random.shuffle(remaining_idx)
+    train_idx = reserved_train_idx.copy()
+    
+    for idx in remaining_idx:
         key = working_df.loc[idx, mapping_key]
         session_sample_count = len(index_to_original_indices[key])
         
@@ -516,12 +567,12 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             holdout_idx.append(idx)
             current_holdout_samples += session_sample_count
         else:
-            # If adding this session exceeds target, put it back to train
-            reserved_train_idx.append(idx)
+            train_idx.append(idx)
+            current_train_samples += session_sample_count
             
-    # 4. Species coverage enforcement (on working indices)
+    # 4. Species coverage enforcement with bidirectional consideration
     if ensure_species_train_coverage:
-        train_species = set(working_df.loc[reserved_train_idx, species_col].unique())
+        train_species = set(working_df.loc[train_idx, species_col].unique())
         all_species = set(working_df[species_col].unique())
         missing_species = all_species - train_species
         
@@ -533,14 +584,38 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             sp_holdout = [i for i in holdout_idx if working_df.loc[i, species_col] == sp]
             if sp_holdout:
                 take_idx = sp_holdout[0]
-                reserved_train_idx.append(take_idx)
+                train_idx.append(take_idx)
                 holdout_idx.remove(take_idx)
                 if logger:
-                    logger.info(f"  Pushed 1 session of {sp} to training.")
+                    logger.info(f"  Moved 1 session of {sp} from holdout to training.")
+
+    # 5. Holdout species coverage enforcement (new)
+    if ensure_holdout_coverage:
+        holdout_species = set(working_df.loc[holdout_idx, species_col].unique())
+        all_species = set(working_df[species_col].unique())
+        missing_holdout_species = all_species - holdout_species
+        
+        if missing_holdout_species and logger:
+            logger.warning(f"Species missing from holdout: {missing_holdout_species}. Pulling from training...")
+            
+        for sp in missing_holdout_species:
+            # Pull one session of this species back from training if available
+            # But make sure we don't break training coverage
+            sp_train = [i for i in train_idx if working_df.loc[i, species_col] == sp]
+            train_sp_count = len([i for i in train_idx if working_df.loc[i, species_col] == sp])
+            
+            if sp_train and train_sp_count > min_train_per_species:
+                take_idx = sp_train[0]
+                holdout_idx.append(take_idx)
+                train_idx.remove(take_idx)
+                if logger:
+                    logger.info(f"  Moved 1 session of {sp} from training to holdout.")
+            elif missing_holdout_species and logger:
+                logger.warning(f"  Cannot move {sp} to holdout without breaking training coverage.")
                 
-    # 5. Combo coverage enforcement
+    # 6. Combo coverage enforcement for both sets
     if ensure_combo_train_coverage and combo_col in working_df.columns:
-        train_combos = set(working_df.loc[reserved_train_idx, combo_col].unique())
+        train_combos = set(working_df.loc[train_idx, combo_col].unique())
         all_combos = set(working_df[combo_col].unique())
         missing_combos = all_combos - train_combos
         
@@ -548,12 +623,32 @@ def coverage_aware_split(df, stratify_col='Species_Season',
             cmb_holdout = [i for i in holdout_idx if working_df.loc[i, combo_col] == cmb]
             if cmb_holdout:
                 take_idx = cmb_holdout[0]
-                reserved_train_idx.append(take_idx)
+                train_idx.append(take_idx)
                 holdout_idx.remove(take_idx)
+                if logger:
+                    logger.info(f"  Moved 1 session of combo {cmb} from holdout to training.")
 
-    # 6. Map working indices back to original sample indices
+    if ensure_holdout_coverage and combo_col in working_df.columns:
+        holdout_combos = set(working_df.loc[holdout_idx, combo_col].unique())
+        all_combos = set(working_df[combo_col].unique())
+        missing_holdout_combos = all_combos - holdout_combos
+        
+        for cmb in missing_holdout_combos:
+            cmb_train = [i for i in train_idx if working_df.loc[i, combo_col] == cmb]
+            train_cmb_count = len([i for i in train_idx if working_df.loc[i, combo_col] == cmb])
+            
+            if cmb_train and train_cmb_count > min_train_per_combo_key:
+                take_idx = cmb_train[0]
+                holdout_idx.append(take_idx)
+                train_idx.remove(take_idx)
+                if logger:
+                    logger.info(f"  Moved 1 session of combo {cmb} from training to holdout.")
+            elif missing_holdout_combos and logger:
+                logger.warning(f"  Cannot move combo {cmb} to holdout without breaking training coverage.")
+
+    # 7. Map working indices back to original sample indices
     final_train_samples = []
-    for idx in reserved_train_idx:
+    for idx in train_idx:
         key = working_df.loc[idx, mapping_key]
         final_train_samples.extend(index_to_original_indices[key])
         
@@ -570,6 +665,45 @@ def coverage_aware_split(df, stratify_col='Species_Season',
         logger.info(f"  Train: {len(train_df)} samples, {train_df[group_col].nunique() if group_col else 'N/A'} groups")
         logger.info(f"  Holdout: {len(holdout_df)} samples, {holdout_df[group_col].nunique() if group_col else 'N/A'} groups")
         
+        # Enhanced coverage reporting
+        if len(holdout_df) > 0:
+            logger.info("Coverage Analysis:")
+            
+            # Species coverage
+            train_species = set(train_df[species_col].unique())
+            holdout_species = set(holdout_df[species_col].unique())
+            all_species = train_species | holdout_species
+            logger.info(f"  Species - Train: {len(train_species)}/{len(all_species)}, "
+                       f"Holdout: {len(holdout_species)}/{len(all_species)}")
+            
+            species_overlap = train_species & holdout_species
+            logger.info(f"  Species overlap: {len(species_overlap)}/{len(all_species)} "
+                       f"({len(species_overlap)/len(all_species)*100:.1f}%)")
+            
+            # Combo coverage if available
+            if combo_col in df.columns:
+                train_combos = set(train_df[combo_col].unique())
+                holdout_combos = set(holdout_df[combo_col].unique())
+                all_combos = train_combos | holdout_combos
+                combo_overlap = train_combos & holdout_combos
+                logger.info(f"  Combos - Train: {len(train_combos)}/{len(all_combos)}, "
+                           f"Holdout: {len(holdout_combos)}/{len(all_combos)}")
+                logger.info(f"  Combo overlap: {len(combo_overlap)}/{len(all_combos)} "
+                           f"({len(combo_overlap)/len(all_combos)*100:.1f}%)")
+            
+            # State and Season coverage
+            if 'State' in df.columns:
+                train_states = set(train_df['State'].unique())
+                holdout_states = set(holdout_df['State'].unique())
+                state_overlap = train_states & holdout_states
+                logger.info(f"  State overlap: {len(state_overlap)}/{len(train_states | holdout_states)}")
+                
+            if 'Season' in df.columns:
+                train_seasons = set(train_df['Season'].unique())
+                holdout_seasons = set(holdout_df['Season'].unique())
+                season_overlap = train_seasons & holdout_seasons
+                logger.info(f"  Season overlap: {len(season_overlap)}/{len(train_seasons | holdout_seasons)}")
+        
         # Verify leakage
         if group_col:
             train_groups = set(train_df[group_col].unique())
@@ -579,8 +713,13 @@ def coverage_aware_split(df, stratify_col='Species_Season',
                 logger.error(f"LEAKAGE DETECTED: {len(leaky)} groups shared between train and holdout!")
             else:
                 logger.info(f"✓ No leakage detected between train and holdout.")
+                
+        # Report insufficient data warnings
+        if coverage_stats['insufficient_data']:
+            logger.warning(f"Coverage constraints could not be fully met for {len(coverage_stats['insufficient_data'])} groups due to insufficient data.")
 
     return train_df, holdout_df
+
 
 
 def get_season(date_val):
@@ -978,8 +1117,8 @@ def calculate_scheduler_score(
     # OPTIONAL: Hard Overfit Gate
     # Only if Train is significantly better (e.g., > 0.3 gap) do we start worrying.
     # Otherwise, let the model run.
-    #if (train_r2 - val_r2) > 0.3:
-    #    score_mix -= 0.05 # Small penalty, not a run-killer
+    if (train_r2 - val_r2) > 0.2:
+        score_mix -= 0.05 # Small penalty, not a run-killer
         
     current_score = score_mix
     

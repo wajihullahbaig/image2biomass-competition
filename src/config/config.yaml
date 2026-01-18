@@ -8,7 +8,7 @@ preprocessing:
 
 hyperparameters:
   batch_size: 32
-  learning_rate: 0.00025
+  learning_rate: 0.0001
   n_folds: 4
   epochs: 20
   weight_decay: 0.05
@@ -24,16 +24,16 @@ training:
   backbone_freeze_fraction: 0.95
   use_tta: true
   fusion_dim: 256
-  biomass_feat_weight: 12.0
+  biomass_feat_weight: 40.0
   aux_feat_weight: 1.5
   species_feat_weight: 1.0
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
-  ema_decay: 0.7
+  ema_decay: 0.75
 
 augmentation:
-  tile_prob: 0.15
-  mixup_prob: 0.15
+  tile_prob: 0.0
+  mixup_prob: 0.20
   mixup_alpha: 0.40
 
 features:

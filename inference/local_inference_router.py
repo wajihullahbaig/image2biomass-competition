@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260117_164753'
+MODEL_DIR = './logs/unified_holdout_20260118_005958_full_species_state'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -136,6 +136,8 @@ class BiomassUnifiedModel(nn.Module):
         
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
+        
+        aux_out = self.aux_head(img_feats)
         
         # Fusion: Include Species probs
         combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)

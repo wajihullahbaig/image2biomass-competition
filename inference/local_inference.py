@@ -134,6 +134,8 @@ class BiomassUnifiedModel(nn.Module):
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
+        aux_out = self.aux_head(img_feats)
+        
         # Fusion: Include Species probs
         combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         

@@ -544,9 +544,10 @@ def main():
             target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
         )
 
-        sampler_key = 'Species'
-        sampler = build_weighted_sampler_from_df(train_df, key=sampler_key)
-        train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, sampler=sampler, num_workers=0, pin_memory=True)
+        # sampler_key = 'Species'
+        # sampler = build_weighted_sampler_from_df(train_df, key=sampler_key)
+        # train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, sampler=sampler, num_workers=0, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
         holdout_loader = DataLoader(holdout_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
@@ -594,16 +595,18 @@ def main():
         patience_counter = 0
 
         # Calculate weighted mean/std for biomass to match sampler distribution
-        counts = train_df[sampler_key].value_counts()
-        w_map = (1.0 / counts).to_dict()
-        sample_weights = train_df[sampler_key].map(w_map).astype(float).values
+        # counts = train_df[sampler_key].value_counts()
+        # w_map = (1.0 / counts).to_dict()
+        # sample_weights = train_df[sampler_key].map(w_map).astype(float).values
 
         bio_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         bio_train_log = np.log1p(train_df[bio_cols].astype(float).values)
         
-        bio_mean_np = np.average(bio_train_log, axis=0, weights=sample_weights)
-        bio_var_np = np.average((bio_train_log - bio_mean_np)**2, axis=0, weights=sample_weights)
-        bio_std_np = np.sqrt(bio_var_np)
+        # bio_mean_np = np.average(bio_train_log, axis=0, weights=sample_weights)
+        # bio_var_np = np.average((bio_train_log - bio_mean_np)**2, axis=0, weights=sample_weights)
+        # bio_std_np = np.sqrt(bio_var_np)
+        bio_mean_np = bio_train_log.mean(axis=0)
+        bio_std_np = bio_train_log.std(axis=0)
         bio_mean_t = torch.tensor(bio_mean_np, dtype=torch.float32, device=cfg.device).view(1, -1)
         bio_std_t = torch.tensor(bio_std_np, dtype=torch.float32, device=cfg.device).view(1, -1)
         official_weights_t = torch.tensor(cfg.targets.official_weights, dtype=torch.float32, device=cfg.device)
@@ -619,9 +622,11 @@ def main():
             aux_cols.append('Species_Count')
         aux_data = train_df[aux_cols].astype(float).fillna(0.0).values if len(aux_cols) > 0 else np.zeros((len(train_df), 0), dtype=float)
         if aux_data.shape[1] > 0:
-            aux_mean_np = np.average(aux_data, axis=0, weights=sample_weights)
-            aux_var_np = np.average((aux_data - aux_mean_np)**2, axis=0, weights=sample_weights)
-            aux_std_np = np.sqrt(aux_var_np)
+            # aux_mean_np = np.average(aux_data, axis=0, weights=sample_weights)
+            # aux_var_np = np.average((aux_data - aux_mean_np)**2, axis=0, weights=sample_weights)
+            # aux_std_np = np.sqrt(aux_var_np)
+            aux_mean_np = aux_data.mean(axis=0)
+            aux_std_np = aux_data.std(axis=0)
             # Add HSV stats (mean=0.0, std=1.0 as it is already a 0-1 score)
             aux_mean_np = np.append(aux_mean_np, [0.0])
             aux_std_np = np.append(aux_std_np, [1.0])

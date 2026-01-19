@@ -344,7 +344,9 @@ def run_inference(USE_TTA=True):
             found_folds.append(p)
             
     if not found_folds: 
-        if os.path.exists(os.path.join(MODEL_DIR, "best_model_overall.pth")):
+        if os.path.exists(os.path.join(MODEL_DIR, "full_model_final.pth")):
+            found_folds.append(os.path.join(MODEL_DIR, "full_model_final.pth"))
+        elif os.path.exists(os.path.join(MODEL_DIR, "best_model_overall.pth")):
             found_folds.append(os.path.join(MODEL_DIR, "best_model_overall.pth"))
             
     if not found_folds: 

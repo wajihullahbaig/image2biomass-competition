@@ -695,14 +695,28 @@ def main():
             history['score'].append(current_score)
             history['lr'].append(optimizer.param_groups[0]['lr'])
 
-            if current_score > best_fold_score:
-                best_fold_score = current_score
-                best_fold_v_r2 = v_r2
-                best_fold_h_r2 = h_r2
+            # Check saving conditions:
+            # 1. New best combined score (primary objective)
+            # 2. Improvement in BOTH Val R2 and Holdout R2 (robustness check)
+            better_score = current_score > best_fold_score
+            better_r2_both = (v_r2 > best_fold_v_r2) and (h_r2 > best_fold_h_r2)
+            
+            if better_score or better_r2_both:
+                if better_score:
+                    best_fold_score = current_score
+                    logger.info(f"*** Fold {fold+1} New Best Score: {best_fold_score:.4f} (V:{v_r2:.3f}, H:{h_r2:.3f}) ***")
+                else:
+                    logger.info(f"*** Fold {fold+1} Improved R2 Metrics (V:{v_r2:.3f} > {best_fold_v_r2:.3f}, H:{h_r2:.3f} > {best_fold_h_r2:.3f}) ***")
+
+                # Always update best R2 trackers if current is better
+                if v_r2 > best_fold_v_r2: best_fold_v_r2 = v_r2
+                if h_r2 > best_fold_h_r2: best_fold_h_r2 = h_r2
+                
                 best_fold_epoch = epoch
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold+1}.pth"))
-                logger.info(f"*** Fold {fold+1} Best Score: {best_fold_score:.4f} (V:{v_r2:.3f}, H:{h_r2:.3f}) ***")
                 patience_counter = 0
+                
+                # Update overall best tracker
                 if best_fold_score > best_overall_score:
                     best_overall_score = best_fold_score
                     torch.save(model.state_dict(), os.path.join(session_dir, "best_model_overall.pth"))
@@ -754,6 +768,100 @@ def main():
         log_aggregate_best_across_folds(logger, per_fold_best)
     except Exception:
         logger.warning("Failed to compute aggregated fold statistics")
+
+    # =================================================================================================
+    # FULL MODEL TRAINING (All Data)
+    # =================================================================================================
+    logger.info("\n" + "="*80)
+    logger.info("TRAINING FULL MODEL (Combined Train + Val + Holdout)")
+    logger.info("="*80)
+    
+    # 1. Prepare Full Dataset
+    full_df = df.copy() # Use the pivotted, preprocessed dataframe
+    full_ds = TiledBiomassDataset(
+        full_df, 
+        transform=train_transform, 
+        mode='training', 
+        tile_prob=cfg.augmentation.tile_prob,
+        target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
+    )
+    full_loader = DataLoader(full_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=True, num_workers=0, pin_memory=True)
+    
+    # Scale normalization stats (re-calculate on full dataset)
+    bio_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
+    bio_log = np.log1p(full_df[bio_cols].astype(float).values)
+    bio_mean_full = torch.tensor(bio_log.mean(axis=0), dtype=torch.float32, device=cfg.device).view(1, -1)
+    bio_std_full = torch.tensor(bio_log.std(axis=0), dtype=torch.float32, device=cfg.device).view(1, -1)
+    
+    aux_cols_full = [c for c in ['Pre_GSHH_NDVI', 'Height_Ave_cm_log', 'Interaction_Mul', 'Interaction_Add', 'Species_Count'] if c in full_df.columns]
+    # Check for encoded columns
+    for c in full_df.columns:
+        if 'NDVI_Bin_Ordinal' in c or 'Height_Bin_Ordinal' in c or 'NDVI_Bin_OH' in c or 'Height_Bin_OH' in c:
+            if c not in aux_cols_full: aux_cols_full.append(c) # Avoid duplicates if list already populated
+
+    aux_data_full = full_df[aux_cols_full].astype(float).fillna(0.0).values if len(aux_cols_full) > 0 else np.zeros((len(full_df), 0), dtype=float)
+    if aux_data_full.shape[1] > 0:
+        aux_mean_np_full = aux_data_full.mean(axis=0)
+        aux_std_np_full = aux_data_full.std(axis=0)
+        # Add HSV 
+        aux_mean_np_full = np.append(aux_mean_np_full, [0.0])
+        aux_std_np_full = np.append(aux_std_np_full, [1.0])
+    else:
+        aux_mean_np_full = np.array([0.0], dtype=float)
+        aux_std_np_full = np.array([1.0], dtype=float)
+
+    aux_mean_full = torch.tensor(aux_mean_np_full, dtype=torch.float32, device=cfg.device).view(1, -1)
+    aux_std_full = torch.tensor(aux_std_np_full, dtype=torch.float32, device=cfg.device).view(1, -1)
+
+    # 2. Initialize Fresh Model
+    # Important: Re-create dummy DS to get n_aux if needed
+    dummy_ds_full = TiledBiomassDataset(full_df[:1], transform=train_transform, mode='validation', target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g'])
+    n_aux = dummy_ds_full[0]['aux_feats'].shape[0]
+    full_model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
+    
+    # Optimizer & Scheduler
+    # Sticking to Config params
+    backbone_params = list(full_model.backbone.parameters())
+    head_params = [p for n, p in full_model.named_parameters() if 'backbone' not in n]
+    param_groups = [
+        {'params': backbone_params, 'lr': cfg.hyperparameters.learning_rate * cfg.hyperparameters.backbone_lr_factor},
+        {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
+    ]
+    optimizer_full = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
+    
+    # Train Loop
+    # We train for the median best epoch found during CV, plus a small buffer, or just fixed epochs
+    best_epochs = [x['best_epoch'] for x in per_fold_best if x['best_epoch'] >= 0]
+    if len(best_epochs) > 0:
+        median_best_epoch = int(np.median(best_epochs))
+    else:
+        median_best_epoch = cfg.hyperparameters.epochs 
+
+    target_epochs = median_best_epoch + 2 # Add a small margin
+    target_epochs = max(target_epochs, 5) # Minimum 5
+    target_epochs = min(target_epochs, cfg.hyperparameters.epochs) # Cap at config max
+
+    logger.info(f"Target Epochs for Full Model: {target_epochs} (Based on Median Fold Best: {median_best_epoch})")
+    
+    full_model.train()
+    # Unfreeze backbone strategy (Aggressive unfreeze for full data)
+    for param in full_model.backbone.parameters():
+        param.requires_grad = True
+
+    for epoch in range(target_epochs):
+        train_metrics = train_one_epoch(
+            full_model, full_loader, optimizer_full, criterion_reg, criterion_species,
+            cfg, epoch, session_dir=None, logger=logger,
+            bio_mean=bio_mean_full, bio_std=bio_std_full, aux_mean=aux_mean_full, aux_std=aux_std_full,
+            official_weights_t=official_weights_t
+        )
+        logger.info(f"Full Model Epoch {epoch}: Train Loss {train_metrics['train_loss']:.4f} | R2 {train_metrics['train_r2']:.4f}")
+
+    # Save
+    save_path = os.path.join(session_dir, "full_model_final.pth")
+    torch.save(full_model.state_dict(), save_path)
+    logger.info(f"Full Model saved to: {save_path}")
+    logger.info("="*80)
 
 
 if __name__ == '__main__':

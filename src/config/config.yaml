@@ -10,7 +10,7 @@ hyperparameters:
   batch_size: 32
   learning_rate: 0.0001
   n_folds: 4
-  epochs: 15
+  epochs: 12
   weight_decay: 0.05
   early_stop_patience: 10
   backbone: timm/convnext_small.fb_in22k

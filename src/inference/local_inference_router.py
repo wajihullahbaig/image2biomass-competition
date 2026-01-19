@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260119_084901'
+MODEL_DIR = './logs/unified_holdout_20260119_143530'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -42,7 +42,6 @@ BIOMASS_CLAMP = 1000.0
 USE_TTA = True              # Enable/Disable Test-Time Augmentation
 SAVE_IMAGES = True          # Save augmented images for debugging
 MAX_IMAGES_TO_SAVE = 10     # Only save first N batches to avoid disk fill
-FORCE_FULL_MODEL = False    # Set True to ignore folds and use full_model_final.pth
 
 # ====================== SHARPENING TRANSFORM ======================
 
@@ -337,22 +336,19 @@ def run_inference(USE_TTA=True):
     num_aux = metadata.get('num_aux', 5)  # Default to 5 (NDVI, Height, Int_Mul, Int_Add, SpCount)
     print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux}")
 
-    # 3. DISCOVER MODELS
+    # 3. DISCOVER MODELS (Only fold-specific models)
     found_folds = []
     for f in range(10):
-        if FORCE_FULL_MODEL: break # Skip fold searching if forced
         p = os.path.join(MODEL_DIR, f"best_model_fold{f+1}.pth")
         if os.path.exists(p): 
             found_folds.append(p)
             
-    if not found_folds: 
-        if os.path.exists(os.path.join(MODEL_DIR, "full_model_final.pth")):
-            found_folds.append(os.path.join(MODEL_DIR, "full_model_final.pth"))
-        elif os.path.exists(os.path.join(MODEL_DIR, "best_model_overall.pth")):
-            found_folds.append(os.path.join(MODEL_DIR, "best_model_overall.pth"))
+    # Fallback to overall best model if no folds found
+    if not found_folds and os.path.exists(os.path.join(MODEL_DIR, "best_model_overall.pth")):
+        found_folds.append(os.path.join(MODEL_DIR, "best_model_overall.pth"))
             
     if not found_folds: 
-        raise FileNotFoundError(f"No models found in {MODEL_DIR}")
+        raise FileNotFoundError(f"No fold models found in {MODEL_DIR}")
     print(f"Found {len(found_folds)} checkpoints.\n")
 
     # 4. RUN INFERENCE LOOP

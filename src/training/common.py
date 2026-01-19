@@ -1093,25 +1093,13 @@ def calculate_scheduler_score(
     holdout_r2,
     ema_score_prev=None,
     ema_decay=0.9,
-    method='weighted_val',
-    gap_weights=None
 ):
     """
     Revised Score Calculation for R^2 Maximization.
     Removes gap penalties that prematurely kill learning rates.
     """
     
-    # method is largely ignored now, we focus on weighted validation
-    
-    # STRATEGY: 
-    # We want the scheduler to step only if the model stops improving 
-    # on unseen data.
-    
-    # 1. Primary Metric: Validation Set (Standard check)
-    # 2. Secondary Metric: Holdout Set (Sanity check)
-    
-    # If using 'weighted_val', we trust the Validation set more, 
-    # but smooth it with Holdout to prevent overfitting to the specific validation fold.
+    # Smooth it with Holdout to prevent overfitting to the specific validation fold.
     score_mix = (0.6 * val_r2) + (0.4 * holdout_r2)
     
     # Proportional Overfit Penalty

@@ -463,11 +463,14 @@ def main():
         raise ValueError(f"Stratification key '{strat_key}' not found in dev_df.")
     
     sgkf = StratifiedGroupKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
-    # Stratify by Species for the folds to ensure maximum species representation across folds
-    splitter = sgkf.split(dev_df, dev_df['Species'], groups=dev_df['State'])
-    fold_iter = [(dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) 
+    # Use config keys directly — allow exceptions if keys/columns are missing
+    strat_col_cfg = cfg.split.group_stratification_col
+    group_col_cfg = cfg.split.group_col
+
+    splitter = sgkf.split(dev_df, dev_df[strat_col_cfg], groups=dev_df[group_col_cfg])
+    fold_iter = [(dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True))
                  for train, val in splitter]
-    split_name = 'StratifiedGroupKFold-Species'
+    split_name = f"StratifiedGroupKFold-{strat_col_cfg}-groups-{group_col_cfg}"
 
     per_fold_best = []
     for fold, (train_df_raw, val_df_raw) in enumerate(fold_iter):
@@ -493,7 +496,14 @@ def main():
         # Generate split analysis visualizations
         from visualize_splits import analyze_splits_in_training
         try:
-            analyze_splits_in_training(train_df, val_df, hold_df, session_dir, fold, group_col=None)
+            analyze_splits_in_training(
+                train_df,
+                val_df,
+                hold_df,
+                session_dir,
+                fold,
+                group_col=group_col_cfg
+            )
             logger.info("Split analysis visualizations saved to split_analysis/")            
         except Exception as e:
             logger.warning(f"Could not generate split analysis: {e}")

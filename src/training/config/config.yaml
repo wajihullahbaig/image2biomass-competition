@@ -7,7 +7,7 @@ preprocessing:
   image_width: 512
 
 hyperparameters:
-  batch_size: 32
+  batch_size: 64
   learning_rate: 0.0001
   n_folds: 4
   epochs: 12
@@ -21,7 +21,7 @@ hyperparameters:
 
 training:
   freeze_backbone: true
-  backbone_freeze_fraction: 0.95
+  backbone_freeze_fraction: 0.7
   use_tta: true
   fusion_dim: 256
   biomass_feat_weight: 40.0
@@ -29,11 +29,11 @@ training:
   species_feat_weight: 1.0
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
-  ema_decay: 0.75
+  ema_decay: 0.9
 
 augmentation:
-  tile_prob: 0.025
-  mixup_prob: 0.20
+  tile_prob: 0.05
+  mixup_prob: 0.05
   mixup_alpha: 0.40
 
 features:
@@ -87,15 +87,15 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 20
+  target_min_samples: 25
   method: "smart"
-  noise_scale: 0.05
+  noise_scale: 0.025
   seasonal_drift: true
   day_shift_prob: 0.6
   drift_strength: 0.15
 
 split:
-  holdout_pct: 0.30
+  holdout_pct: 0.10
   stratification_key: "Species_Season" # Key for coverage-aware splitting
   min_train_per_combo: 3 # Minimum samples per combo guaranteed in training
   # Coverage enforcement

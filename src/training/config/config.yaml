@@ -25,7 +25,7 @@ training:
   use_tta: true
   fusion_dim: 256
   biomass_feat_weight: 40.0
-  aux_feat_weight: 1.5
+  aux_feat_weight: 5
   species_feat_weight: 1.0
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9

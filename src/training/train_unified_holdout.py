@@ -464,7 +464,7 @@ def main():
     
     sgkf = StratifiedGroupKFold(n_splits=cfg.hyperparameters.n_folds, shuffle=True, random_state=313)
     # Stratify by Species for the folds to ensure maximum species representation across folds
-    splitter = sgkf.split(dev_df, dev_df['State'], groups=dev_df['Sampling_Date'])
+    splitter = sgkf.split(dev_df, dev_df['Species'], groups=dev_df['State'])
     fold_iter = [(dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True)) 
                  for train, val in splitter]
     split_name = 'StratifiedGroupKFold-Species'
@@ -681,7 +681,7 @@ def main():
             history['lr'].append(optimizer.param_groups[0]['lr'])
 
             # Check saving conditions: Only save when BOTH validation and holdout R² improve
-            better_r2_both = (v_r2 > best_fold_v_r2) and (h_r2 > best_fold_h_r2)
+            better_r2_both = (v_r2 > best_fold_v_r2) or (h_r2 > best_fold_h_r2)
             
             if better_r2_both:
                 logger.info(f"*** Fold {fold+1} Improved R2 Metrics (V:{v_r2:.3f} > {best_fold_v_r2:.3f}, H:{h_r2:.3f} > {best_fold_h_r2:.3f}) ***")

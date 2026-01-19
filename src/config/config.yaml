@@ -10,7 +10,7 @@ hyperparameters:
   batch_size: 32
   learning_rate: 0.0001
   n_folds: 4
-  epochs: 40
+  epochs: 15
   weight_decay: 0.05
   early_stop_patience: 10
   backbone: timm/convnext_small.fb_in22k
@@ -32,7 +32,7 @@ training:
   ema_decay: 0.75
 
 augmentation:
-  tile_prob: 0.0
+  tile_prob: 0.025
   mixup_prob: 0.20
   mixup_alpha: 0.40
 

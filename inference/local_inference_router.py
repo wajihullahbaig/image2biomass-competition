@@ -42,6 +42,7 @@ BIOMASS_CLAMP = 1000.0
 USE_TTA = True              # Enable/Disable Test-Time Augmentation
 SAVE_IMAGES = True          # Save augmented images for debugging
 MAX_IMAGES_TO_SAVE = 10     # Only save first N batches to avoid disk fill
+FORCE_FULL_MODEL = False    # Set True to ignore folds and use full_model_final.pth
 
 # ====================== SHARPENING TRANSFORM ======================
 
@@ -339,6 +340,7 @@ def run_inference(USE_TTA=True):
     # 3. DISCOVER MODELS
     found_folds = []
     for f in range(10):
+        if FORCE_FULL_MODEL: break # Skip fold searching if forced
         p = os.path.join(MODEL_DIR, f"best_model_fold{f+1}.pth")
         if os.path.exists(p): 
             found_folds.append(p)

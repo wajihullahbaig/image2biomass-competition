@@ -27,8 +27,15 @@ class BiomassUnifiedModel(nn.Module):
         with torch.no_grad():
             dummy_input = torch.randn(1, 3, self.img_h, self.img_w)
             feats = self.backbone(dummy_input)
-            self.backbone_dim = feats.shape[1]
             
+            # Handle different backbone architectures (CNN vs ViT)
+            if len(feats.shape) == 4:  # CNN: [B, C, H, W]
+                self.backbone_dim = feats.shape[1]
+            elif len(feats.shape) == 3:  # ViT: [B, seq_len, embed_dim]
+                self.backbone_dim = feats.shape[2]
+            else:  # Already pooled: [B, features]
+                self.backbone_dim = feats.shape[1]
+                
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         
         # 2. Auxiliary Head (NDVI, Height)
@@ -78,7 +85,15 @@ class BiomassUnifiedModel(nn.Module):
 
     def forward(self, x):
         feat_map = self.backbone(x)
-        img_feats = self.global_pool(feat_map).flatten(1)
+        
+        # Handle different backbone architectures
+        if len(feat_map.shape) == 4:  # CNN: [B, C, H, W]
+            img_feats = self.global_pool(feat_map).flatten(1)
+        elif len(feat_map.shape) == 3:  # ViT: [B, seq_len, embed_dim]
+            # For ViTs, typically take the [CLS] token (first token) or mean pool
+            img_feats = feat_map.mean(dim=1)  # Mean pooling over sequence length
+        else:  # Already pooled: [B, features]
+            img_feats = feat_map
         
         # Heads
         species_logits = self.species_head(img_feats)

@@ -289,15 +289,18 @@ class TestDataset(Dataset):
         
         return img, row['clean_id']
 
-def get_inference_transforms(h, w):
+def get_inference_transforms(h, w, mean=None, std=None):
     """
     Inference transforms matches validation (Resize + Norm).
-    No sharpening to ensure consistency with trained weights.
+    Uses dynamic mean/std from metadata for consistency.
     """
+    if mean is None or std is None:
+        raise ValueError("mean and std must be provided - no fallbacks allowed")
+        
     return transforms.Compose([
         transforms.Resize((h, w)),        
         transforms.ToTensor(),
-        transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
+        transforms.Normalize(mean, std)
     ])
 
 def load_model(fold_path, device, num_species, backbone_name, num_aux=7, biomass_clamp=None):
@@ -335,7 +338,7 @@ def run_inference(USE_TTA=True):
                  
     print(f"Test Images: {len(df_wide)}")
     
-    # 2. LOAD METADATA
+    # 2. LOAD METADATA - STRICT MODE (no fallbacks)
     metadata_path = os.path.join(MODEL_DIR, 'metadata.json')
     if not os.path.exists(metadata_path):
         raise FileNotFoundError(f"metadata.json missing in {MODEL_DIR}")
@@ -343,13 +346,17 @@ def run_inference(USE_TTA=True):
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
     
-    num_species = metadata.get('num_species')
-    backbone_name = metadata.get('backbone')
-    img_h = metadata.get('image_height', IMAGE_HEIGHT)
-    img_w = metadata.get('image_width', IMAGE_WIDTH)
-    num_aux = metadata.get('num_aux', 5)  # Default to 5 (NDVI, Height, Int_Mul, Int_Add, SpCount)
-    biomass_clamp = metadata.get('biomass_clamp', BIOMASS_CLAMP)  # Read clamp from metadata or use default
+    # Extract required parameters (no fallbacks - fail if missing)
+    num_species = metadata['num_species']
+    backbone_name = metadata['backbone']
+    img_h = metadata['image_height']
+    img_w = metadata['image_width']
+    imagenet_mean = tuple(metadata['imagenet_mean'])
+    imagenet_std = tuple(metadata['imagenet_std'])
+    num_aux = metadata['num_aux']
+    biomass_clamp = metadata['biomass_clamp']
     print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux} | clamp: {biomass_clamp}g")
+    print(f"Normalization: mean={imagenet_mean}, std={imagenet_std}")
 
     # 3. DISCOVER MODELS (Only fold-specific models)
     found_folds = []
@@ -367,7 +374,7 @@ def run_inference(USE_TTA=True):
     print(f"Found {len(found_folds)} checkpoints.\n")
 
     # 4. RUN INFERENCE LOOP
-    val_transform = get_inference_transforms(h=img_h, w=img_w)
+    val_transform = get_inference_transforms(h=img_h, w=img_w, mean=imagenet_mean, std=imagenet_std)
     ds = TestDataset(df_wide, TEST_IMG_DIR, transform=val_transform)
     loader = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
     

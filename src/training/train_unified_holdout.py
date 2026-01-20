@@ -336,6 +336,8 @@ def save_metadata(session_dir, species_list, target_cols, num_aux):
         'backbone': cfg.hyperparameters.backbone,
         'image_height': cfg.preprocessing.image_height,
         'image_width': cfg.preprocessing.image_width,
+        'imagenet_mean': cfg.preprocessing.imagenet_mean,
+        'imagenet_std': cfg.preprocessing.imagenet_std,
         'num_species': len(species_list),
         'biomass_clamp': cfg.targets.biomass_clamp,
         'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

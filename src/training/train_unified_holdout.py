@@ -64,29 +64,15 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         optimizer.zero_grad()
 
         with torch.amp.autocast('cuda'):
-            # Model now returns [Log_Green, Log_Dead, Log_Clover]
+            # Model now returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
             biomass_out, aux_out, species_logits = model(images)
 
-            # Linear space components for derivation
-            pred_green_lin = torch.expm1(biomass_out[:, 0:1])
-            pred_dead_lin  = torch.expm1(biomass_out[:, 1:2])
-            pred_clover_lin = torch.expm1(biomass_out[:, 2:3])
-            
-            # Derived linear targets (deterministic)
-            pred_gdm_lin   = pred_green_lin + pred_clover_lin
-            pred_total_lin = pred_gdm_lin + pred_dead_lin
-            
-            # Log-space derived for loss calculation
-            pred_gdm_log   = torch.log1p(pred_gdm_lin)
-            pred_total_log = torch.log1p(pred_total_lin)
-
-            # Ground Truth (targets_g is [Green, Dead, Clover] from dataset)
+            # Ground Truth (targets_g is now [Green, Dead, Clover, GDM, Total] from dataset)
             targ_green_lin = targets_g[:, 0:1]
             targ_dead_lin  = targets_g[:, 1:2]
             targ_clover_lin = targets_g[:, 2:3]
-            
-            targ_gdm_lin   = targ_green_lin + targ_clover_lin
-            targ_total_lin = targ_gdm_lin + targ_dead_lin
+            targ_gdm_lin   = targets_g[:, 3:4]
+            targ_total_lin = targets_g[:, 4:5]
             
             targ_green_log = torch.log1p(targ_green_lin)
             targ_dead_log  = torch.log1p(targ_dead_lin)
@@ -97,12 +83,12 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             # --- Regression Loss (Log Space) ---
             reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
             
-            # Prepare prediction/target pairs for [Green, Dead, Clover, GDM, Total]
+            # Direct prediction/target pairs for [Green, Dead, Clover, GDM, Total]
             p_green, t_green = biomass_out[:, 0:1], targ_green_log
             p_dead,  t_dead  = biomass_out[:, 1:2], targ_dead_log
             p_clover, t_clover = biomass_out[:, 2:3], targ_clover_log
-            p_gdm,   t_gdm   = pred_gdm_log, targ_gdm_log
-            p_total, t_total = pred_total_log, targ_total_log
+            p_gdm,   t_gdm   = biomass_out[:, 3:4], targ_gdm_log
+            p_total, t_total = biomass_out[:, 4:5], targ_total_log
             
             if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
                 eps = 1e-9
@@ -158,9 +144,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         scaler.update()
 
         with torch.no_grad():
-            # biomass_out is [Log_Green, Log_Dead, Log_Clover]
-            # pred_gdm_log, pred_total_log are derived
-            preds_5_log = torch.cat([biomass_out, pred_gdm_log, pred_total_log], dim=1)
+            # biomass_out is now [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
+            preds_5_log = biomass_out
             targs_5_log = torch.cat([targ_green_log, targ_dead_log, targ_clover_log, targ_gdm_log, targ_total_log], dim=1)
             
             all_preds_log.append(preds_5_log.cpu().numpy())
@@ -226,7 +211,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
                 img_aug = transform_fn(images)
                 if session_dir is not None:
                     save_tta_images(img_aug, view_name, batch_idx, fold, epoch, session_dir)
-                # Model now returns [Log_Green, Log_Dead, Log_Clover]
+                # Model now returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
                 bio_out_tta, aux_out_tta, sp_logits_tta = model(img_aug)
                 accum_bio_linear += torch.expm1(bio_out_tta) # Sum linear predictions
                 accum_aux += aux_out_tta
@@ -237,27 +222,15 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
             aux_out = accum_aux / len(tta_views)
             species_probs = accum_sp_probs / len(tta_views)
         else:
-            # Model now returns [Log_Green, Log_Dead, Log_Clover]
+            # Model now returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
             biomass_out, aux_out, species_logits = model(images)
 
-        # Linear space components for derivation from model output
-        pred_green_lin = torch.expm1(biomass_out[:, 0:1])
-        pred_dead_lin  = torch.expm1(biomass_out[:, 1:2])
-        pred_clover_lin = torch.expm1(biomass_out[:, 2:3])
-        
-        pred_gdm_lin   = pred_green_lin + pred_clover_lin
-        pred_total_lin = pred_gdm_lin + pred_dead_lin
-        
-        pred_gdm_log   = torch.log1p(pred_gdm_lin)
-        pred_total_log = torch.log1p(pred_total_lin)
-
-        # Ground Truth (targets_g is [Green, Dead, Clover] from dataset)
+        # Ground Truth (targets_g is now [Green, Dead, Clover, GDM, Total] from dataset)
         targ_green_lin = targets_g[:, 0:1]
         targ_dead_lin  = targets_g[:, 1:2]
         targ_clover_lin = targets_g[:, 2:3]
-        
-        targ_gdm_lin   = targ_green_lin + targ_clover_lin
-        targ_total_lin = targ_gdm_lin + targ_dead_lin
+        targ_gdm_lin   = targets_g[:, 3:4]
+        targ_total_lin = targets_g[:, 4:5]
         
         targ_green_log = torch.log1p(targ_green_lin)
         targ_dead_log  = torch.log1p(targ_dead_lin)
@@ -268,12 +241,12 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         # --- Regression Loss (Log Space) ---
         reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
         
-        # Prepare prediction/target pairs for [Green, Dead, Clover, GDM, Total]
+        # Direct prediction/target pairs for [Green, Dead, Clover, GDM, Total]
         p_green, t_green = biomass_out[:, 0:1], targ_green_log
         p_dead,  t_dead  = biomass_out[:, 1:2], targ_dead_log
         p_clover, t_clover = biomass_out[:, 2:3], targ_clover_log
-        p_gdm,   t_gdm   = pred_gdm_log, targ_gdm_log
-        p_total, t_total = pred_total_log, targ_total_log
+        p_gdm,   t_gdm   = biomass_out[:, 3:4], targ_gdm_log
+        p_total, t_total = biomass_out[:, 4:5], targ_total_log
         
         if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
             eps = 1e-9
@@ -340,7 +313,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
 
         # Accumulate for R2 calculation
         with torch.no_grad():
-            preds_5_log = torch.cat([biomass_out, pred_gdm_log, pred_total_log], dim=1)
+            preds_5_log = biomass_out  # Now directly predicting all 5
             targs_5_log = torch.cat([targ_green_log, targ_dead_log, targ_clover_log, targ_gdm_log, targ_total_log], dim=1)
             all_preds_log.append(preds_5_log.cpu().numpy())
             all_targets_full.append(targs_5_log.cpu().numpy())
@@ -364,6 +337,7 @@ def save_metadata(session_dir, species_list, target_cols, num_aux):
         'image_height': cfg.preprocessing.image_height,
         'image_width': cfg.preprocessing.image_width,
         'num_species': len(species_list),
+        'biomass_clamp': cfg.targets.biomass_clamp,
         'session_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         'tile_augmentation': 'enabled',
         'stratification_key': cfg.split.stratification_key,
@@ -534,7 +508,7 @@ def main():
             transform=train_transform,
             mode='training',
             tile_prob=cfg.augmentation.tile_prob,
-            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
+            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
         train_ds = TiledMixupDataset(train_ds_base, prob=cfg.augmentation.mixup_prob, alpha=cfg.augmentation.mixup_alpha)
 
@@ -543,7 +517,7 @@ def main():
             transform=val_transform,
             mode='validation',
             tile_prob=0.0,
-            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
+            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
 
         holdout_ds = TiledBiomassDataset(
@@ -551,14 +525,14 @@ def main():
             transform=val_transform,
             mode='validation',
             tile_prob=0.0,
-            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
+            target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
 
         train_loader = DataLoader(train_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
         holdout_loader = DataLoader(holdout_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
-        dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation', target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g'])
+        dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation', target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g'])
         n_aux = dummy_ds[0]['aux_feats'].shape[0]
         model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
 

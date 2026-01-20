@@ -67,7 +67,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Dropout(0.6),
             nn.Linear(self.fusion_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, 3), # [Green, Dead, Clover]
+            nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total]
         )
 
         self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
@@ -82,6 +82,8 @@ class BiomassUnifiedModel(nn.Module):
             last_layer.bias[0] = 3.0 # ~20g green
             last_layer.bias[1] = 2.0 # ~7g dead
             last_layer.bias[2] = 2.5 # ~12g clover
+            last_layer.bias[3] = 3.2 # ~25g gdm (green + clover)
+            last_layer.bias[4] = 3.5 # ~30g total (green + dead + clover)
 
     def forward(self, x):
         feat_map = self.backbone(x)

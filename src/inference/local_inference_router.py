@@ -36,7 +36,7 @@ FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 16
-BIOMASS_CLAMP = 1000.0
+BIOMASS_CLAMP = 2500.0  # grams - max realistic biomass for dense pasture (~1-2 m² plot)
 
 # FEATURE FLAGS
 USE_TTA = True              # Enable/Disable Test-Time Augmentation
@@ -68,8 +68,11 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
 
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name, num_aux=5, num_species=14, pretrained=False):
+    def __init__(self, backbone_name, num_aux=5, num_species=14, pretrained=False, biomass_clamp=None):
         super(BiomassUnifiedModel, self).__init__()
+        
+        # Use provided clamp or fallback to default
+        clamp_value = biomass_clamp if biomass_clamp is not None else BIOMASS_CLAMP
         
         # 1. Image Backbone
         self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0, global_pool='')
@@ -118,14 +121,10 @@ class BiomassUnifiedModel(nn.Module):
             # Transition to 128
             nn.Linear(FUSION_DIM, 128),
             nn.ReLU(),
-            nn.Linear(128, 3), # [Log_Total, Log_GDM, Log_Green]
+            nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total]
         )
         
-        self.log_clamp = torch.log1p(torch.tensor(BIOMASS_CLAMP))
-        self._init_biomass_head()
-        
-        self.log_clamp = torch.log1p(torch.tensor(BIOMASS_CLAMP))
-
+        self.log_clamp = torch.log1p(torch.tensor(clamp_value))
         self._init_biomass_head()
         
     def _init_biomass_head(self):
@@ -133,9 +132,11 @@ class BiomassUnifiedModel(nn.Module):
         nn.init.xavier_uniform_(last_layer.weight)
         with torch.no_grad():
             last_layer.bias.fill_(0)
-            last_layer.bias[0] = 100.0 # Green
-            last_layer.bias[1] = 20.0 # Dead
-            last_layer.bias[2] = 50 # Clover
+            last_layer.bias[0] = 3.0 # Green
+            last_layer.bias[1] = 2.0 # Dead
+            last_layer.bias[2] = 2.5 # Clover
+            last_layer.bias[3] = 3.2 # GDM
+            last_layer.bias[4] = 3.5 # Total
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -235,20 +236,18 @@ def apply_tta(model, image, batch_idx=0):
             if SAVE_IMAGES:
                 save_tta_images(img_aug, batch_idx, view_name)
             
-            # Predict independent components
+            # Predict all 5 targets directly
             biomass_out, aux, sp_logits = model(img_aug) 
             
-            # Linear space components
+            # Linear space for all 5 targets
             bio_lin = torch.expm1(biomass_out)
             green_lin = bio_lin[:, 0:1]
             dead_lin  = bio_lin[:, 1:2]
             clover_lin = bio_lin[:, 2:3]
+            gdm_lin = bio_lin[:, 3:4]
+            total_lin = bio_lin[:, 4:5]
             
-            # Derive derived targets
-            gdm_lin = green_lin + clover_lin
-            total_lin = gdm_lin + dead_lin
-            
-            # Resulting 5 linear targets
+            # Resulting 5 linear targets (direct predictions)
             full_bio_lin = torch.cat([green_lin, dead_lin, clover_lin, gdm_lin, total_lin], dim=1)
             all_biomass_linear.append(full_bio_lin)
             
@@ -301,8 +300,8 @@ def get_inference_transforms(h, w):
         transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
     ])
 
-def load_model(fold_path, device, num_species, backbone_name, num_aux=7):
-    model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species, num_aux=num_aux).to(device)
+def load_model(fold_path, device, num_species, backbone_name, num_aux=7, biomass_clamp=None):
+    model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species, num_aux=num_aux, biomass_clamp=biomass_clamp).to(device)
     state_dict = torch.load(fold_path, map_location=device, weights_only=True)
     # Non-strict to accommodate older 4-output checkpoints; new head stays initialized
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -349,7 +348,8 @@ def run_inference(USE_TTA=True):
     img_h = metadata.get('image_height', IMAGE_HEIGHT)
     img_w = metadata.get('image_width', IMAGE_WIDTH)
     num_aux = metadata.get('num_aux', 5)  # Default to 5 (NDVI, Height, Int_Mul, Int_Add, SpCount)
-    print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux}")
+    biomass_clamp = metadata.get('biomass_clamp', BIOMASS_CLAMP)  # Read clamp from metadata or use default
+    print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux} | clamp: {biomass_clamp}g")
 
     # 3. DISCOVER MODELS (Only fold-specific models)
     found_folds = []
@@ -378,7 +378,7 @@ def run_inference(USE_TTA=True):
     for i, model_path in enumerate(found_folds):
         fold_name = os.path.basename(model_path)
         print(f"-> Processing {fold_name}...")
-        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=num_aux)
+        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=num_aux, biomass_clamp=biomass_clamp)
         
         fold_preds = []
         fold_confs = []
@@ -392,14 +392,14 @@ def run_inference(USE_TTA=True):
                     preds_linear_5, conf = apply_tta(model, imgs, batch_idx)
                     preds_linear_5 = preds_linear_5.cpu().numpy()
                 else:
-                    # No-TTA: manually derive
+                    # No-TTA: use direct predictions
                     biomass_out, conf = no_tta(model, imgs, batch_idx)
                     bio_lin = torch.expm1(biomass_out)
                     green_lin = bio_lin[:, 0:1]
                     dead_lin  = bio_lin[:, 1:2]
                     clover_lin = bio_lin[:, 2:3]
-                    gdm_lin = green_lin + clover_lin
-                    total_lin = gdm_lin + dead_lin
+                    gdm_lin = bio_lin[:, 3:4]
+                    total_lin = bio_lin[:, 4:5]
                     preds_linear_5 = torch.cat([green_lin, dead_lin, clover_lin, gdm_lin, total_lin], dim=1).cpu().numpy()
                 
                 # Store [green, dead, clover, gdm, total]

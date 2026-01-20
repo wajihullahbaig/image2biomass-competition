@@ -50,7 +50,7 @@ loss:
 targets:
   cols: ["Dry_Green_g", "Dry_Dead_g", "Dry_Clover_g", "GDM_g", "Dry_Total_g"]
   official_weights: [0.1, 0.1, 0.1, 0.2, 0.5]
-  biomass_clamp: 1000.0 # grams
+  biomass_clamp: 2500.0 # grams - max realistic biomass for dense pasture
 
 species_taxonomy:
   core_species:

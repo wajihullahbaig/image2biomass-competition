@@ -3,17 +3,17 @@
 preprocessing:
   imagenet_mean: [0.485, 0.456, 0.406]
   imagenet_std: [0.229, 0.224, 0.225]
-  image_height: 256
-  image_width: 256
+  image_height: 224
+  image_width: 224
 
 hyperparameters:
-  batch_size: 64
-  learning_rate: 0.00009
+  batch_size: 16
+  learning_rate: 0.000015
   n_folds: 3
   epochs: 20
   weight_decay: 0.1
   early_stop_patience: 10
-  backbone: timm/vit_small_plus_patch16_dinov3.lvd1689m
+  backbone: timm/convnext_tiny.dinov3_lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 300
   max_grad_norm: 1.0
@@ -25,21 +25,21 @@ training:
   use_tta: true
   fusion_dim: 256
   biomass_feat_weight: 40.0
-  aux_feat_weight: 20.0
+  aux_feat_weight: 5.0
   species_feat_weight: 1.0
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
   ema_decay: 0.9
 
 augmentation:
-  tile_prob: 0.30
-  mixup_prob: 0.20
+  tile_prob: 0.075
+  mixup_prob: 0.075
   mixup_alpha: 0.40
 
 features:
   use_bin_features: false
   bin_encoding: "ordinal"
-  use_species_count_feature: true
+  use_species_count_feature: false
   biomass_composite_bins: 3
   # Enhanced HSV feature configuration
   hsv_biomass_scores:
@@ -127,7 +127,7 @@ split:
   ensure_species_train_coverage: true
   species_col: "Species"
   min_train_per_species: 2
-  ensure_combo_train_coverage: false # Disabled for simplicity
+  ensure_combo_train_coverage: true # Disabled for simplicity
   combo_col: "Season_State_Species"
   min_train_per_combo_key: 2
   group_stratification_col: "State"

@@ -685,7 +685,7 @@ def main():
             history['lr'].append(optimizer.param_groups[0]['lr'])
 
             # Check saving conditions: Only save when BOTH validation and holdout R² improve
-            better_r2_both = (v_r2 > best_fold_v_r2) and (h_r2 > best_fold_h_r2)
+            better_r2_both = ((v_r2 > best_fold_v_r2) or (h_r2 > best_fold_h_r2)) and (current_score > best_fold_score)
             
             if better_r2_both:
                 logger.info(f"*** Fold {fold+1} Improved R2 Metrics (V:{v_r2:.3f} > {best_fold_v_r2:.3f}, H:{h_r2:.3f} > {best_fold_h_r2:.3f}) ***")

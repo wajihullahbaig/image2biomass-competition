@@ -8,12 +8,12 @@ preprocessing:
 
 hyperparameters:
   batch_size: 16
-  learning_rate: 0.00015
+  learning_rate: 0.000015
   n_folds: 3
   epochs: 20
   weight_decay: 0.1
   early_stop_patience: 10
-  backbone: timm/convnext_small.dinov3_lvd1689m
+  backbone: timm/convnext_tiny.dinov3_lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 300
   max_grad_norm: 1.0
@@ -32,8 +32,8 @@ training:
   ema_decay: 0.9
 
 augmentation:
-  tile_prob: 0.075
-  mixup_prob: 0.075
+  tile_prob: 0.20
+  mixup_prob: 0.1
   mixup_alpha: 0.40
 
 features:
@@ -128,7 +128,7 @@ split:
   species_col: "Species"
   min_train_per_species: 2
   ensure_combo_train_coverage: true # Disabled for simplicity
-  combo_col: "State_Species"
+  combo_col: "Season"
   min_train_per_combo_key: 2
   group_stratification_col: "State"
   group_col: "SessionID"

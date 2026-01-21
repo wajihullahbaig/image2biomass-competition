@@ -8,20 +8,20 @@ preprocessing:
 
 hyperparameters:
   batch_size: 64
-  learning_rate: 0.0001
+  learning_rate: 0.00009
   n_folds: 3
-  epochs: 12
-  weight_decay: 0.05
+  epochs: 20
+  weight_decay: 0.1
   early_stop_patience: 10
-  backbone: timm/convnext_small.fb_in22k
+  backbone: timm/vit_small_plus_patch16_dinov3.lvd1689m
   min_train_samples: 50
-  backbone_freeze_threshold: 200
+  backbone_freeze_threshold: 300
   max_grad_norm: 1.0
-  backbone_lr_factor: 0.85
+  backbone_lr_factor: 0.2
 
 training:
   freeze_backbone: true
-  backbone_freeze_fraction: 0.85
+  backbone_freeze_fraction: 0.75
   use_tta: true
   fusion_dim: 256
   biomass_feat_weight: 40.0
@@ -32,8 +32,8 @@ training:
   ema_decay: 0.9
 
 augmentation:
-  tile_prob: 0.10
-  mixup_prob: 0.05
+  tile_prob: 0.30
+  mixup_prob: 0.20
   mixup_alpha: 0.40
 
 features:

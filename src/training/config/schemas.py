@@ -1,6 +1,34 @@
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 import json
+
+@dataclass
+class HSVMatterConfig:
+    """Configuration for HSV ranges of different biomass matter types"""
+    hue_range: Optional[List[int]] = None
+    saturation_min: Optional[int] = None
+    saturation_max: Optional[int] = None
+    saturation_range: Optional[List[int]] = None
+    value_min: Optional[int] = None
+    value_range: Optional[List[int]] = None
+
+@dataclass
+class IntelligentTilingConfig:
+    """Configuration for intelligent HSV-based tiling"""
+    enabled: bool = True
+    hsv_blend_factor: float = 0.7
+    min_tile_weight: float = 0.05
+    max_tile_weight: float = 0.8
+
+@dataclass
+class HSVBiomassConfig:
+    """Configuration for HSV-based biomass detection"""
+    enabled: bool = True
+    green_vegetation: Optional[HSVMatterConfig] = None
+    dead_matter: Optional[HSVMatterConfig] = None
+    dry_clover: Optional[HSVMatterConfig] = None
+    soil: Optional[HSVMatterConfig] = None
+    intelligent_tiling: Optional[IntelligentTilingConfig] = None
 
 @dataclass
 class PreprocessingConfig:
@@ -49,6 +77,8 @@ class FeatureConfig:
     bin_encoding: str
     use_species_count_feature: bool
     biomass_composite_bins: int
+    hsv_biomass_scores: Optional[HSVBiomassConfig] = None
+    hsv_biomass_scores: Optional[HSVBiomassConfig] = None
 
 @dataclass
 class LossConfig:

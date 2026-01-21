@@ -131,16 +131,42 @@ def plot_training_history(history, fold, session_dir):
     axes_a = axes_a.flatten()
     
     aux_map = [
-        ('loss_ndvi', 'NDVI Loss'), ('loss_h', 'Height Loss'), 
-        ('loss_int_mul', 'Interaction Mul Loss'), ('loss_int_add', 'Interaction Add Loss'),
-        ('loss_hsv', 'HSV Green Loss')
+        ('loss_ndvi', 'NDVI Loss'), 
+        ('loss_height_log', 'Height Log Loss'), 
+        ('loss_interaction_mul', 'Interaction Mul Loss'), 
+        ('loss_interaction_add', 'Interaction Add Loss'),
+        ('loss_green_hsv', 'Green HSV Loss'),
+        ('loss_dead_hsv', 'Dead HSV Loss')
     ]
     
     for idx, (suffix, title) in enumerate(aux_map):
-        try_plot_on_ax(axes_a[idx], history, f'train_{suffix}', f'val_{suffix}', title, holdout_key=f'holdout_{suffix}')
+        if idx < len(axes_a):
+            try_plot_on_ax(axes_a[idx], history, f'train_{suffix}', f'val_{suffix}', title, holdout_key=f'holdout_{suffix}')
+    
+    # Hide unused axes
+    for idx in range(len(aux_map), len(axes_a)):
+        axes_a[idx].set_visible(False)
         
     plt.tight_layout()
     plt.savefig(os.path.join(comp_dir, f"fold_{fold}_aux_components.png"))
+    plt.close()
+
+    # 3. HSV Components (New comprehensive HSV features)
+    fig_h, axes_h = plt.subplots(2, 2, figsize=(14, 10))
+    axes_h = axes_h.flatten()
+    
+    hsv_map = [
+        ('loss_green_hsv', 'Green HSV Loss'),
+        ('loss_dead_hsv', 'Dead Matter HSV Loss'), 
+        ('loss_clover_hsv', 'Dry Clover HSV Loss'),
+        ('loss_soil_hsv', 'Soil HSV Loss')
+    ]
+    
+    for idx, (suffix, title) in enumerate(hsv_map):
+        try_plot_on_ax(axes_h[idx], history, f'train_{suffix}', f'val_{suffix}', title, holdout_key=f'holdout_{suffix}')
+        
+    plt.tight_layout()
+    plt.savefig(os.path.join(comp_dir, f"fold_{fold}_hsv_components.png"))
     plt.close()
 
 def try_plot_on_ax(ax, history, train_key, val_key, title, holdout_key=None):

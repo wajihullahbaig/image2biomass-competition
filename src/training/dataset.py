@@ -15,7 +15,7 @@ import random
 from common import (
     CORE_SPECIES,
     get_season, load_data, get_image_data_transforms,
-    get_hsv_green_mask
+    get_hsv_green_mask, get_hsv_biomass_scores, SubtleSharpen
 )
 
 class TiledBiomassDataset(Dataset):
@@ -170,6 +170,8 @@ class TiledBiomassDataset(Dataset):
             final_image = image
             targets_scale = 1.0
             sample_id_suffix = ""
+            # Calculate biomass scores for the whole image
+            biomass_scores = self._get_biomass_scores(final_image, sample_id=row['sample_id'] + sample_id_suffix)
             
         elif aug_type == 1:
             # MODE 1: STITCH (Split → Transform → Reconstruct)
@@ -178,6 +180,8 @@ class TiledBiomassDataset(Dataset):
             final_image = self._stitch_tiles(tiles)
             targets_scale = 1.0  # Full targets
             sample_id_suffix = "_STITCH"
+            # Calculate biomass scores for the stitched image
+            biomass_scores = self._get_biomass_scores(final_image, sample_id=row['sample_id'] + sample_id_suffix)
             
         else:
             # MODE 2: DIVIDE (Each tile becomes independent sample)
@@ -187,13 +191,28 @@ class TiledBiomassDataset(Dataset):
             # Apply transforms to all tiles (maintain consistency)
             tiles = self._apply_tile_transforms(tiles)
             
+            # Calculate biomass scores for ALL tiles to enable intelligent scaling
+            tile_scores = []
+            for tile in tiles:
+                tile_biomass_scores = self._get_biomass_scores(tile)
+                tile_scores.append(tile_biomass_scores)
+            
             # Use specific tile
             final_image = tiles[tile_idx]
-            targets_scale = 0.25  # Each tile has 1/4 of total biomass
+            biomass_scores = tile_scores[tile_idx]
+            
+            # TILE SHARPENING: Apply subtle sharpening to individual tiles
+            # This compensates for the softening effect of cropping and helps tiles
+            # look more like natural full-resolution images
+            tile_sharpener = SubtleSharpen(probability=1.0, radius=1, percent=60, threshold=2)
+            final_image = tile_sharpener(final_image)
+            
+            # INTELLIGENT TILING: Use HSV scores to weight targets appropriately
+            targets_scale = self._calculate_intelligent_tile_scale(tile_scores, tile_idx, row[self.target_cols])
             sample_id_suffix = f"_TILE{tile_idx}"
         
-        # Calculate HSV Green Score before normalization/tensorization
-        hsv_score = self._get_green_mask_count(final_image, sample_id=row['sample_id'] + sample_id_suffix)
+        # Legacy green score for compatibility
+        hsv_score = biomass_scores['green_score']
 
         # Apply downstream transforms (rotation, color jitter, normalization)
         if self.transform:
@@ -206,18 +225,35 @@ class TiledBiomassDataset(Dataset):
             return {
                 'image': final_transformed_image, 
                 'sample_id': row['sample_id'] + sample_id_suffix,
-                'hsv_score': hsv_score
+                'hsv_score': hsv_score,
+                'green_score': biomass_scores['green_score'],
+                'dead_score': biomass_scores['dead_score'],
+                'dry_clover_score': biomass_scores['dry_clover_score'],
+                'soil_score': biomass_scores['soil_score']
             }
         
         # ===== TARGETS & FEATURES =====
         # Scale targets based on augmentation type
         raw_targets = row[self.target_cols].values.astype(np.float32)
-        scaled_targets = raw_targets * targets_scale
+        
+        # Apply scaling - either uniform or intelligent
+        if isinstance(targets_scale, dict):
+            # Intelligent scaling per target type
+            scaled_targets = np.array([
+                raw_targets[i] * targets_scale[self.target_cols[i]] 
+                for i in range(len(self.target_cols))
+            ])
+        else:
+            # Uniform scaling (original/stitch mode)
+            scaled_targets = raw_targets * targets_scale
+            
         targets = torch.tensor(scaled_targets)
         
-        # Auxiliary features + HSV Green Score
-        hsv_score = self._get_green_mask_count(final_image, sample_id=row['sample_id'] + sample_id_suffix)
-        aux_values = np.append(row[self.aux_cols].values.astype(np.float32), [hsv_score])
+        # Auxiliary features + All HSV Biomass Scores
+        # Order: original aux features + green_score + dead_score + dry_clover_score + soil_score
+        hsv_features = [biomass_scores['green_score'], biomass_scores['dead_score'], 
+                       biomass_scores['dry_clover_score'], biomass_scores['soil_score']]
+        aux_values = np.append(row[self.aux_cols].values.astype(np.float32), hsv_features)
         aux_feats = torch.tensor(np.nan_to_num(aux_values), dtype=torch.float32)
         
         # Species vector (unchanged by tiling)
@@ -230,18 +266,103 @@ class TiledBiomassDataset(Dataset):
             'species_id': species_vec,
             'sample_id': row['sample_id'] + sample_id_suffix,
             'is_tiled': use_tiling,
-            'tile_scale': targets_scale,
-            'hsv_score': hsv_score
+            'tile_scale': targets_scale if not isinstance(targets_scale, dict) else np.mean(list(targets_scale.values())),
+            'hsv_score': hsv_score,
+            'green_score': biomass_scores['green_score'],
+            'dead_score': biomass_scores['dead_score'],
+            'dry_clover_score': biomass_scores['dry_clover_score'],
+            'soil_score': biomass_scores['soil_score']
         }
+
+    def _calculate_intelligent_tile_scale(self, tile_scores, selected_tile_idx, raw_targets):
+        """
+        Calculate intelligent scaling factors for tiled targets based on HSV biomass scores.
+        
+        The idea: Instead of naive 1/4 scaling, weight each tile's targets based on its
+        relative content of different matter types.
+        
+        Args:
+            tile_scores: List of 4 biomass score dicts (one per tile)
+            selected_tile_idx: Index of the tile we're using (0-3)
+            raw_targets: Array of target values [Dry_Green_g, Dry_Dead_g, Dry_Clover_g, GDM_g, Dry_Total_g]
+            
+        Returns:
+            Dictionary of scaling factors for each target
+        """
+        # Extract scores for each tile
+        green_scores = [scores['green_score'] for scores in tile_scores]
+        dead_scores = [scores['dead_score'] for scores in tile_scores]
+        clover_scores = [scores['dry_clover_score'] for scores in tile_scores]
+        soil_scores = [scores['soil_score'] for scores in tile_scores]
+        
+        # Normalize so that sum across tiles = 1.0 for each matter type
+        def safe_normalize(scores):
+            total = sum(scores)
+            if total > 0:
+                return [s / total for s in scores]
+            else:
+                return [0.25, 0.25, 0.25, 0.25]  # Fall back to equal split
+        
+        green_weights = safe_normalize(green_scores)
+        dead_weights = safe_normalize(dead_scores)
+        clover_weights = safe_normalize(clover_scores)
+        
+        # For GDM (Green Dry Matter), combine green and clover
+        # GDM typically includes both green vegetation and legumes
+        combined_green_clover = [g + c for g, c in zip(green_scores, clover_scores)]
+        gdm_weights = safe_normalize(combined_green_clover)
+        
+        # For Dry_Total, use a weighted combination of all vegetation types
+        total_veg_scores = [g + d + c for g, d, c in zip(green_scores, dead_scores, clover_scores)]
+        total_weights = safe_normalize(total_veg_scores)
+        
+        # Apply weights to the selected tile
+        selected_tile_weights = {
+            'Dry_Green_g': green_weights[selected_tile_idx],
+            'Dry_Dead_g': dead_weights[selected_tile_idx], 
+            'Dry_Clover_g': clover_weights[selected_tile_idx],
+            'GDM_g': gdm_weights[selected_tile_idx],
+            'Dry_Total_g': total_weights[selected_tile_idx]
+        }
+        
+        # Handle edge cases: if weights are too extreme, blend with uniform scaling
+        uniform_weight = 0.25
+        blend_factor = 0.7  # How much to trust HSV vs uniform scaling
+        
+        final_weights = {}
+        for target_name, hsv_weight in selected_tile_weights.items():
+            # Blend HSV-based weight with uniform weight
+            blended_weight = blend_factor * hsv_weight + (1 - blend_factor) * uniform_weight
+            # Clamp to reasonable bounds [0.05, 0.8] to prevent extreme values
+            final_weights[target_name] = max(0.05, min(0.8, blended_weight))
+        
+        return final_weights
 
     def _get_green_mask_count(self, image, sample_id=None):
         """
         Calculates green pixel percentage using HSV color space.
         Uses shared logic from common.py
+        
+        DEPRECATED: Use _get_biomass_scores for comprehensive analysis
         """
         img_np = np.array(image)
         _, hsv_score = get_hsv_green_mask(img_np)
         return hsv_score
+    
+    def _get_biomass_scores(self, image, sample_id=None):
+        """
+        Calculate comprehensive HSV-based biomass matter scores.
+        Returns dict with green, dead, dry_clover, and soil scores.
+        """
+        img_np = np.array(image)
+        biomass_scores = get_hsv_biomass_scores(img_np)
+        
+        return {
+            'green_score': biomass_scores['green_score'],
+            'dead_score': biomass_scores['dead_score'], 
+            'dry_clover_score': biomass_scores['dry_clover_score'],
+            'soil_score': biomass_scores['soil_score']
+        }
 
 
 class TiledMixupDataset(Dataset):
@@ -281,8 +402,14 @@ class TiledMixupDataset(Dataset):
         mixed_aux = (lam * sample1['aux_feats'] + (1 - lam) * sample2['aux_feats']).to(torch.float32)
         mixed_species = (lam * sample1['species_id'] + (1 - lam) * sample2['species_id']).to(torch.float32)
         
-        # Mix HSV Green Score
+        # Mix HSV Green Score and comprehensive biomass scores
         mixed_hsv = float(lam * sample1.get('hsv_score', 0.0) + (1 - lam) * sample2.get('hsv_score', 0.0))
+        
+        # Mix individual biomass scores
+        mixed_green_score = float(lam * sample1.get('green_score', 0.0) + (1 - lam) * sample2.get('green_score', 0.0))
+        mixed_dead_score = float(lam * sample1.get('dead_score', 0.0) + (1 - lam) * sample2.get('dead_score', 0.0))
+        mixed_dry_clover_score = float(lam * sample1.get('dry_clover_score', 0.0) + (1 - lam) * sample2.get('dry_clover_score', 0.0))
+        mixed_soil_score = float(lam * sample1.get('soil_score', 0.0) + (1 - lam) * sample2.get('soil_score', 0.0))
 
         return {
             'image': mixed_img,
@@ -292,7 +419,11 @@ class TiledMixupDataset(Dataset):
             'sample_id': f"{sample1['sample_id']}_MIX_{sample2['sample_id']}",
             'is_tiled': sample1.get('is_tiled', False) or sample2.get('is_tiled', False),
             'tile_scale': (sample1.get('tile_scale', 1.0) + sample2.get('tile_scale', 1.0)) / 2,
-            'hsv_score': mixed_hsv
+            'hsv_score': mixed_hsv,
+            'green_score': mixed_green_score,
+            'dead_score': mixed_dead_score,
+            'dry_clover_score': mixed_dry_clover_score,
+            'soil_score': mixed_soil_score
         }
 
 

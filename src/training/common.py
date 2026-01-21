@@ -995,6 +995,8 @@ def get_hsv_green_mask(image_numpy):
     Calculates green mask using HSV color space logic.
     Input: RGB Image as numpy array (H, W, 3)
     Returns: binary_mask, hsv_score
+    
+    DEPRECATED: Use get_hsv_biomass_scores for comprehensive analysis
     """
     # Convert to BGR for OpenCV
     img_bgr = cv2.cvtColor(image_numpy, cv2.COLOR_RGB2BGR)
@@ -1013,9 +1015,90 @@ def get_hsv_green_mask(image_numpy):
     
     return mask, hsv_score
 
+
+def get_hsv_biomass_scores(image_numpy):
+    """
+    Enhanced HSV processing to detect multiple biomass matter types:
+    1. Green matter (healthy vegetation) - Dry_Green_g
+    2. Dead/yellow matter (senescent vegetation) - Dry_Dead_g
+    3. Soil/brown areas - background
+    4. Dry clover (brownish vegetation) - Dry_Clover_g
+    
+    Input: RGB Image as numpy array (H, W, 3)
+    Returns: dict with scores for each matter type
+    """
+    # Convert to BGR for OpenCV
+    img_bgr = cv2.cvtColor(image_numpy, cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    
+    total_pixels = hsv.shape[0] * hsv.shape[1]
+    
+    # 1. Green vegetation (healthy grass, fresh growth)
+    # Hue: 35-85 (green), high saturation and value
+    green_lower = np.array([35, 60, 60])   # More selective for vibrant green
+    green_upper = np.array([85, 255, 255])
+    green_mask = cv2.inRange(hsv, green_lower, green_upper)
+    green_score = cv2.countNonZero(green_mask) / total_pixels
+    
+    # 2. Dead/yellow matter (senescent, yellowing vegetation)
+    # Hue: 15-35 (yellow-green to yellow), moderate to high saturation
+    dead_lower = np.array([15, 40, 40])   # Yellow/brown vegetation
+    dead_upper = np.array([35, 200, 200])
+    dead_mask = cv2.inRange(hsv, dead_lower, dead_upper)
+    dead_score = cv2.countNonZero(dead_mask) / total_pixels
+    
+    # 3. Dry clover/brown vegetation (dried but not completely dead)
+    # Hue: 5-25 (brown to light brown), lower saturation
+    dry_clover_lower = np.array([5, 25, 30])   # Brown vegetation with some color
+    dry_clover_upper = np.array([25, 120, 150])
+    dry_clover_mask = cv2.inRange(hsv, dry_clover_lower, dry_clover_upper)
+    dry_clover_score = cv2.countNonZero(dry_clover_mask) / total_pixels
+    
+    # 4. Soil/bare ground (very low saturation, brown to grey)
+    # Low saturation across hue range indicates soil/bare ground
+    soil_lower = np.array([0, 0, 20])     # Any hue, very low sat, some brightness
+    soil_upper = np.array([180, 40, 120]) # Covers soil range
+    soil_mask = cv2.inRange(hsv, soil_lower, soil_upper)
+    
+    # Remove vegetation areas from soil mask to avoid double counting
+    combined_veg_mask = cv2.bitwise_or(cv2.bitwise_or(green_mask, dead_mask), dry_clover_mask)
+    soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(combined_veg_mask))
+    soil_score = cv2.countNonZero(soil_mask) / total_pixels
+    
+    # Normalize scores to sum to approximately 1 (account for shadows, etc.)
+    total_coverage = green_score + dead_score + dry_clover_score + soil_score
+    if total_coverage > 0:
+        # Keep raw scores but add a normalized version for consistency
+        norm_factor = max(total_coverage, 1.0)  # Don't shrink if already < 1
+        green_score_norm = green_score / norm_factor
+        dead_score_norm = dead_score / norm_factor
+        dry_clover_score_norm = dry_clover_score / norm_factor
+        soil_score_norm = soil_score / norm_factor
+    else:
+        green_score_norm = dead_score_norm = dry_clover_score_norm = soil_score_norm = 0.0
+    
+    return {
+        'green_score': green_score,
+        'dead_score': dead_score,
+        'dry_clover_score': dry_clover_score, 
+        'soil_score': soil_score,
+        'green_score_norm': green_score_norm,
+        'dead_score_norm': dead_score_norm,
+        'dry_clover_score_norm': dry_clover_score_norm,
+        'soil_score_norm': soil_score_norm,
+        'total_coverage': total_coverage,
+        'masks': {
+            'green': green_mask,
+            'dead': dead_mask,
+            'dry_clover': dry_clover_mask,
+            'soil': soil_mask
+        }
+    }
+
 def save_hsv_mask_batch(images, fold, batch_idx, session_dir, max_batches_to_save=5):
     """
     Save a batch of images alongside their HSV masks as a grid.
+    Now shows all matter types detected.
     """
     if batch_idx >= max_batches_to_save:
         return
@@ -1034,19 +1117,39 @@ def save_hsv_mask_batch(images, fold, batch_idx, session_dir, max_batches_to_sav
     rows = []
     for i in range(min(len(imgs_np), 4)): # Limit to 4 images per grid for clarity
         img = imgs_np[i]
+        
+        # Get comprehensive biomass scores
+        biomass_scores = get_hsv_biomass_scores(img)
+        
+        # Legacy green mask for compatibility
         mask, score = get_hsv_green_mask(img)
         
         # 1. Original BGR
         bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        # 2. Mask to BGR
-        mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        # 3. Result
-        res = cv2.bitwise_and(bgr, bgr, mask=mask)
         
-        # Add score text to original
-        cv2.putText(bgr, f"Score: {score:.3f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        # 2. Green mask BGR
+        green_mask_bgr = cv2.cvtColor(biomass_scores['masks']['green'], cv2.COLOR_GRAY2BGR)
         
-        row = np.hstack([bgr, mask_bgr, res])
+        # 3. Dead matter mask BGR  
+        dead_mask_bgr = cv2.cvtColor(biomass_scores['masks']['dead'], cv2.COLOR_GRAY2BGR)
+        
+        # 4. Dry clover mask BGR
+        clover_mask_bgr = cv2.cvtColor(biomass_scores['masks']['dry_clover'], cv2.COLOR_GRAY2BGR)
+        
+        # Add scores text to original
+        text_lines = [
+            f"Green: {biomass_scores['green_score']:.3f}",
+            f"Dead: {biomass_scores['dead_score']:.3f}", 
+            f"Clover: {biomass_scores['dry_clover_score']:.3f}",
+            f"Soil: {biomass_scores['soil_score']:.3f}"
+        ]
+        
+        for idx, text in enumerate(text_lines):
+            y_pos = 30 + idx * 25
+            cv2.putText(bgr, text, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Create row: Original, Green, Dead, Dry Clover
+        row = np.hstack([bgr, green_mask_bgr, dead_mask_bgr, clover_mask_bgr])
         rows.append(row)
         
     if rows:

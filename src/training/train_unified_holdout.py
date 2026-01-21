@@ -164,11 +164,20 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_loss_clover'] += l_clover.item() * B
         metrics['train_loss_gdm']    += l_gdm.item() * B
         metrics['train_loss_total']  += l_total.item() * B
-        metrics['train_loss_ndvi']    += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
-        metrics['train_loss_h']       += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
-        metrics['train_loss_int_mul'] += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
-        metrics['train_loss_int_add'] += nn.functional.mse_loss(aux_out[:, 3], aux_feats[:, 3]).item() * B
-        metrics['train_loss_hsv']     += nn.functional.mse_loss(aux_out[:, -1], aux_feats[:, -1]).item() * B
+        
+        # Flexible auxiliary feature loss tracking
+        aux_feature_names = ['ndvi', 'height_log', 'interaction_mul', 'interaction_add', 'species_count',
+                           'green_hsv', 'dead_hsv', 'clover_hsv', 'soil_hsv']
+        for i in range(min(aux_out.shape[1], len(aux_feature_names))):
+            feature_name = aux_feature_names[i]
+            loss_key = f'train_loss_{feature_name}'
+            if loss_key not in metrics:
+                metrics[loss_key] = 0.0
+            metrics[loss_key] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
+        
+        # Legacy HSV tracking (last feature, which should be green_hsv now)
+        if aux_out.shape[1] > 0:
+            metrics['train_loss_hsv'] = metrics.get('train_loss_green_hsv', 0.0)
 
         pbar.set_postfix({'L': total_loss.item()})
 
@@ -305,11 +314,19 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         metrics[f'{prefix}_loss_gdm']    += l_gdm.item() * B
         metrics[f'{prefix}_loss_total']  += l_total.item() * B
 
-        metrics[f'{prefix}_loss_ndvi'] += nn.functional.mse_loss(aux_out[:, 0], aux_feats[:, 0]).item() * B
-        metrics[f'{prefix}_loss_h']    += nn.functional.mse_loss(aux_out[:, 1], aux_feats[:, 1]).item() * B
-        metrics[f'{prefix}_loss_int_mul']  += nn.functional.mse_loss(aux_out[:, 2], aux_feats[:, 2]).item() * B
-        metrics[f'{prefix}_loss_int_add']  += nn.functional.mse_loss(aux_out[:, 3], aux_feats[:, 3]).item() * B
-        metrics[f'{prefix}_loss_hsv']      += nn.functional.mse_loss(aux_out[:, -1], aux_feats[:, -1]).item() * B
+        # Flexible auxiliary feature loss tracking
+        aux_feature_names = ['ndvi', 'height_log', 'interaction_mul', 'interaction_add', 'species_count',
+                           'green_hsv', 'dead_hsv', 'clover_hsv', 'soil_hsv']
+        for i in range(min(aux_out.shape[1], len(aux_feature_names))):
+            feature_name = aux_feature_names[i]
+            loss_key = f'{prefix}_loss_{feature_name}'
+            if loss_key not in metrics:
+                metrics[loss_key] = 0.0
+            metrics[loss_key] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
+        
+        # Legacy HSV tracking (now points to green_hsv)
+        if aux_out.shape[1] > 0:
+            metrics[f'{prefix}_loss_hsv'] = metrics.get(f'{prefix}_loss_green_hsv', 0.0)
 
         # Accumulate for R2 calculation
         with torch.no_grad():
@@ -600,12 +617,13 @@ def main():
         if aux_data.shape[1] > 0:
             aux_mean_np = aux_data.mean(axis=0)
             aux_std_np = aux_data.std(axis=0)
-            # Add HSV stats (mean=0.0, std=1.0 as it is already a 0-1 score)
-            aux_mean_np = np.append(aux_mean_np, [0.0])
-            aux_std_np = np.append(aux_std_np, [1.0])
+            # Add HSV stats for 4 biomass scores (mean=0.0, std=1.0 as they are already 0-1 scores)
+            # Order: green_score, dead_score, dry_clover_score, soil_score
+            aux_mean_np = np.append(aux_mean_np, [0.0, 0.0, 0.0, 0.0])
+            aux_std_np = np.append(aux_std_np, [1.0, 1.0, 1.0, 1.0])
         else:
-            aux_mean_np = np.array([0.0], dtype=float)
-            aux_std_np = np.array([1.0], dtype=float)
+            aux_mean_np = np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
+            aux_std_np = np.array([1.0, 1.0, 1.0, 1.0], dtype=float)
 
         aux_mean_t = torch.tensor(aux_mean_np, dtype=torch.float32, device=cfg.device).view(1, -1)
         aux_std_t = torch.tensor(aux_std_np, dtype=torch.float32, device=cfg.device).view(1, -1)

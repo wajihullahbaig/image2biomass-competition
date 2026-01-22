@@ -464,7 +464,7 @@ def main():
     fold_iter = [(dev_df.iloc[train].reset_index(drop=True), dev_df.iloc[val].reset_index(drop=True))
                  for train, val in splitter]
     split_name = f"StratifiedGroupKFold-{strat_col_cfg}-groups-{group_col_cfg}"
-
+    
     per_fold_best = []
     for fold, (train_df_raw, val_df_raw) in enumerate(fold_iter):
         logger.info(f"\n{'='*30} FOLD {fold+1}/{cfg.hyperparameters.n_folds} {'='*30}")
@@ -478,6 +478,15 @@ def main():
         val_df = ft.transform(val_df_raw)
         hold_df = ft.transform(hold_df)
         raw_n_train = len(train_df)
+        # Verify No Leakage
+        train_groups = set(train_df[group_col_cfg])
+        val_groups = set(val_df[group_col_cfg])
+        leakage = train_groups.intersection(val_groups)
+        if leakage:
+            logger.error(f"CRITICAL: GROUP LEAKAGE DETECTED IN TRAIN/VAL! {len(leakage)} groups shared: {leakage}")
+            raise ValueError("Group Leakage Detected")
+        else:
+            logger.info("✓ No group leakage in train/validation detected")
         logger.info(f"\n{'='*20} Fold {fold+1}/{cfg.hyperparameters.n_folds} ({split_name}) {'='*20}")
         logger.info(f"Train:   n={len(train_df)}, sessions={train_df['SessionID'].nunique() if 'SessionID' in train_df.columns else 'N/A'}")
         logger.info(f"Val:     n={len(val_df)}, sessions={val_df['SessionID'].nunique() if 'SessionID' in val_df.columns else 'N/A'}")

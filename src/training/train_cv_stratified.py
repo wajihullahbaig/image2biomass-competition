@@ -321,7 +321,7 @@ def main():
     session_dir = setup_logging(file_name_part="cv_stratified")
     logger = logging.getLogger("System Logger")
     set_seed(313, logger)
-
+    shutil.copy(yaml_path, os.path.join(session_dir, 'used_config.yaml'))
     logger.info("="*70)
     logger.info("FULL STRATIFIED GROUP K-FOLD TRAINING (NO HOLDOUT)")
     logger.info("="*70)

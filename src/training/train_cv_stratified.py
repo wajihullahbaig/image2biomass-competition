@@ -36,15 +36,16 @@ def calculate_cv_score(train_r2, val_r2, ema_score_prev=None, ema_decay=0.9):
     """
     Score = Val_R2 - Penalty(Overfitting)
     Penalty activates if (Train - Val) gap > threshold.
+    Less aggressive than before to allow learning.
     """
     # 1. Base Score is Validation R2
     current_score = val_r2
     
-    # 2. Overfitting Penalty
+    # 2. Overfitting Penalty (RELAXED)
     gap = train_r2 - val_r2
-    gap_threshold = 0.12  # Allow slightly larger gap for CV
+    gap_threshold = 0.20  # Increased from 0.12 to allow more learning
     if gap > gap_threshold:
-        penalty = (gap - gap_threshold) * 0.5  # Heavy penalty for runaway overfitting
+        penalty = (gap - gap_threshold) * 0.3  # Reduced from 0.5 to be less punishing
         current_score -= penalty
         
     # 3. EMA Smoothing
@@ -395,8 +396,34 @@ def main():
         n_aux = train_ds_base[0]['aux_feats'].shape[0]
         model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
         
-        # Optimizer
-        optimizer = AdamW(model.parameters(), lr=cfg.hyperparameters.learning_rate, weight_decay=cfg.hyperparameters.weight_decay)
+        # Backbone Freeze/Unfreeze Strategy (matching original script)
+        n_upsampled = len(train_df)
+        if n_upsampled < cfg.hyperparameters.backbone_freeze_threshold:
+            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n_upsampled={n_upsampled} < {cfg.hyperparameters.backbone_freeze_threshold})")
+            for param in model.backbone.parameters():
+                param.requires_grad = False
+        else:
+            if cfg.training.freeze_backbone:
+                logger.info(f"STRATEGY: Applying Partial Freeze ({cfg.training.backbone_freeze_fraction*100}%) for Fold {fold+1} (n_upsampled={n_upsampled})")
+                all_params = list(model.backbone.parameters())
+                freeze_until = int(len(all_params) * cfg.training.backbone_freeze_fraction)
+                for i, p in enumerate(all_params):
+                    p.requires_grad = (i >= freeze_until)
+            else:
+                logger.info(f"STRATEGY: Full Backbone Unfreeze for Fold {fold+1}")
+                for param in model.backbone.parameters():
+                    param.requires_grad = True
+        
+        # Differential Learning Rates (backbone vs heads)
+        backbone_params = list(model.backbone.parameters())
+        head_params = [p for n, p in model.named_parameters() if 'backbone' not in n]
+        param_groups = [
+            {'params': backbone_params, 'lr': cfg.hyperparameters.learning_rate * cfg.hyperparameters.backbone_lr_factor},
+            {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
+        ]
+        
+        # Optimizer with differential LR
+        optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.8, patience=5, threshold=1e-3)
         
         # Stats

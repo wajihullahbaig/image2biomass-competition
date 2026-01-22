@@ -15,13 +15,13 @@ hyperparameters:
   early_stop_patience: 10
   backbone: timm/convnext_tiny.dinov3_lvd1689m
   min_train_samples: 50
-  backbone_freeze_threshold: 300
+  backbone_freeze_threshold: 400
   max_grad_norm: 1.0
   backbone_lr_factor: 0.2
 
 training:
   freeze_backbone: true
-  backbone_freeze_fraction: 0.75
+  backbone_freeze_fraction: 0.8
   use_tta: true
   fusion_dim: 256
   biomass_feat_weight: 40.0

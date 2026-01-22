@@ -9,7 +9,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -321,7 +321,7 @@ def main():
     session_dir = setup_logging(file_name_part="cv_stratified")
     logger = logging.getLogger("System Logger")
     set_seed(313, logger)
-    shutil.copy(yaml_path, os.path.join(session_dir, 'used_config.yaml'))
+
     logger.info("="*70)
     logger.info("FULL STRATIFIED GROUP K-FOLD TRAINING (NO HOLDOUT)")
     logger.info("="*70)
@@ -383,10 +383,24 @@ def main():
     # Create stratification labels if needed
     logger.info(f"Stratification column '{strat_col}' value counts:")
     logger.info(f"\n{df[strat_col].value_counts()}")
-    
-    sgkf = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=313)
-    splits = list(sgkf.split(df, df[strat_col], groups=df[group_col]))
+        
+    # Check if stratification is viable
+    use_stratified = (
+        strat_col is not None and 
+        strat_col in df.columns and 
+        df[strat_col].notnull().all() and
+        df[strat_col].value_counts().min() >= n_folds
+    )
 
+    if use_stratified:
+        logger.info(f"✓ Using StratifiedGroupKFold with '{strat_col}'")
+        splitter = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=313)
+        splits = list(splitter.split(df, y=df[strat_col], groups=df[group_col]))
+    else:
+        logger.info(f"⚠️  Falling back to GroupKFold (no stratification)")
+        splitter = GroupKFold(n_splits=n_folds)
+        splits = list(splitter.split(df, groups=df[group_col]))
+    
     oof_preds = np.zeros((len(df), 5))
     oof_targets = np.zeros((len(df), 5))
     validation_mask = np.zeros(len(df), dtype=bool)

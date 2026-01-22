@@ -462,7 +462,10 @@ def run_inference(USE_TTA=True):
     denominator = np.sum(W_expanded, axis=0) + 1e-8
     
     avg_out = numerator / denominator  # [N_Samples, 5]
-    avg_out = np.maximum(avg_out, 0)
+    
+    # KAGGLE SAFETY: Explicit bounds [0, 2500g] after weighted ensemble
+    # Model already clamps during forward pass, but this provides extra safety against numerical errors
+    avg_out = np.clip(avg_out, 0.0, 2500.0)
 
     # 6. MAP 5 targets from averaged predictions
     # Order in avg_out: [Green, Dead, Clover, GDM, Total]

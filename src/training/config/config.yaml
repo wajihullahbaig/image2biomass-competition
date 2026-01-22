@@ -3,17 +3,17 @@
 preprocessing:
   imagenet_mean: [0.485, 0.456, 0.406]
   imagenet_std: [0.229, 0.224, 0.225]
-  image_height: 224
-  image_width: 224
+  image_height: 256
+  image_width: 256
 
 hyperparameters:
-  batch_size: 16
+  batch_size: 32
   learning_rate: 0.00015
   n_folds: 3
   epochs: 20
   weight_decay: 0.1
   early_stop_patience: 10
-  backbone: timm/convnext_tiny.dinov3_lvd1689m
+  backbone: timm/vit_small_patch16_dinov3.lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 400
   max_grad_norm: 1.0
@@ -39,7 +39,7 @@ augmentation:
 features:
   use_bin_features: false
   bin_encoding: "ordinal"
-  use_species_count_feature: false
+  use_species_count_feature: true
   biomass_composite_bins: 3
   # Enhanced HSV feature configuration
   hsv_biomass_scores:
@@ -130,7 +130,7 @@ split:
   ensure_combo_train_coverage: true # Disabled for simplicity
   combo_col: "Season_State_Species"
   min_train_per_combo_key: 3
-  group_stratification_col: "Species"
+  group_stratification_col: "State"
   group_col: "SessionID"
 
 seasons:

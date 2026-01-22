@@ -37,7 +37,7 @@ FUSION_DIM = 256
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 32
-BIOMASS_CLAMP = 1000.0
+BIOMASS_CLAMP = 2500.0  # grams - max realistic biomass (matches config.yaml)
 
 # FEATURE FLAGS
 USE_TTA = True            # Enable/Disable Test-Time Augmentation
@@ -424,7 +424,10 @@ def run_inference(use_tta=False):
     # 5. AVERAGE ENSEMBLE (Linear Space) over folds
     print("Averaging ensemble predictions...")
     all_preds = np.mean(ensemble_preds_g, axis=0)  # shape [N,5] => [Green, Dead, Clover, GDM, Total]
-    all_preds = np.maximum(all_preds, 0)
+    
+    # KAGGLE SAFETY: Explicit bounds [0, 2500g] after ensemble averaging
+    # Model already clamps during forward pass, but this provides extra safety against numerical errors
+    all_preds = np.clip(all_preds, 0.0, 2500.0)
     
     pred_green = all_preds[:, 0]
     pred_dead = all_preds[:, 1]

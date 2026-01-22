@@ -35,24 +35,27 @@ from models import BiomassUnifiedModel
 def calculate_cv_score(train_r2, val_r2, ema_score_prev=None, ema_decay=0.9):
     """
     Score = Val_R2 - Penalty(Overfitting)
-    Penalty activates if (Train - Val) gap > threshold.
-    Less aggressive than before to allow learning.
+    More lenient penalty to allow learning on small datasets.
     """
     # 1. Base Score is Validation R2
     current_score = val_r2
     
-    # 2. Overfitting Penalty (RELAXED)
+    # 2. Overfitting Penalty (VERY RELAXED for small datasets)
     gap = train_r2 - val_r2
-    gap_threshold = 0.20  # Increased from 0.12 to allow more learning
-    if gap > gap_threshold:
-        penalty = (gap - gap_threshold) * 0.3  # Reduced from 0.5 to be less punishing
+    
+    # Only penalize if gap is VERY large and val_r2 is actually good
+    # This prevents penalizing when model is still learning
+    if val_r2 > 0.15 and gap > 0.15:  # Increased threshold
+        penalty = (gap - 0.15) * 0.2  # Reduced penalty factor
         current_score -= penalty
-        
-    # 3. EMA Smoothing
+        print(f"Applying overfitting penalty: {penalty:.4f}")
+    
+    # 3. EMA Smoothing (less aggressive for small datasets)
     if ema_score_prev is None:
         ema_score = current_score
     else:
-        ema_score = ema_decay * ema_score_prev + (1.0 - ema_decay) * current_score
+        # Use less smoothing for faster adaptation
+        ema_score = 0.7 * ema_score_prev + 0.3 * current_score
         
     return ema_score, gap, current_score
 
@@ -317,40 +320,76 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
 def main():
     session_dir = setup_logging(file_name_part="cv_stratified")
     logger = logging.getLogger("System Logger")
-    set_seed(313, logger)  # Use 313 as consistent seed
+    set_seed(313, logger)
 
     logger.info("="*70)
     logger.info("FULL STRATIFIED GROUP K-FOLD TRAINING (NO HOLDOUT)")
     logger.info("="*70)
     logger.info(config_str())
 
-    # 1. Load Data (NO Split yet)
+    # 1. Load Data
     df = load_data(logger)
     df = apply_deterministic_features(df)
-    # Save a safe version of wide data (non-upsampled) for user inspection
     df.to_csv('wide_safe.csv', index=False)
     logger.info("Saved deterministic features to wide_safe.csv")
 
     train_transform, val_transform = get_image_data_transforms()
 
-    # 2. Stratified Group K-Fold
+    # 2. Stratified Group K-Fold Setup
     n_folds = cfg.hyperparameters.n_folds
-    strat_col = cfg.split.group_stratification_col  # e.g. Species or Season_Species
-    group_col = cfg.split.group_col                 # e.g. SessionID
+    strat_col = cfg.split.group_stratification_col  # e.g. "State"
+    group_col = cfg.split.group_col                 # e.g. "SessionID"
 
-    if strat_col not in df.columns:
-        logger.warning(f"Stratification col '{strat_col}' not found. Creating fallback.")
-        df[strat_col] = df['Species']
-
-    sgkf = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=313)
+    # ===== FIX 1: Robust stratification column handling =====
+    available_cols = df.columns.tolist()
+    logger.info(f"Available columns for stratification: {available_cols}")
     
-    # Generate splits
+    if strat_col not in df.columns:
+        logger.warning(f"Stratification col '{strat_col}' not found in df. Searching for alternatives...")
+        
+        # Try alternatives in order of preference
+        alternatives = ['State_Species', 'Season_State_Species', 'State', 'Species', 'Season']
+        found = False
+        for alt in alternatives:
+            if alt in df.columns:
+                strat_col = alt
+                logger.info(f"✓ Using '{strat_col}' for stratification")
+                found = True
+                break
+        
+        if not found:
+            logger.error(f"No suitable stratification column found in: {available_cols}")
+            raise ValueError("Cannot proceed without stratification column")
+    else:
+        logger.info(f"✓ Using configured stratification column: '{strat_col}'")
+
+    # Verify group column exists
+    if group_col not in df.columns:
+        logger.error(f"Group col '{group_col}' not found in columns: {available_cols}")
+        raise ValueError(f"Group column {group_col} must exist for GroupKFold")
+    else:
+        logger.info(f"✓ Using group column: '{group_col}'")
+
+    # Check for null values in critical columns
+    null_strat = df[strat_col].isnull().sum()
+    null_group = df[group_col].isnull().sum()
+    if null_strat > 0:
+        logger.warning(f"Found {null_strat} null values in {strat_col}. Filling with 'Unknown'")
+        df[strat_col] = df[strat_col].fillna('Unknown')
+    if null_group > 0:
+        logger.error(f"Found {null_group} null values in {group_col}. Cannot proceed!")
+        raise ValueError(f"Group column {group_col} contains null values")
+
+    # Create stratification labels if needed
+    logger.info(f"Stratification column '{strat_col}' value counts:")
+    logger.info(f"\n{df[strat_col].value_counts()}")
+    
+    sgkf = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=313)
     splits = list(sgkf.split(df, df[strat_col], groups=df[group_col]))
 
     oof_preds = np.zeros((len(df), 5))
     oof_targets = np.zeros((len(df), 5))
     validation_mask = np.zeros(len(df), dtype=bool)
-
     per_fold_best = []
 
     for fold, (train_idx, val_idx) in enumerate(splits):
@@ -364,17 +403,29 @@ def main():
         train_df = ft.fit(train_df_fold)
         val_df = ft.transform(val_df_fold)
         
+        # ===== FIX 2: Verify critical columns preserved =====
+        critical_cols = [group_col, strat_col, 'Species', 'State']
+        for col in critical_cols:
+            if col not in train_df.columns and col in train_df_fold.columns:
+                logger.warning(f"Column '{col}' was lost during transform! Restoring...")
+                train_df[col] = train_df_fold[col].values
+            if col not in val_df.columns and col in val_df_fold.columns:
+                logger.warning(f"Column '{col}' was lost during transform! Restoring...")
+                val_df[col] = val_df_fold[col].values
+        
         logger.info(f"Train: {len(train_df)}, Val: {len(val_df)}")
         logger.info(f"Train Groups ({group_col}): {train_df[group_col].nunique()}")
         logger.info(f"Val Groups ({group_col}): {val_df[group_col].nunique()}")
         
-        # Verify Leakage
+        # Verify No Leakage
         train_groups = set(train_df[group_col])
         val_groups = set(val_df[group_col])
         leakage = train_groups.intersection(val_groups)
         if leakage:
-            logger.error(f"CRITICAL: GROUP LEAKAGE DETECTED! {len(leakage)} groups shared.")
+            logger.error(f"CRITICAL: GROUP LEAKAGE DETECTED! {len(leakage)} groups shared: {leakage}")
             raise ValueError("Group Leakage Detected")
+        else:
+            logger.info("✓ No group leakage detected")
 
         # Datasets
         train_ds_base = TiledBiomassDataset(
@@ -396,33 +447,58 @@ def main():
         n_aux = train_ds_base[0]['aux_feats'].shape[0]
         model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
         
-        # Backbone Freeze/Unfreeze Strategy (matching original script)
+        # ===== FIX 3: More aggressive backbone unfreezing =====
         n_upsampled = len(train_df)
-        if n_upsampled < cfg.hyperparameters.backbone_freeze_threshold:
-            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n_upsampled={n_upsampled} < {cfg.hyperparameters.backbone_freeze_threshold})")
-            for param in model.backbone.parameters():
-                param.requires_grad = False
+        
+        if n_upsampled < 200:
+            # Very small dataset: freeze 90% of backbone
+            freeze_frac = 0.9
+            logger.info(f"PROTECTION: Freezing {freeze_frac*100}% of backbone (n={n_upsampled} < 200)")
+            all_params = list(model.backbone.parameters())
+            freeze_until = int(len(all_params) * freeze_frac)
+            for i, p in enumerate(all_params):
+                p.requires_grad = (i >= freeze_until)
+            logger.info(f"  → {len(all_params) - freeze_until}/{len(all_params)} backbone params trainable")
+                
+        elif n_upsampled < cfg.hyperparameters.backbone_freeze_threshold:
+            # Small dataset: freeze 70% of backbone (not 100%!)
+            freeze_frac = 0.7
+            logger.info(f"STRATEGY: Freezing {freeze_frac*100}% of backbone (n={n_upsampled} < {cfg.hyperparameters.backbone_freeze_threshold})")
+            all_params = list(model.backbone.parameters())
+            freeze_until = int(len(all_params) * freeze_frac)
+            for i, p in enumerate(all_params):
+                p.requires_grad = (i >= freeze_until)
+            logger.info(f"  → {len(all_params) - freeze_until}/{len(all_params)} backbone params trainable")
+                
         else:
+            # Larger dataset: use config setting
             if cfg.training.freeze_backbone:
-                logger.info(f"STRATEGY: Applying Partial Freeze ({cfg.training.backbone_freeze_fraction*100}%) for Fold {fold+1} (n_upsampled={n_upsampled})")
+                logger.info(f"STRATEGY: Applying Partial Freeze ({cfg.training.backbone_freeze_fraction*100}%) for Fold {fold+1}")
                 all_params = list(model.backbone.parameters())
                 freeze_until = int(len(all_params) * cfg.training.backbone_freeze_fraction)
                 for i, p in enumerate(all_params):
                     p.requires_grad = (i >= freeze_until)
+                logger.info(f"  → {len(all_params) - freeze_until}/{len(all_params)} backbone params trainable")
             else:
                 logger.info(f"STRATEGY: Full Backbone Unfreeze for Fold {fold+1}")
                 for param in model.backbone.parameters():
                     param.requires_grad = True
         
-        # Differential Learning Rates (backbone vs heads)
+        # Differential Learning Rates
         backbone_params = list(model.backbone.parameters())
         head_params = [p for n, p in model.named_parameters() if 'backbone' not in n]
+        
+        # Count trainable params
+        n_trainable_backbone = sum(p.numel() for p in backbone_params if p.requires_grad)
+        n_trainable_head = sum(p.numel() for p in head_params if p.requires_grad)
+        logger.info(f"Trainable params: Backbone={n_trainable_backbone:,}, Heads={n_trainable_head:,}")
+        
         param_groups = [
-            {'params': backbone_params, 'lr': cfg.hyperparameters.learning_rate * cfg.hyperparameters.backbone_lr_factor},
+            {'params': [p for p in backbone_params if p.requires_grad], 
+             'lr': cfg.hyperparameters.learning_rate * cfg.hyperparameters.backbone_lr_factor},
             {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
         ]
         
-        # Optimizer with differential LR
         optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.8, patience=5, threshold=1e-3)
         
@@ -434,13 +510,18 @@ def main():
         
         official_weights_t = torch.tensor(cfg.targets.official_weights, dtype=torch.float32, device=cfg.device)
 
-        # Log species counts across train/val using a formatted table helper
-        log_species_table(logger, train_df, val_df, pd.DataFrame(), species_col='Species', title='Species in Fold')
+        # Log species distribution (safe version)
+        try:
+            if 'Species' in train_df.columns and 'Species' in val_df.columns:
+                log_species_table(logger, train_df, val_df, pd.DataFrame(), species_col='Species', title='Species in Fold')
+            else:
+                logger.info(f"Species column not available for logging")
+        except Exception as e:
+            logger.warning(f"Could not log species table: {e}")
+        
         log_fold_details(logger, train_df, val_df)
 
-        official_weights_t = torch.tensor(cfg.targets.official_weights, dtype=torch.float32, device=cfg.device)
-
-        # Loop
+        # Training Loop
         best_fold_score = -float('inf')
         best_fold_model_path = os.path.join(session_dir, f"best_model_fold{fold+1}.pth")
         ema_score_prev = None
@@ -462,23 +543,22 @@ def main():
             t_r2 = train_mets['train_r2']
             v_r2 = val_mets['val_r2']
             
-            # --- CUSTOM SCORE CALCULATION ---
+            # ===== FIX 4: More lenient scoring =====
             ema_score, gap, score_raw = calculate_cv_score(t_r2, v_r2, ema_score_prev=ema_score_prev)
             ema_score_prev = ema_score
             
             scheduler.step(ema_score)
             
-            # Formatted Log (Restoring the used style)
             log_msg = get_formatted_loss_log(epoch, train_mets, val_mets, {}, ema_score, gap, optimizer.param_groups[0]['lr'], v_r2, 0.0)
             logger.info(log_msg)
             
-            # Update history for all recorded metrics
+            # Update history
             for k, v in train_mets.items(): history[k].append(v)
             for k, v in val_mets.items(): history[k].append(v)
             history['score'].append(ema_score)
             history['lr'].append(optimizer.param_groups[0]['lr'])
             
-            # Generate plots every epoch for real-time tracking
+            # Generate plots
             plot_training_history(history, fold+1, session_dir)
             
             # Save Best
@@ -486,16 +566,16 @@ def main():
                 best_fold_score = ema_score
                 best_fold_epoch = epoch
                 torch.save(model.state_dict(), best_fold_model_path)
-                logger.info(f"*** Fold {fold+1} Improved Score: {best_fold_score:.4f} ***")
+                logger.info(f"*** Fold {fold+1} Improved Score: {best_fold_score:.4f} (Val R2: {v_r2:.4f}, Gap: {gap:.4f}) ***")
                 patience_counter = 0
             else:
                 patience_counter += 1
                 
             if patience_counter >= cfg.hyperparameters.early_stop_patience:
-                logger.info("Early Stopping")
+                logger.info(f"Early Stopping triggered at epoch {epoch}")
                 break
         
-        # Log fold summary tables
+        # Log fold summary
         log_fold_summary_tables(logger, fold+1, history, best_fold_epoch)
         per_fold_best.append({
             'best_score': best_fold_score,
@@ -503,23 +583,17 @@ def main():
             'best_epoch': best_fold_epoch
         })
         
-        # 3. Generate OOF Predictions for this fold using Best Model
+        # Generate OOF predictions
         logger.info(f"Reloading best model for Fold {fold+1} to generate OOF predictions...")
         model.load_state_dict(torch.load(best_fold_model_path))
         model.eval()
         
-        # Standard validation function doesn't return arrays, so we do a quick pass here
         fold_probs = []
         fold_targs = []
         with torch.no_grad():
             for batch in val_loader:
                 imgs = batch['image'].to(cfg.device)
                 targs = batch['targets'].to(cfg.device)
-                
-                # Use TTA for OOF to match Kaggle quality? User didn't specify, but it's safe.
-                # Let's stick to NO TTA for OOF to be conservative, or user arg.
-                # User said "Go ahead with Stage 1", implying "best fold iteration is solved".
-                # Simple pass:
                 preds, _, _ = model(imgs)
                 fold_probs.append(preds.cpu().numpy())
                 fold_targs.append(targs.cpu().numpy())
@@ -527,20 +601,16 @@ def main():
         fold_probs = np.concatenate(fold_probs)
         fold_targs = np.concatenate(fold_targs)
         
-        # Fill OOF arrays (using val_idx to map back to original df)
-        # Note: val_df is a reset_index copy. We use val_idx to write to global OOF arrays.
         oof_preds[val_idx] = np.expm1(fold_probs)
         oof_targets[val_idx] = fold_targs
         validation_mask[val_idx] = True
         
         plot_training_history(history, fold+1, session_dir)
     
-    # 4. Global CV Score Calculation
-    # Only calculate for samples that were used in validation (should be all if folds are perfect)
+    # Global CV Score
     if validation_mask.sum() < len(df):
-        logger.warning(f"Only {validation_mask.sum()}/{len(df)} samples were validated. Folds were not exhaustive?")
+        logger.warning(f"Only {validation_mask.sum()}/{len(df)} samples were validated.")
     
-    # Calculate R2 over the entire OOF set
     final_oof_preds = oof_preds[validation_mask]
     final_oof_targets = oof_targets[validation_mask]
     
@@ -554,13 +624,13 @@ def main():
     oof_df.to_csv(os.path.join(session_dir, 'oof_predictions.csv'), index=False)
     logger.info(f"OOF predictions saved. GLOBAL OOF R2: {global_r2:.4f}")
 
-    # Log Aggregate Results (Match the signature in log_and_plots.py: (logger, per_fold_best_list))
     log_aggregate_best_across_folds(logger, per_fold_best)
     
     logger.info("="*70)
     logger.info("CROSS-VALIDATION COMPLETE")
     logger.info(f"Session Dir: {session_dir}")
     logger.info("="*70)
+
 
 if __name__ == '__main__':
     main()

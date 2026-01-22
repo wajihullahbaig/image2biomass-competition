@@ -121,7 +121,7 @@ upsample:
 
 split:
   holdout_pct: 0.1
-  stratification_key: "State_Species" # Simplified stratification for better performance
+  stratification_key: "Season_State_Species" # Simplified stratification for better performance
   min_train_per_combo: 3 # Reduced minimum for more flexibility
   # Coverage enforcement - simplified
   ensure_species_train_coverage: true
@@ -130,7 +130,7 @@ split:
   ensure_combo_train_coverage: true # Disabled for simplicity
   combo_col: "Season_State_Species"
   min_train_per_combo_key: 3
-  group_stratification_col: "Season"
+  group_stratification_col: "State"
   group_col: "SessionID"
 
 seasons:

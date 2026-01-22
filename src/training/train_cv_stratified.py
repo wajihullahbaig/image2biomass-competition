@@ -158,6 +158,10 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_aux']  += loss_aux.item() * B
         metrics['train_sp']   += loss_sp.item() * B
         
+        metrics['train_loss_green']  += l_green.item() * B
+        metrics['train_loss_dead']   += l_dead.item() * B
+        metrics['train_loss_clover'] += l_clover.item() * B
+        metrics['train_loss_gdm']    += l_gdm.item() * B
         metrics['train_loss_total']  += l_total.item() * B
         
         # Flexible auxiliary feature loss tracking (NDVI, Height, Interactions, HSV)
@@ -279,6 +283,10 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         metrics[f'{prefix}_bio'] += loss_bio.item() * B
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
+        metrics[f'{prefix}_loss_green']  += l_green.item() * B
+        metrics[f'{prefix}_loss_dead']   += l_dead.item() * B
+        metrics[f'{prefix}_loss_clover'] += l_clover.item() * B
+        metrics[f'{prefix}_loss_gdm']    += l_gdm.item() * B
         metrics[f'{prefix}_loss_total']  += l_total.item() * B
 
         # Flexible auxiliary feature loss tracking (NDVI, Height, Interactions, HSV)

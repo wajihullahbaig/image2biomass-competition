@@ -60,6 +60,7 @@ class TrainingConfig:
     biomass_feat_weight: float
     aux_feat_weight: float
     species_feat_weight: float
+    consistency_weight: float = 2.0
     overfitting_penalty_alpha: float = 0.5
     # Exponential moving average decay for smoothing scheduler score (0..1)
     # Higher values -> smoother (less responsive). Default: 0.9

@@ -7,33 +7,34 @@ preprocessing:
   image_width: 256
 
 hyperparameters:
-  batch_size: 32
-  learning_rate: 0.00015
+  batch_size: 32 # Reduced from 64 - more stable gradients with unfrozen backbone
+  learning_rate: 0.0006 # Lowered to 0.0006 to stabilize with unfrozen backbone
   n_folds: 3
-  epochs: 20
-  weight_decay: 0.1
-  early_stop_patience: 10
+  epochs: 60 # Increased - still improving at epoch 32
+  weight_decay: 0.08 # Increased from 0.05 - need more regularization with unfrozen backbone
+  early_stop_patience: 15 # Increased - allow more time to converge
   backbone: timm/vit_small_patch16_dinov3.lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 400
   max_grad_norm: 1.0
-  backbone_lr_factor: 0.2
+  backbone_lr_factor: 0.2 # Reduced from 0.3 - backbone should learn slower
 
 training:
-  freeze_backbone: true
-  backbone_freeze_fraction: 0.8
+  freeze_backbone: false # UNFROZEN - critical for domain adaptation to pasture images
+  backbone_freeze_fraction: 0.8 # Only used if freeze_backbone=true
   use_tta: true
   fusion_dim: 256
-  biomass_feat_weight: 11.0
-  aux_feat_weight: 2.0
-  species_feat_weight: 1.0
+  biomass_feat_weight: 25.0 # Increased focus on primary task
+  aux_feat_weight: 0.3 # Reduced - Species Count overfitting detected
+  species_feat_weight: 0.3 # Reduced to allow focus on biomass
+  consistency_weight: 2.0 # Physical consistency penalty
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
   ema_decay: 0.9
 
 augmentation:
-  tile_prob: 0.0
-  mixup_prob: 0.0
+  tile_prob: 0.8 # Enabled - provides 6x data augmentation (critical for 229 samples)
+  mixup_prob: 0.0 # DISABLED - too much noise on top of tile aug + unfrozen backbone
   mixup_alpha: 0.40
 
 features:
@@ -113,7 +114,7 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 25
+  target_min_samples: 15 # Reduced from 25 to avoid overwhelming training with synthetic data
   method: "smart"
   noise_scale: 0.025
   seasonal_drift: true

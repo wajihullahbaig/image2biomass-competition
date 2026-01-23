@@ -119,21 +119,21 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             loss_bio = (l_green + l_dead + l_clover + l_gdm + l_total) * cfg.training.biomass_feat_weight
 
             # --- Physical Consistency Loss (Log-Space for Stability) ---
-            # 1. GDM ≈ Green + Clover
-            # 2. Total ≈ GDM + Dead
-            lin_green = torch.expm1(p_green)
-            lin_clover = torch.expm1(p_clover)
-            lin_dead = torch.expm1(p_dead)
-            lin_gdm = torch.expm1(p_gdm)
-            lin_total = torch.expm1(p_total)
+            # Use RAW model outputs (log-scale) for physics checks to avoid standardized distortions
+            raw_green, raw_dead, raw_clover, raw_gdm, raw_total = [biomass_out[:, i:i+1] for i in range(5)]
             
-            # Predict sum in linear, then compare in log space
+            lin_green, lin_dead, lin_clover, lin_gdm, lin_total = [torch.expm1(v) for v in [raw_green, raw_dead, raw_clover, raw_gdm, raw_total]]
+            
+            # Predict sums in linear space, then evaluate penalty in log space
             p_gdm_sum_log = torch.log1p(torch.clamp(lin_green + lin_clover, min=1e-4))
             p_total_sum_log = torch.log1p(torch.clamp(lin_gdm + lin_dead, min=1e-4))
             
-            l_consistency_gdm = reg(p_gdm, p_gdm_sum_log)
-            l_consistency_tot = reg(p_total, p_total_sum_log)
-            l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cfg.training.biomass_feat_weight
+            # Use separate consistency weight if available (fallback to bio weight)
+            cons_weight = getattr(cfg.training, 'consistency_weight', cfg.training.biomass_feat_weight * 0.1)
+            
+            l_consistency_gdm = reg(raw_gdm, p_gdm_sum_log)
+            l_consistency_tot = reg(raw_total, p_total_sum_log)
+            l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cons_weight
 
             # --- Auxiliary Loss ---
             p_aux, t_aux = aux_out, aux_feats
@@ -175,7 +175,6 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_aux']  += loss_aux.item() * B
         metrics['train_sp']   += loss_sp.item() * B
         metrics['train_cons'] += l_consistency_bio.item() * B
-        metrics['train_alpha'] += getattr(model, 'last_alpha', 0.5).item() * B
         
         # Individual losses for tracking
         metrics['train_loss_green']  += l_green.item() * B
@@ -305,18 +304,18 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         loss_bio = (l_green + l_dead + l_clover + l_gdm + l_total) * cfg.training.biomass_feat_weight
 
         # --- Physical Consistency Loss (Log-Space) ---
-        lin_green = torch.expm1(p_green)
-        lin_clover = torch.expm1(p_clover)
-        lin_dead = torch.expm1(p_dead)
-        lin_gdm = torch.expm1(p_gdm)
-        lin_total = torch.expm1(p_total)
+        # Use RAW model outputs (log-scale) for physics checks
+        raw_green, raw_dead, raw_clover, raw_gdm, raw_total = [biomass_out[:, i:i+1] for i in range(5)]
+        lin_green, lin_dead, lin_clover, lin_gdm, lin_total = [torch.expm1(v) for v in [raw_green, raw_dead, raw_clover, raw_gdm, raw_total]]
         
         p_gdm_sum_log = torch.log1p(torch.clamp(lin_green + lin_clover, min=1e-4))
         p_total_sum_log = torch.log1p(torch.clamp(lin_gdm + lin_dead, min=1e-4))
         
-        l_consistency_gdm = reg(p_gdm, p_gdm_sum_log)
-        l_consistency_tot = reg(p_total, p_total_sum_log)
-        l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cfg.training.biomass_feat_weight
+        cons_weight = getattr(cfg.training, 'consistency_weight', cfg.training.biomass_feat_weight * 0.1)
+        
+        l_consistency_gdm = reg(raw_gdm, p_gdm_sum_log)
+        l_consistency_tot = reg(raw_total, p_total_sum_log)
+        l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cons_weight
 
         # --- Auxiliary Loss ---
         p_aux, t_aux = aux_out, aux_feats
@@ -340,7 +339,6 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
         metrics[f'{prefix}_cons'] += l_consistency_bio.item() * B
-        metrics[f'{prefix}_alpha'] += getattr(model, 'last_alpha', 0.5).item() * B
         
         # Individual losses for tracking
         metrics[f'{prefix}_loss_green']  += l_green.item() * B
@@ -603,21 +601,56 @@ def main():
             save_metadata(session_dir, cfg.species_taxonomy.core_species, cfg.targets.cols, n_aux)
 
         n_upsampled = len(train_df)
-        if n_upsampled < cfg.hyperparameters.backbone_freeze_threshold:
-            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n_upsampled={n_upsampled} < {cfg.hyperparameters.backbone_freeze_threshold})")
+        # With tile_prob=0.8, effective training size is ~5x larger
+        effective_size = n_upsampled * (1 + 5 * cfg.augmentation.tile_prob)
+        
+        # Lowered threshold: with tile augmentation, 229 samples → ~1100 effective samples
+        freeze_threshold = 150  # Much lower than 400, accounting for augmentation
+        
+        if n_upsampled < freeze_threshold:
+            logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n_upsampled={n_upsampled} < {freeze_threshold})")
             for param in model.backbone.parameters():
                 param.requires_grad = False
         else:
             if cfg.training.freeze_backbone:
-                logger.info(f"STRATEGY: Applying Partial Freeze ({cfg.training.backbone_freeze_fraction*100}%) for Fold {fold+1} (n_upsampled={n_upsampled})")
+                logger.info(f"STRATEGY: Applying Partial Freeze ({cfg.training.backbone_freeze_fraction*100}%) for Fold {fold+1} (n_upsampled={n_upsampled}, effective={effective_size:.0f})")
                 all_params = list(model.backbone.parameters())
                 freeze_until = int(len(all_params) * cfg.training.backbone_freeze_fraction)
                 for i, p in enumerate(all_params):
                     p.requires_grad = (i >= freeze_until)
             else:
-                logger.info(f"STRATEGY: Full Backbone Unfreeze for Fold {fold+1}")
-                for param in model.backbone.parameters():
-                    param.requires_grad = True
+                # Smart unfreezing for ViT models: unfreeze last transformer blocks
+                logger.info(f"STRATEGY: Smart Partial Unfreeze for Fold {fold+1} (n_upsampled={n_upsampled}, effective={effective_size:.0f})")
+                
+                # For ViT models, unfreeze the last 4 transformer blocks (most important for adaptation)
+                # Keep patch embedding and early blocks frozen (general features)
+                if hasattr(model.backbone, 'blocks'):  # ViT architecture
+                    total_blocks = len(model.backbone.blocks)
+                    unfreeze_last_n = 4  # Unfreeze last 4 blocks
+                    
+                    # Freeze patch embedding and early blocks
+                    if hasattr(model.backbone, 'patch_embed'):
+                        for param in model.backbone.patch_embed.parameters():
+                            param.requires_grad = False
+                    
+                    # Freeze/unfreeze blocks
+                    for i, block in enumerate(model.backbone.blocks):
+                        freeze_block = i < (total_blocks - unfreeze_last_n)
+                        for param in block.parameters():
+                            param.requires_grad = not freeze_block
+                    
+                    # Unfreeze norm and head if they exist
+                    if hasattr(model.backbone, 'norm'):
+                        for param in model.backbone.norm.parameters():
+                            param.requires_grad = True
+                    
+                    logger.info(f"  ViT: Unfroze last {unfreeze_last_n}/{total_blocks} transformer blocks")
+                else:
+                    # For non-ViT models, unfreeze all
+                    logger.info(f"  Non-ViT: Full backbone unfreeze")
+                    for param in model.backbone.parameters():
+                        param.requires_grad = True
+
 
         backbone_params = list(model.backbone.parameters())
         head_params = [p for n, p in model.named_parameters() if 'backbone' not in n]
@@ -677,6 +710,16 @@ def main():
         ema_decay = cfg.training.ema_decay
 
         for epoch in range(cfg.hyperparameters.epochs):
+            # --- Linear Warmup for first 12 epochs ---
+            warmup_epochs = 12
+            if epoch < warmup_epochs:
+                # Calculate warmup factor (e.g. 0.1 at ep 0, 1.0 at ep 12)
+                warmup_factor = 0.1 + 0.9 * (epoch / warmup_epochs)
+                base_lr = cfg.hyperparameters.learning_rate * warmup_factor
+                optimizer.param_groups[0]['lr'] = base_lr * cfg.hyperparameters.backbone_lr_factor
+                optimizer.param_groups[1]['lr'] = base_lr
+                logger.info(f"  [Warmup] Epoch {epoch}: LR scales to {warmup_factor:.2f}x ({base_lr:.6f})")
+
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, criterion_reg, criterion_species,
                 cfg, epoch, session_dir=session_dir, logger=logger,
@@ -728,21 +771,24 @@ def main():
             history['score'].append(current_score)
             history['lr'].append(optimizer.param_groups[0]['lr'])
 
-            # Check saving conditions: Only save when BOTH validation or holdout R² improve and the score improves
-            better_r2_three = ((v_r2 > best_fold_v_r2) or (h_r2 > best_fold_h_r2)) and (current_score > best_fold_score)
+            # Check saving conditions: Require ALL THREE metrics to improve simultaneously
+            # This ensures we save only when validation R2, holdout R2, AND score all improve together
+            better_r2_val = v_r2 > best_fold_v_r2
+            better_r2_holdout = h_r2 > best_fold_h_r2
+            better_score = current_score > best_fold_score
             
-            if better_r2_three:
+            # Save when ALL three metrics improve
+            save_model = better_r2_val and better_r2_holdout and better_score
+            
+            if save_model:
                 # log what we have compared to what we had previously
                 logger.info(f"*** Fold {fold+1} Improved R2 Metrics (V:{v_r2:.3f} <new vs old> {best_fold_v_r2:.3f}, H:{h_r2:.3f} <new vs old> {best_fold_h_r2:.3f}) ***")
                 logger.info(f"*** Fold {fold+1} Improved Score (S:{current_score:.4f} <new vs old> {best_fold_score:.4f}) ***")
 
-                # Update best R2 trackers and score
-                if v_r2 > best_fold_v_r2:
-                    best_fold_v_r2 = v_r2
-                if h_r2 > best_fold_h_r2:
-                    best_fold_h_r2 = h_r2
-                if current_score > best_fold_score:
-                    best_fold_score = current_score
+                # Unconditionally update all trackers when saving (they all improved by construction)
+                best_fold_v_r2 = v_r2
+                best_fold_h_r2 = h_r2
+                best_fold_score = current_score
                 
                 best_fold_epoch = epoch
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold+1}.pth"))

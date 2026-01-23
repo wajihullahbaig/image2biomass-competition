@@ -41,7 +41,7 @@ class BiomassUnifiedModel(nn.Module):
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),
+            nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.Dropout(0.6),
             nn.Linear(64,self.num_aux)
@@ -50,7 +50,7 @@ class BiomassUnifiedModel(nn.Module):
         # 3. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
-            nn.LayerNorm(32),
+            nn.BatchNorm1d(32),
             nn.ReLU(),
             nn.Dropout(0.6),
             nn.Linear(32, self.num_species)
@@ -62,10 +62,11 @@ class BiomassUnifiedModel(nn.Module):
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, self.fusion_dim),
-            nn.LayerNorm(self.fusion_dim),
+            nn.BatchNorm1d(self.fusion_dim),
             nn.ReLU(),
             nn.Dropout(0.6),
             nn.Linear(self.fusion_dim, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total]
         )

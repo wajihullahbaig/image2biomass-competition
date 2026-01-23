@@ -693,16 +693,21 @@ def main():
             history['score'].append(current_score)
             history['lr'].append(optimizer.param_groups[0]['lr'])
 
-            # Check saving conditions: Only save when BOTH validation and holdout R² improve
-            better_r2_both = ((v_r2 > best_fold_v_r2) or (h_r2 > best_fold_h_r2)) and (current_score > best_fold_score)
+            # Check saving conditions: Only save when BOTH validation or holdout R² improve and the score improves
+            better_r2_three = ((v_r2 > best_fold_v_r2) or (h_r2 > best_fold_h_r2)) and (current_score > best_fold_score)
             
-            if better_r2_both:
-                logger.info(f"*** Fold {fold+1} Improved R2 Metrics (V:{v_r2:.3f} > {best_fold_v_r2:.3f}, H:{h_r2:.3f} > {best_fold_h_r2:.3f}) ***")
+            if better_r2_three:
+                # log what we have compared to what we had previously
+                logger.info(f"*** Fold {fold+1} Improved R2 Metrics (V:{v_r2:.3f} <new vs old> {best_fold_v_r2:.3f}, H:{h_r2:.3f} <new vs old> {best_fold_h_r2:.3f}) ***")
+                logger.info(f"*** Fold {fold+1} Improved Score (S:{current_score:.4f} <new vs old> {best_fold_score:.4f}) ***")
 
                 # Update best R2 trackers and score
-                best_fold_v_r2 = v_r2
-                best_fold_h_r2 = h_r2
-                best_fold_score = current_score
+                if v_r2 > best_fold_v_r2:
+                    best_fold_v_r2 = v_r2
+                if h_r2 > best_fold_h_r2:
+                    best_fold_h_r2 = h_r2
+                if current_score > best_fold_score:
+                    best_fold_score = current_score
                 
                 best_fold_epoch = epoch
                 torch.save(model.state_dict(), os.path.join(session_dir, f"best_model_fold{fold+1}.pth"))

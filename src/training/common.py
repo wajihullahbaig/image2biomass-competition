@@ -1203,14 +1203,14 @@ def calculate_scheduler_score(
     """
     
     # Smooth it with Holdout to prevent overfitting to the specific validation fold.
-    score_mix = (0.6 * val_r2) + (0.4 * holdout_r2)
+    score_mix = (0.4 * val_r2) + (0.6* holdout_r2)
     
     # Proportional Overfit Penalty
     # We allow a gap of up to 0.15 before penalizing excess.
     gap = train_r2 - val_r2
-    threshold = 0.15
+    threshold = 0.12
     if gap > threshold:
-        penalty = (gap - threshold) * 0.4
+        penalty = (gap - threshold) * 0.3
         score_mix -= penalty
         
     current_score = score_mix

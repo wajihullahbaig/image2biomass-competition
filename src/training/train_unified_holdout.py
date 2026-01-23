@@ -118,6 +118,23 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             
             loss_bio = (l_green + l_dead + l_clover + l_gdm + l_total) * cfg.training.biomass_feat_weight
 
+            # --- Physical Consistency Loss (Log-Space for Stability) ---
+            # 1. GDM ≈ Green + Clover
+            # 2. Total ≈ GDM + Dead
+            lin_green = torch.expm1(p_green)
+            lin_clover = torch.expm1(p_clover)
+            lin_dead = torch.expm1(p_dead)
+            lin_gdm = torch.expm1(p_gdm)
+            lin_total = torch.expm1(p_total)
+            
+            # Predict sum in linear, then compare in log space
+            p_gdm_sum_log = torch.log1p(torch.clamp(lin_green + lin_clover, min=1e-4))
+            p_total_sum_log = torch.log1p(torch.clamp(lin_gdm + lin_dead, min=1e-4))
+            
+            l_consistency_gdm = reg(p_gdm, p_gdm_sum_log)
+            l_consistency_tot = reg(p_total, p_total_sum_log)
+            l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cfg.training.biomass_feat_weight
+
             # --- Auxiliary Loss ---
             p_aux, t_aux = aux_out, aux_feats
             if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
@@ -129,7 +146,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             # --- Species Loss ---
             loss_sp = nn.BCEWithLogitsLoss()(species_logits, species_vec) * cfg.training.species_feat_weight
 
-            total_loss = loss_bio + loss_aux + loss_sp
+            total_loss = loss_bio + loss_aux + loss_sp + l_consistency_bio
 
         if torch.isnan(total_loss):
             if logger:
@@ -157,6 +174,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_bio']  += loss_bio.item() * B
         metrics['train_aux']  += loss_aux.item() * B
         metrics['train_sp']   += loss_sp.item() * B
+        metrics['train_cons'] += l_consistency_bio.item() * B
+        metrics['train_alpha'] += getattr(model, 'last_alpha', 0.5).item() * B
         
         # Individual losses for tracking
         metrics['train_loss_green']  += l_green.item() * B
@@ -167,7 +186,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         
         # Flexible auxiliary feature loss tracking
         aux_feature_names = ['ndvi', 'height_log', 'interaction_mul', 'interaction_add', 'species_count',
-                           'green_hsv', 'dead_hsv', 'clover_hsv', 'soil_hsv']
+                           'green_hsv', 'dry_green_hsv', 'clover_hsv', 'dead_hsv', 'soil_hsv']
         for i in range(min(aux_out.shape[1], len(aux_feature_names))):
             feature_name = aux_feature_names[i]
             loss_key = f'train_loss_{feature_name}'
@@ -285,6 +304,20 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         
         loss_bio = (l_green + l_dead + l_clover + l_gdm + l_total) * cfg.training.biomass_feat_weight
 
+        # --- Physical Consistency Loss (Log-Space) ---
+        lin_green = torch.expm1(p_green)
+        lin_clover = torch.expm1(p_clover)
+        lin_dead = torch.expm1(p_dead)
+        lin_gdm = torch.expm1(p_gdm)
+        lin_total = torch.expm1(p_total)
+        
+        p_gdm_sum_log = torch.log1p(torch.clamp(lin_green + lin_clover, min=1e-4))
+        p_total_sum_log = torch.log1p(torch.clamp(lin_gdm + lin_dead, min=1e-4))
+        
+        l_consistency_gdm = reg(p_gdm, p_gdm_sum_log)
+        l_consistency_tot = reg(p_total, p_total_sum_log)
+        l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cfg.training.biomass_feat_weight
+
         # --- Auxiliary Loss ---
         p_aux, t_aux = aux_out, aux_feats
         if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
@@ -299,13 +332,15 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         else:
             loss_sp = criterion_species(species_logits, species_vec) * cfg.training.species_feat_weight
 
-        total_loss = loss_bio + loss_aux + loss_sp
+        total_loss = loss_bio + loss_aux + loss_sp + l_consistency_bio
 
         B = images.size(0)
         metrics[f'{prefix}_loss'] += total_loss.item() * B
         metrics[f'{prefix}_bio'] += loss_bio.item() * B
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
+        metrics[f'{prefix}_cons'] += l_consistency_bio.item() * B
+        metrics[f'{prefix}_alpha'] += getattr(model, 'last_alpha', 0.5).item() * B
         
         # Individual losses for tracking
         metrics[f'{prefix}_loss_green']  += l_green.item() * B
@@ -316,7 +351,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
 
         # Flexible auxiliary feature loss tracking
         aux_feature_names = ['ndvi', 'height_log', 'interaction_mul', 'interaction_add', 'species_count',
-                           'green_hsv', 'dead_hsv', 'clover_hsv', 'soil_hsv']
+                           'green_hsv', 'dry_green_hsv', 'clover_hsv', 'dead_hsv', 'soil_hsv']
         for i in range(min(aux_out.shape[1], len(aux_feature_names))):
             feature_name = aux_feature_names[i]
             loss_key = f'{prefix}_loss_{feature_name}'
@@ -626,13 +661,13 @@ def main():
         if aux_data.shape[1] > 0:
             aux_mean_np = aux_data.mean(axis=0)
             aux_std_np = aux_data.std(axis=0)
-            # Add HSV stats for 4 biomass scores (mean=0.0, std=1.0 as they are already 0-1 scores)
-            # Order: green_score, dead_score, dry_clover_score, soil_score
-            aux_mean_np = np.append(aux_mean_np, [0.0, 0.0, 0.0, 0.0])
-            aux_std_np = np.append(aux_std_np, [1.0, 1.0, 1.0, 1.0])
+            # Add HSV stats for 5 biomass scores (mean=0.0, std=1.0 as they are already 0-1 scores)
+            # Order: green, dry_green, clover, dead, soil
+            aux_mean_np = np.append(aux_mean_np, [0.0, 0.0, 0.0, 0.0, 0.0])
+            aux_std_np = np.append(aux_std_np, [1.0, 1.0, 1.0, 1.0, 1.0])
         else:
-            aux_mean_np = np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
-            aux_std_np = np.array([1.0, 1.0, 1.0, 1.0], dtype=float)
+            aux_mean_np = np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
+            aux_std_np = np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=float)
 
         aux_mean_t = torch.tensor(aux_mean_np, dtype=torch.float32, device=cfg.device).view(1, -1)
         aux_std_t = torch.tensor(aux_std_np, dtype=torch.float32, device=cfg.device).view(1, -1)

@@ -46,20 +46,21 @@ features:
     enabled: true
     # HSV range tuning for different matter types
     green_vegetation:
-      hue_range: [35, 85] # Green hue range
-      saturation_min: 60 # Minimum saturation for vibrant green
-      value_min: 60 # Minimum value/brightness
+      hue_range: [40, 80]
+      saturation_min: 70
+      value_min: 50
+    dry_green_vegetation:
+      hue_range: [25, 40]
+      saturation_range: [40, 255]
+    clover:
+      hue_range: [35, 55]
+      saturation_min: 120
     dead_matter:
-      hue_range: [15, 35] # Yellow to yellow-green range
-      saturation_range: [40, 200] # Moderate saturation
-      value_range: [40, 200] # Moderate brightness
-    dry_clover:
-      hue_range: [5, 25] # Brown to light brown
-      saturation_range: [25, 120] # Lower saturation than live vegetation
-      value_range: [30, 150] # Moderate brightness
+      hue_range: [10, 25]
+      saturation_range: [40, 200]
     soil:
-      saturation_max: 40 # Very low saturation indicates soil
-      value_range: [20, 120] # Brightness range for soil
+      saturation_max: 50
+      value_range: [20, 150]
     # Intelligent tiling configuration
     intelligent_tiling:
       enabled: true

@@ -227,8 +227,9 @@ class TiledBiomassDataset(Dataset):
                 'sample_id': row['sample_id'] + sample_id_suffix,
                 'hsv_score': hsv_score,
                 'green_score': biomass_scores['green_score'],
+                'dry_green_score': biomass_scores['dry_green_score'],
+                'clover_score': biomass_scores['clover_score'],
                 'dead_score': biomass_scores['dead_score'],
-                'dry_clover_score': biomass_scores['dry_clover_score'],
                 'soil_score': biomass_scores['soil_score']
             }
         
@@ -249,10 +250,12 @@ class TiledBiomassDataset(Dataset):
             
         targets = torch.tensor(scaled_targets)
         
-        # Auxiliary features + All HSV Biomass Scores
-        # Order: original aux features + green_score + dead_score + dry_clover_score + soil_score
-        hsv_features = [biomass_scores['green_score'], biomass_scores['dead_score'], 
-                       biomass_scores['dry_clover_score'], biomass_scores['soil_score']]
+        # Auxiliary features + All 5 HSV Biomass Scores
+        hsv_features = [
+            biomass_scores['green_score'], biomass_scores['dry_green_score'],
+            biomass_scores['clover_score'], biomass_scores['dead_score'], 
+            biomass_scores['soil_score']
+        ]
         aux_values = np.append(row[self.aux_cols].values.astype(np.float32), hsv_features)
         aux_feats = torch.tensor(np.nan_to_num(aux_values), dtype=torch.float32)
         
@@ -269,8 +272,9 @@ class TiledBiomassDataset(Dataset):
             'tile_scale': targets_scale if not isinstance(targets_scale, dict) else np.mean(list(targets_scale.values())),
             'hsv_score': hsv_score,
             'green_score': biomass_scores['green_score'],
+            'dry_green_score': biomass_scores['dry_green_score'],
+            'clover_score': biomass_scores['clover_score'],
             'dead_score': biomass_scores['dead_score'],
-            'dry_clover_score': biomass_scores['dry_clover_score'],
             'soil_score': biomass_scores['soil_score']
         }
 
@@ -291,8 +295,9 @@ class TiledBiomassDataset(Dataset):
         """
         # Extract scores for each tile
         green_scores = [scores['green_score'] for scores in tile_scores]
+        dry_green_scores = [scores['dry_green_score'] for scores in tile_scores]
+        clover_scores = [scores['clover_score'] for scores in tile_scores]
         dead_scores = [scores['dead_score'] for scores in tile_scores]
-        clover_scores = [scores['dry_clover_score'] for scores in tile_scores]
         soil_scores = [scores['soil_score'] for scores in tile_scores]
         
         # Normalize so that sum across tiles = 1.0 for each matter type
@@ -304,16 +309,16 @@ class TiledBiomassDataset(Dataset):
                 return [0.25, 0.25, 0.25, 0.25]  # Fall back to equal split
         
         green_weights = safe_normalize(green_scores)
+        dry_green_weights = safe_normalize(dry_green_scores)
         dead_weights = safe_normalize(dead_scores)
         clover_weights = safe_normalize(clover_scores)
         
-        # For GDM (Green Dry Matter), combine green and clover
-        # GDM typically includes both green vegetation and legumes
-        combined_green_clover = [g + c for g, c in zip(green_scores, clover_scores)]
+        # For GDM (Green Dry Matter), combine green, dry green, and clover
+        combined_green_clover = [g + dg + c for g, dg, c in zip(green_scores, dry_green_scores, clover_scores)]
         gdm_weights = safe_normalize(combined_green_clover)
         
         # For Dry_Total, use a weighted combination of all vegetation types
-        total_veg_scores = [g + d + c for g, d, c in zip(green_scores, dead_scores, clover_scores)]
+        total_veg_scores = [g + dg + c + d for g, dg, c, d in zip(green_scores, dry_green_scores, clover_scores, dead_scores)]
         total_weights = safe_normalize(total_veg_scores)
         
         # Apply weights to the selected tile
@@ -359,8 +364,9 @@ class TiledBiomassDataset(Dataset):
         
         return {
             'green_score': biomass_scores['green_score'],
+            'dry_green_score': biomass_scores['dry_green_score'],
+            'clover_score': biomass_scores['clover_score'],
             'dead_score': biomass_scores['dead_score'], 
-            'dry_clover_score': biomass_scores['dry_clover_score'],
             'soil_score': biomass_scores['soil_score']
         }
 
@@ -407,8 +413,9 @@ class TiledMixupDataset(Dataset):
         
         # Mix individual biomass scores
         mixed_green_score = float(lam * sample1.get('green_score', 0.0) + (1 - lam) * sample2.get('green_score', 0.0))
+        mixed_dry_green_score = float(lam * sample1.get('dry_green_score', 0.0) + (1 - lam) * sample2.get('dry_green_score', 0.0))
+        mixed_clover_score = float(lam * sample1.get('clover_score', 0.0) + (1 - lam) * sample2.get('clover_score', 0.0))
         mixed_dead_score = float(lam * sample1.get('dead_score', 0.0) + (1 - lam) * sample2.get('dead_score', 0.0))
-        mixed_dry_clover_score = float(lam * sample1.get('dry_clover_score', 0.0) + (1 - lam) * sample2.get('dry_clover_score', 0.0))
         mixed_soil_score = float(lam * sample1.get('soil_score', 0.0) + (1 - lam) * sample2.get('soil_score', 0.0))
 
         return {
@@ -421,8 +428,9 @@ class TiledMixupDataset(Dataset):
             'tile_scale': (sample1.get('tile_scale', 1.0) + sample2.get('tile_scale', 1.0)) / 2,
             'hsv_score': mixed_hsv,
             'green_score': mixed_green_score,
+            'dry_green_score': mixed_dry_green_score,
+            'clover_score': mixed_clover_score,
             'dead_score': mixed_dead_score,
-            'dry_clover_score': mixed_dry_clover_score,
             'soil_score': mixed_soil_score
         }
 

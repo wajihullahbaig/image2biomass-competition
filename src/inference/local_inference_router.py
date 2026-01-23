@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260119_144853'
+MODEL_DIR = './logs/unified_holdout_20260123_140510'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -68,7 +68,7 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
 
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name, num_aux=5, num_species=14, pretrained=False, biomass_clamp=None):
+    def __init__(self, backbone_name, num_aux=3, num_species=14, pretrained=False, biomass_clamp=None):
         super(BiomassUnifiedModel, self).__init__()
         
         # Use provided clamp or fallback to default
@@ -94,49 +94,65 @@ class BiomassUnifiedModel(nn.Module):
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),
+            nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.Dropout(0.3),
             nn.Linear(64, num_aux)
         )
         
         # 3. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
-            nn.LayerNorm(32),
+            nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.Dropout(0.3),
             nn.Linear(32, num_species)
         )
-
+        
         # 5. Biomass Head
-        # Inputs: Backbone + Aux(3) + Species(14)
+        # Inputs: Backbone + Aux + Species
         input_dim = self.backbone_dim + num_aux + num_species
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
-            nn.LayerNorm(FUSION_DIM),
+            nn.BatchNorm1d(FUSION_DIM),
             nn.ReLU(),
-            nn.Dropout(0.6),
-            # Transition to 128
+            nn.Dropout(0.3),
             nn.Linear(FUSION_DIM, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total]
+            nn.Linear(128, 6), # [Green, Dead_Vision, Clover, GDM, Total] + [Physics_Gate]
         )
-        
+
         self.log_clamp = torch.log1p(torch.tensor(clamp_value))
+        
         self._init_biomass_head()
         
     def _init_biomass_head(self):
+        # 1. Global Initialization for all heads
+        for m in [self.aux_head, self.species_head, self.biomass_head]:
+            for layer in m:
+                if isinstance(layer, nn.Linear):
+                    # Use He initialization for ReLU activated layers
+                    nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
+                    if layer.bias is not None:
+                        nn.init.constant_(layer.bias, 0)
+                elif isinstance(layer, nn.BatchNorm1d):
+                    nn.init.constant_(layer.weight, 1)
+                    nn.init.constant_(layer.bias, 0)
+
+        # 2. Specific centering for the output layer to prevent "Berserk" logs
         last_layer = self.biomass_head[-1]
+        # Use Xavier for the final layer which feeds into Sigmoid/Softplus
         nn.init.xavier_uniform_(last_layer.weight)
+        
         with torch.no_grad():
-            last_layer.bias.fill_(0)
-            last_layer.bias[0] = 3.0 # Green
-            last_layer.bias[1] = 2.0 # Dead
-            last_layer.bias[2] = 2.5 # Clover
-            last_layer.bias[3] = 3.2 # GDM
-            last_layer.bias[4] = 3.5 # Total
+            last_layer.bias[0] = 3.0 # Green (~20g)
+            last_layer.bias[1] = 2.0 # Dead Vision (~7g)
+            last_layer.bias[2] = 2.5 # Clover (~12g)
+            last_layer.bias[3] = 3.2 # GDM (~25g)
+            last_layer.bias[4] = 3.5 # Total (~30g)
+            last_layer.bias[5] = 0.0 # Gate (Balanced)
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -150,18 +166,39 @@ class BiomassUnifiedModel(nn.Module):
         else:  # Already pooled: [B, features]
             img_feats = feat_map
         
+        # Heads
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
-        aux_out = self.aux_head(img_feats)
+        aux_out = self.aux_head(img_feats) 
         
-        # Fusion: Include Species probs
+        # Fusion
         combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         
-        # Biomass Prediction (Green, Dead, Clover)
+        # Biomass Prediction (Green, Dead_Vision, Clover, GDM, Total, Gate)
         log_preds_raw = self.biomass_head(combined_feats)
-        # softplus ensures positivity, clamp ensures we don't blow up expm1
-        biomass_out = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
+        
+        # Split outputs
+        p_green        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
+        p_dead_vision  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
+        p_clover       = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
+        p_gdm          = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
+        p_total        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
+        
+        # Physics Gate: Alpha → 1 means trust Physics (Residual), Alpha → 0 means trust Vision
+        alpha = torch.sigmoid(log_preds_raw[:, 5:6])
+        
+        # 1. Physics Path: Dead = Total - GDM
+        total_lin = torch.expm1(p_total)
+        gdm_lin   = torch.expm1(p_gdm)
+        dead_lin_physics = torch.clamp(total_lin - gdm_lin, min=1e-4)
+        p_dead_physics = torch.log1p(dead_lin_physics)
+        
+        # 2. Physics-Informed Gated Fusion
+        p_dead = alpha * p_dead_physics + (1 - alpha) * p_dead_vision
+        
+        # Final output order for competition: [Green, Dead, Clover, GDM, Total]
+        biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total], dim=1)
         
         return biomass_out, aux_out, species_logits
 

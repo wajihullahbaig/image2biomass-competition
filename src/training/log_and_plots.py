@@ -88,9 +88,9 @@ def plot_training_history(history, fold, session_dir):
     
     if vals:
         vmin, vmax = min(vals), max(vals)
-        axes[5].set_ylim(min(vmin - 0.1, -2.0), max(vmax + 0.1, 2.0))
+        axes[5].set_ylim(max(min(vmin - 0.1, -1.5), -1.5), min(max(vmax + 0.1, 1.5), 1.5))
     else:
-        axes[5].set_ylim(-2.0, 2.0)
+        axes[5].set_ylim(-1.5, 1.5)
 
     # 7. Learning Rate
     try_plot(6, 'lr', 'Learning Rate', 'tab:purple')
@@ -135,8 +135,7 @@ def plot_training_history(history, fold, session_dir):
         ('loss_height_log', 'Height Log Loss'), 
         ('loss_interaction_mul', 'Interaction Mul Loss'), 
         ('loss_interaction_add', 'Interaction Add Loss'),
-        ('loss_green_hsv', 'Green HSV Loss'),
-        ('loss_dead_hsv', 'Dead HSV Loss')
+        ('loss_species_count', 'Species Count Loss')
     ]
     
     for idx, (suffix, title) in enumerate(aux_map):
@@ -151,19 +150,23 @@ def plot_training_history(history, fold, session_dir):
     plt.savefig(os.path.join(comp_dir, f"fold_{fold}_aux_components.png"))
     plt.close()
 
-    # 3. HSV Components (New comprehensive HSV features)
-    fig_h, axes_h = plt.subplots(2, 2, figsize=(14, 10))
-    axes_h = axes_h.flatten()
-    
     hsv_map = [
-        ('loss_green_hsv', 'Green HSV Loss'),
-        ('loss_dead_hsv', 'Dead Matter HSV Loss'), 
-        ('loss_clover_hsv', 'Dry Clover HSV Loss'),
-        ('loss_soil_hsv', 'Soil HSV Loss')
+        ('loss_green_hsv', 'Green HSV'),
+        ('loss_dry_green_hsv', 'Dry Green HSV'), 
+        ('loss_clover_hsv', 'Clover HSV'),
+        ('loss_dead_hsv', 'Dead HSV'),
+        ('loss_soil_hsv', 'Soil HSV')
     ]
+    
+    fig_h, axes_h = plt.subplots(2, 3, figsize=(18, 10))
+    axes_h = axes_h.flatten()
     
     for idx, (suffix, title) in enumerate(hsv_map):
         try_plot_on_ax(axes_h[idx], history, f'train_{suffix}', f'val_{suffix}', title, holdout_key=f'holdout_{suffix}')
+    
+    # Hide unused axes
+    for idx in range(len(hsv_map), len(axes_h)):
+        axes_h[idx].set_visible(False)
         
     plt.tight_layout()
     plt.savefig(os.path.join(comp_dir, f"fold_{fold}_hsv_components.png"))

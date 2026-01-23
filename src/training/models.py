@@ -43,7 +43,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.Dropout(0.3),
             nn.Linear(64,self.num_aux)
         )
         
@@ -52,7 +52,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 32),
             nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.Dropout(0.3),
             nn.Linear(32, self.num_species)
         )
         
@@ -64,11 +64,11 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(input_dim, self.fusion_dim),
             nn.BatchNorm1d(self.fusion_dim),
             nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.Dropout(0.3),
             nn.Linear(self.fusion_dim, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total]
+            nn.Linear(128, 6), # [Green, Dead_Vision, Clover, GDM, Total] + [Physics_Gate]
         )
 
         self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
@@ -76,15 +76,30 @@ class BiomassUnifiedModel(nn.Module):
         self._init_biomass_head()
         
     def _init_biomass_head(self):
+        # 1. Global Initialization for all heads
+        for m in [self.aux_head, self.species_head, self.biomass_head]:
+            for layer in m:
+                if isinstance(layer, nn.Linear):
+                    # Use He initialization for ReLU activated layers
+                    nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
+                    if layer.bias is not None:
+                        nn.init.constant_(layer.bias, 0)
+                elif isinstance(layer, nn.BatchNorm1d):
+                    nn.init.constant_(layer.weight, 1)
+                    nn.init.constant_(layer.bias, 0)
+
+        # 2. Specific centering for the output layer to prevent "Berserk" logs
         last_layer = self.biomass_head[-1]
+        # Use Xavier for the final layer which feeds into Sigmoid/Softplus
         nn.init.xavier_uniform_(last_layer.weight)
+        
         with torch.no_grad():
-            last_layer.bias.fill_(0)
-            last_layer.bias[0] = 3.0 # ~20g green
-            last_layer.bias[1] = 2.0 # ~7g dead
-            last_layer.bias[2] = 2.5 # ~12g clover
-            last_layer.bias[3] = 3.2 # ~25g gdm (green + clover)
-            last_layer.bias[4] = 3.5 # ~30g total (green + dead + clover)
+            last_layer.bias[0] = 3.0 # Green (~20g)
+            last_layer.bias[1] = 2.0 # Dead Vision (~7g)
+            last_layer.bias[2] = 2.5 # Clover (~12g)
+            last_layer.bias[3] = 3.2 # GDM (~25g)
+            last_layer.bias[4] = 3.5 # Total (~30g)
+            last_layer.bias[5] = 0.0 # Gate (Balanced)
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -107,10 +122,33 @@ class BiomassUnifiedModel(nn.Module):
         # Fusion
         combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         
-        # Biomass Prediction (Green, Dead, Clover)
+        # Biomass Prediction (Green, Dead_Vision, Clover, GDM, Total, Gate)
         log_preds_raw = self.biomass_head(combined_feats)
-        # softplus ensures positivity, clamp ensures we don't blow up expm1
-        biomass_out = torch.clamp(nn.functional.softplus(log_preds_raw), 0.0, self.log_clamp)
+        
+        # Split outputs
+        p_green        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
+        p_dead_vision  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
+        p_clover       = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
+        p_gdm          = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
+        p_total        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
+        
+        # Physics Gate: Alpha → 1 means trust Physics (Residual), Alpha → 0 means trust Vision
+        alpha = torch.sigmoid(log_preds_raw[:, 5:6])
+        
+        # 1. Physics Path: Dead = Total - GDM
+        total_lin = torch.expm1(p_total)
+        gdm_lin   = torch.expm1(p_gdm)
+        dead_lin_physics = torch.clamp(total_lin - gdm_lin, min=1e-4)
+        p_dead_physics = torch.log1p(dead_lin_physics)
+        
+        # 2. Physics-Informed Gated Fusion
+        p_dead = alpha * p_dead_physics + (1 - alpha) * p_dead_vision
+        
+        # Final output order for competition: [Green, Dead, Clover, GDM, Total]
+        biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total], dim=1)
+        
+        # Return gate for monitoring if needed
+        self.last_alpha = alpha.detach().mean()
         
         return biomass_out, aux_out, species_logits
 

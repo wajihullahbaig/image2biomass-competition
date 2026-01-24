@@ -659,7 +659,7 @@ def main():
             {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
         ]
         optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.85, patience=5, threshold=1e-3, min_lr=1e-6)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.7, patience=3, threshold=5e-4, min_lr=1e-6, verbose=True)
 
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()
@@ -753,8 +753,9 @@ def main():
             current_score = ema_score
             ema_score_prev = ema_score
 
-            # Step the scheduler
-            scheduler.step(ema_score)
+            # Step the scheduler (only after warmup)
+            if epoch >= warmup_epochs:
+                scheduler.step(ema_score)
 
             log_msg = get_formatted_loss_log(epoch,
                                              train_metrics,

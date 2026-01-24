@@ -11,7 +11,7 @@ hyperparameters:
   learning_rate: 0.0007 # Reduced - warmup ramp to 0.001 caused epoch 5 collapse
   n_folds: 3
   epochs: 60 # Increased - still improving at epoch 32
-  weight_decay: 0.08 # Increased from 0.05 - need more regularization with unfrozen backbone
+  weight_decay: 0.10 # Increased - combat Dead biomass overfitting
   early_stop_patience: 15 # Increased - allow more time to converge
   backbone: timm/vit_small_patch16_dinov3.lvd1689m
   min_train_samples: 50
@@ -25,9 +25,9 @@ training:
   use_tta: true
   fusion_dim: 256
   biomass_feat_weight: 50.0 # Massively increased - focus on visual biomass
-  aux_feat_weight: 0.1 # Minimized - reduce species-specific learning
-  species_feat_weight: 0.05 # Nearly disabled - prevent species overfitting
-  consistency_weight: 2.0 # Physical consistency penalty
+  aux_feat_weight: 0.05 # Further reduced - minimize interaction oscillations
+  species_feat_weight: 0.0 # DISABLED - causing oscillations, conflicts with frozen backbone
+  consistency_weight: 5.0 # Increased - Dead loss diverging, need stronger physics constraint
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
   ema_decay: 0.9

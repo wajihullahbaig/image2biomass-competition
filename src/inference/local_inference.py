@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260123_143926'
+MODEL_DIR = './logs/unified_holdout_20260124_075420'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -93,7 +93,7 @@ class BiomassUnifiedModel(nn.Module):
         # 2. Auxiliary Head
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),  # Changed from BatchNorm1d for stability
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(64, num_aux)
@@ -102,7 +102,7 @@ class BiomassUnifiedModel(nn.Module):
         # 3. Species Head
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
-            nn.BatchNorm1d(32),
+            nn.LayerNorm(32),  # Changed from BatchNorm1d for stability
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(32, num_species)
@@ -113,13 +113,13 @@ class BiomassUnifiedModel(nn.Module):
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
-            nn.BatchNorm1d(FUSION_DIM),
+            nn.LayerNorm(FUSION_DIM),  # Changed from BatchNorm1d for stability
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(FUSION_DIM, 128),
-            nn.BatchNorm1d(128),
+            nn.LayerNorm(128),  # Changed from BatchNorm1d for stability
             nn.ReLU(),
-            nn.Linear(128, 6), # [Green, Dead_Vision, Clover, GDM, Total] + [Physics_Gate]
+            nn.Linear(128, 5),  # [Green, Dead, Clover, GDM, Total] - NO PHYSICS GATE
         )
         
         self.log_clamp = torch.log1p(torch.tensor(float(clamp_value)))
@@ -133,7 +133,7 @@ class BiomassUnifiedModel(nn.Module):
                     nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
                     if layer.bias is not None:
                         nn.init.constant_(layer.bias, 0)
-                elif isinstance(layer, nn.BatchNorm1d):
+                elif isinstance(layer, (nn.BatchNorm1d, nn.LayerNorm)):  # Support both
                     nn.init.constant_(layer.weight, 1)
                     nn.init.constant_(layer.bias, 0)
 
@@ -141,12 +141,11 @@ class BiomassUnifiedModel(nn.Module):
         last_layer = self.biomass_head[-1]
         nn.init.xavier_uniform_(last_layer.weight)
         with torch.no_grad():
-            last_layer.bias[0] = 3.0 # Green
-            last_layer.bias[1] = 2.0 # Dead Vision
-            last_layer.bias[2] = 2.5 # Clover
-            last_layer.bias[3] = 3.2 # GDM
-            last_layer.bias[4] = 3.5 # Total
-            last_layer.bias[5] = 0.0 # Gate (Balanced)
+            last_layer.bias[0] = 3.0  # Green (~20g)
+            last_layer.bias[1] = 2.0  # Dead (~7g)
+            last_layer.bias[2] = 2.5  # Clover (~12g)
+            last_layer.bias[3] = 3.2  # GDM (~25g)
+            last_layer.bias[4] = 3.5  # Total (~30g)
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -166,23 +165,12 @@ class BiomassUnifiedModel(nn.Module):
         
         log_preds_raw = self.biomass_head(combined_feats)
         
-        # Gated Physics Logic
-        p_green        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
-        p_dead_vision  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
-        p_clover       = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
-        p_gdm          = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
-        p_total        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
-        
-        alpha = torch.sigmoid(log_preds_raw[:, 5:6])
-        
-        # Physics Residual
-        total_lin = torch.expm1(p_total)
-        gdm_lin   = torch.expm1(p_gdm)
-        dead_lin_physics = torch.clamp(total_lin - gdm_lin, min=1e-4)
-        p_dead_physics = torch.log1p(dead_lin_physics)
-        
-        # Fusion
-        p_dead = alpha * p_dead_physics + (1 - alpha) * p_dead_vision
+        # Direct predictions (no physics gating)
+        p_green  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
+        p_dead   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
+        p_clover = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
+        p_gdm    = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
+        p_total  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
         
         biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total], dim=1)
         return biomass_out, aux_out, species_logits

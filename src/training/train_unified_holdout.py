@@ -626,7 +626,7 @@ def main():
                 # Keep patch embedding and early blocks frozen (general features)
                 if hasattr(model.backbone, 'blocks'):  # ViT architecture
                     total_blocks = len(model.backbone.blocks)
-                    unfreeze_last_n = 4  # Unfreeze last 4 blocks
+                    unfreeze_last_n = 2  # Reduced from 4 to 2 for better stability
                     
                     # Freeze patch embedding and early blocks
                     if hasattr(model.backbone, 'patch_embed'):
@@ -710,11 +710,11 @@ def main():
         ema_decay = cfg.training.ema_decay
 
         for epoch in range(cfg.hyperparameters.epochs):
-            # --- Linear Warmup for first 12 epochs ---
-            warmup_epochs = 12
+            # --- Linear Warmup for first 5 epochs (gentler ramp) ---
+            warmup_epochs = 5
             if epoch < warmup_epochs:
-                # Calculate warmup factor (e.g. 0.1 at ep 0, 1.0 at ep 12)
-                warmup_factor = 0.1 + 0.9 * (epoch / warmup_epochs)
+                # Calculate warmup factor (0.3 at ep 0, 1.0 at ep 5)
+                warmup_factor = 0.3 + 0.7 * (epoch / warmup_epochs)
                 base_lr = cfg.hyperparameters.learning_rate * warmup_factor
                 optimizer.param_groups[0]['lr'] = base_lr * cfg.hyperparameters.backbone_lr_factor
                 optimizer.param_groups[1]['lr'] = base_lr
@@ -771,8 +771,7 @@ def main():
             history['score'].append(current_score)
             history['lr'].append(optimizer.param_groups[0]['lr'])
 
-            # Check saving conditions: Require ALL THREE metrics to improve simultaneously
-            # This ensures we save only when validation R2, holdout R2, AND score all improve together
+            
             better_r2_val = v_r2 > best_fold_v_r2
             better_r2_holdout = h_r2 > best_fold_h_r2
             better_score = current_score > best_fold_score

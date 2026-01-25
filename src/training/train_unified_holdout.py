@@ -183,7 +183,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         # Flexible auxiliary feature loss tracking (flattened)
         aux_names = ['ndvi', 'height', 'i_mul', 'i_add', 'sp_count', 'g_hsv', 'dg_hsv', 'c_hsv', 'd_hsv', 's_hsv']
         for i in range(min(aux_out.shape[1], len(aux_names))):
-            metrics[f"train_l_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
+            metrics[f"train_loss_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
 
         pbar.set_postfix({'L': total_loss.item()})
 
@@ -326,7 +326,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         # Flexible auxiliary feature loss tracking
         aux_names = ['ndvi', 'height', 'i_mul', 'i_add', 'sp_count', 'g_hsv', 'dg_hsv', 'c_hsv', 'd_hsv', 's_hsv']
         for i in range(min(aux_out.shape[1], len(aux_names))):
-            metrics[f"{prefix}_l_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
+            metrics[f"{prefix}_loss_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
 
         # Accumulate for R2 calculation
         with torch.no_grad():

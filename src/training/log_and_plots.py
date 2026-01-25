@@ -132,10 +132,10 @@ def plot_training_history(history, fold, session_dir):
     
     aux_map = [
         ('loss_ndvi', 'NDVI Loss'), 
-        ('loss_height_log', 'Height Log Loss'), 
-        ('loss_interaction_mul', 'Interaction Mul Loss'), 
-        ('loss_interaction_add', 'Interaction Add Loss'),
-        ('loss_species_count', 'Species Count Loss')
+        ('loss_height', 'Height Loss'), 
+        ('loss_i_mul', 'Interaction Mul Loss'), 
+        ('loss_i_add', 'Interaction Add Loss'),
+        ('loss_sp_count', 'Species Count Loss')
     ]
     
     for idx, (suffix, title) in enumerate(aux_map):
@@ -151,11 +151,11 @@ def plot_training_history(history, fold, session_dir):
     plt.close()
 
     hsv_map = [
-        ('loss_green_hsv', 'Green HSV'),
-        ('loss_dry_green_hsv', 'Dry Green HSV'), 
-        ('loss_clover_hsv', 'Clover HSV'),
-        ('loss_dead_hsv', 'Dead HSV'),
-        ('loss_soil_hsv', 'Soil HSV')
+        ('loss_g_hsv', 'Green HSV'),
+        ('loss_dg_hsv', 'Dry Green HSV'), 
+        ('loss_c_hsv', 'Clover HSV'),
+        ('loss_d_hsv', 'Dead HSV'),
+        ('loss_s_hsv', 'Soil HSV')
     ]
     
     fig_h, axes_h = plt.subplots(2, 3, figsize=(18, 10))
@@ -175,15 +175,27 @@ def plot_training_history(history, fold, session_dir):
 def try_plot_on_ax(ax, history, train_key, val_key, title, holdout_key=None):
     """Helper to plot train/val curves on a given axis."""
     has_data = False
-    if train_key in history and len(history[train_key]) > 0:
-        ax.plot(history[train_key], label='Train', color='tab:blue')
+    
+    def get_clean_data(key):
+        if key in history and len(history[key]) > 0:
+            return [float(x) for x in history[key] if x is not None]
+        return []
+
+    train_data = get_clean_data(train_key)
+    if train_data:
+        ax.plot(train_data, label='Train', color='tab:blue')
         has_data = True
-    if val_key in history and len(history[val_key]) > 0:
-        ax.plot(history[val_key], label='Val', color='tab:red')
+        
+    val_data = get_clean_data(val_key)
+    if val_data:
+        ax.plot(val_data, label='Val', color='tab:red')
         has_data = True
-    if holdout_key and holdout_key in history and len(history[holdout_key]) > 0:
-        ax.plot(history[holdout_key], label='HO', color='tab:green', linestyle='--')
-        has_data = True
+        
+    if holdout_key:
+        ho_data = get_clean_data(holdout_key)
+        if ho_data:
+            ax.plot(ho_data, label='HO', color='tab:green', linestyle='--')
+            has_data = True
         
     if has_data:
         ax.set_title(title)

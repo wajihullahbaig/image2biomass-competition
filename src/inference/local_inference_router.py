@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260125_094744'
+MODEL_DIR = './logs/unified_holdout_20260125_184924'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -94,7 +94,7 @@ class BiomassUnifiedModel(nn.Module):
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(64),  
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(64, num_aux)
@@ -103,7 +103,7 @@ class BiomassUnifiedModel(nn.Module):
         # 3. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
-            nn.LayerNorm(32),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(32),  
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(32, num_species)
@@ -115,13 +115,13 @@ class BiomassUnifiedModel(nn.Module):
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
-            nn.LayerNorm(FUSION_DIM),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(FUSION_DIM),  
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(FUSION_DIM, 128),
-            nn.LayerNorm(128),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(128),  
             nn.ReLU(),
-            nn.Linear(128, 5),  # [Green, Dead, Clover, GDM, Total] - NO PHYSICS GATE
+            nn.Linear(128, 5),  
         )
 
         self.log_clamp = torch.log1p(torch.tensor(clamp_value))

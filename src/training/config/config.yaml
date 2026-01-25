@@ -118,12 +118,12 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 10 # Reduced to balance species better per fold
+  target_min_samples: 20 # Reduced to balance species better per fold
   method: "smart"
-  noise_scale: 0.025
+  noise_scale: 0.015
   seasonal_drift: true
-  day_shift_prob: 0.6
-  drift_strength: 0.15
+  day_shift_prob: 0.7
+  drift_strength: 0.2
 
 split:
   holdout_pct: 0.1

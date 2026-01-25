@@ -121,45 +121,51 @@ class BiomassUnifiedModel(nn.Module):
         # Fusion
         combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         
-        # 5. Biomass Prediction (Green, Dead_Direct, Clover, GDM, Total)
+        # 5. Biomass Prediction (Green, Dead_Direct, Clover, GDM_Direct, Total_Direct)
         log_preds_raw = self.biomass_head(combined_feats)
         
         # Split and process raw outputs
         # Note: We use softplus + log1p for stability and to ensure positive values
-        p_green   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
-        p_dead_direct = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
-        p_clover  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
-        p_gdm     = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
-        p_total   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
+        p_green        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
+        p_dead_direct  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
+        p_clover       = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
+        p_gdm_direct   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
+        p_total_direct = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
         
         # --- Physics-based derivation Path ---
-        # Dead = Total - (Green + Clover)
-        # We perform this in linear space for accuracy, then back to log for blending
-        lin_total = torch.expm1(p_total)
+        # 1. GDM Derived = Green + Clover
         lin_green = torch.expm1(p_green)
         lin_clover = torch.expm1(p_clover)
+        lin_gdm_derived = torch.clamp(lin_green + lin_clover, min=1e-4)
+        p_gdm_derived = torch.log1p(lin_gdm_derived)
         
+        # Blend GDM: mostly direct but constrained by derivation
+        p_gdm = 0.7 * p_gdm_direct + 0.3 * p_gdm_derived
+        
+        # 2. Dead Derived = Total - (Green + Clover)
+        lin_total = torch.expm1(p_total_direct)
         lin_dead_derived = torch.clamp(lin_total - (lin_green + lin_clover), min=1e-4)
         p_dead_derived = torch.log1p(lin_dead_derived)
         
-        # --- Visibility-Aware Blending ---
-        # The dead_hsv score is index 8 of aux_out (based on train_unified_holdout.py names)
-        # We use it as a visibility gate. If dead_hsv is high, we trust the direct visual prediction.
-        # If low, we trust the derived physics-based prediction.
+        # --- Visibility-Aware Blending for Dead ---
+        # The dead_hsv score is index 8 of aux_out (predicted visibility)
         if aux_out.shape[1] > 8:
-            vis_score = torch.sigmoid(aux_out[:, 8:9] * 5.0) # Sharp gate around 0.5 (scaled)
-            # Alternatively, since dead_hsv is already 0-1, we can just use it
-            # But let's use a learned multiplier or sigmoid for flexibility
+            # Predict visibility fraction. We use a sigmoid to create a smooth but decisive gate.
+            # If dead_hsv prediction is > 0.1, we start trusting the direct visual path more.
+            vis_score = torch.sigmoid((aux_out[:, 8:9] - 0.08) * 20.0) 
             p_dead = vis_score * p_dead_direct + (1 - vis_score) * p_dead_derived
         else:
             # Fallback if aux features are different
             p_dead = 0.5 * p_dead_direct + 0.5 * p_dead_derived
             
-        # Ensure GDM consistency (GDM = Green + Clover)
-        # We allow the model to predict it directly but could also blend here if needed
+        # 3. Final Total consistency
+        # Total = GDM + Dead
+        lin_gdm_final = torch.expm1(p_gdm)
+        lin_dead_final = torch.expm1(p_dead)
+        p_total_final = torch.log1p(torch.clamp(lin_gdm_final + lin_dead_final, min=1e-4))
         
         # Final output order for competition: [Green, Dead, Clover, GDM, Total]
-        biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total], dim=1)
+        biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total_final], dim=1)
         
         return biomass_out, aux_out, species_logits
 

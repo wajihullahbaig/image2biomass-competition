@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import sys
 from typing import Optional
 from sklearn.preprocessing import KBinsDiscretizer
 
@@ -9,7 +10,11 @@ from common import (
     assign_functional_groups,
     apply_smart_upsample_with_features,
     get_season,
+    get_hsv_biomass_scores,
 )
+from PIL import Image
+from tqdm import tqdm
+import os
 from configs import get_key1_specie_pair
 
 
@@ -37,6 +42,45 @@ class BiomassFeatureTransform:
     def _log(self, msg: str):
         if self.logger:
             self.logger.info(msg)
+
+    def _hsv_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute deterministic HSV-based biomass scores for all images."""
+        self._log("[Transform] Computing HSV biomass scores (this may take a minute)...")
+        scores_list = []
+        
+        # Use tqdm if available for progress tracking
+        indices = df.index
+        for idx in tqdm(indices, desc="HSV Features") if 'tqdm' in sys.modules else indices:
+            row = df.loc[idx]
+            img_path = row['image_path']
+            try:
+                if not os.path.exists(img_path):
+                    # Fallback for relative paths if needed
+                    # Try to find it relative to current dir or data dir
+                    pass
+                
+                img = Image.open(img_path).convert('RGB')
+                img_np = np.array(img)
+                res = get_hsv_biomass_scores(img_np)
+                scores_list.append({
+                    'hsv_green_score': res['green_score'],
+                    'hsv_dry_green_score': res['dry_green_score'],
+                    'hsv_clover_score': res['clover_score'],
+                    'hsv_dead_score': res['dead_score'],
+                    'hsv_soil_score': res['soil_score']
+                })
+            except Exception as e:
+                self._log(f"  Warning: Failed to process image {img_path}: {e}")
+                scores_list.append({
+                    'hsv_green_score': 0.0,
+                    'hsv_dry_green_score': 0.0,
+                    'hsv_clover_score': 0.0,
+                    'hsv_dead_score': 0.0,
+                    'hsv_soil_score': 0.0
+                })
+        
+        scores_df = pd.DataFrame(scores_list, index=df.index)
+        return pd.concat([df, scores_df], axis=1)
 
     def _deterministic_features(self, df: pd.DataFrame) -> pd.DataFrame:
         # Species lower and vectors
@@ -86,6 +130,9 @@ class BiomassFeatureTransform:
         df['State_Sampling_Date'] = df.apply(lambda r: f"{r['State']}_{r['Sampling_Date']}", axis=1)
         df['Season_Sampling_Date'] = df.apply(lambda r: f"{r['Season']}_{r['Sampling_Date']}", axis=1)
         df['FunctionalGroup_Sampling_Date'] = df.apply(lambda r: f"{r['FunctionalGroup']}_{r['Sampling_Date']}", axis=1)
+
+        # HSV-based biomass scores (deterministic)
+        df = self._hsv_features(df)
 
         return df
 

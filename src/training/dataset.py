@@ -166,12 +166,23 @@ class TiledBiomassDataset(Dataset):
         
         # ===== AUGMENTATION LOGIC =====
         if not use_tiling or aug_type == 0:
-            # MODE 0: Original Image (No Tiling)
             final_image = image
             targets_scale = 1.0
             sample_id_suffix = ""
-            # Calculate biomass scores for the whole image
-            biomass_scores = self._get_biomass_scores(final_image, sample_id=row['sample_id'] + sample_id_suffix)
+            
+            # Use PRE-COMPUTED scores from dataframe if available (Priority 1)
+            # This reduces redundant compute and ensures consistency
+            if all(f'hsv_{k}_score' in row.index for k in ['green', 'dry_green', 'clover', 'dead', 'soil']):
+                biomass_scores = {
+                    'green_score': row['hsv_green_score'],
+                    'dry_green_score': row['hsv_dry_green_score'],
+                    'clover_score': row['hsv_clover_score'],
+                    'dead_score': row['hsv_dead_score'],
+                    'soil_score': row['hsv_soil_score']
+                }
+            else:
+                # Calculate biomass scores for the whole image (Fallback)
+                biomass_scores = self._get_biomass_scores(final_image, sample_id=row['sample_id'] + sample_id_suffix)
             
         elif aug_type == 1:
             # MODE 1: STITCH (Split → Transform → Reconstruct)

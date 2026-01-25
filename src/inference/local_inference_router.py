@@ -177,16 +177,40 @@ class BiomassUnifiedModel(nn.Module):
         # Biomass Prediction
         log_preds_raw = self.biomass_head(combined_feats)
         
-        # Direct predictions (no physics gating)
-        p_green  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
-        p_dead   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
-        p_clover = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
-        p_gdm    = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
-        p_total  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
+        # Split and process raw outputs
+        p_green        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
+        p_dead_direct  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
+        p_clover       = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
+        p_gdm_direct   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
+        p_total_direct = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
         
-        # Final output order for competition: [Green, Dead, Clover, GDM, Total]
-        biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total], dim=1)
+        # --- Physics-based derivation Path ---
+        lin_green = torch.expm1(p_green)
+        lin_clover = torch.expm1(p_clover)
         
+        # 1. GDM Derived = Green + Clover
+        lin_gdm_derived = torch.clamp(lin_green + lin_clover, min=1e-4)
+        p_gdm_derived = torch.log1p(lin_gdm_derived)
+        p_gdm = 0.7 * p_gdm_direct + 0.3 * p_gdm_derived
+        
+        # 2. Dead Derived = Total - (Green + Clover)
+        lin_total = torch.expm1(p_total_direct)
+        lin_dead_derived = torch.clamp(lin_total - (lin_green + lin_clover), min=1e-4)
+        p_dead_derived = torch.log1p(lin_dead_derived)
+        
+        # --- Visibility-Aware Blending for Dead ---
+        if aux_out.shape[1] > 8:
+            vis_score = torch.sigmoid((aux_out[:, 8:9] - 0.08) * 20.0) 
+            p_dead = vis_score * p_dead_direct + (1 - vis_score) * p_dead_derived
+        else:
+            p_dead = 0.5 * p_dead_direct + 0.5 * p_dead_derived
+            
+        # 3. Final Total consistency
+        lin_gdm_final = torch.expm1(p_gdm)
+        lin_dead_final = torch.expm1(p_dead)
+        p_total_final = torch.log1p(torch.clamp(lin_gdm_final + lin_dead_final, min=1e-4))
+        
+        biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total_final], dim=1)
         return biomass_out, aux_out, species_logits
 
 # ====================== TTA HELPERS ======================

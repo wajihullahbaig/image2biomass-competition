@@ -28,9 +28,9 @@ training:
   biomass_feat_weight: 50.0 # Dominant task
   aux_feat_weight: 0.15 # Increased - stronger regularization
   species_feat_weight: 0.1 # Increased - stronger species signal
-  consistency_weight: 5.0 # Increased - Dead loss diverging, need stronger physics constraint
-  hsv_constraint_weight: 10.0 # Strength of the visually-observable minimum dead constraint
-  dead_hsv_min_k: 50.0 # Scaling: visible_dead_fraction * k = min_dead_grams
+  consistency_weight: 8.0 # Increased - Dead loss still diverging
+  hsv_constraint_weight: 15.0 # Strength of the visually-observable minimum dead constraint
+  dead_hsv_min_k: 17.5 # Scaling: visible_dead_fraction * k = min_dead_grams (based on EDA y=17.3x + 10.0)
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
   ema_decay: 0.9
@@ -39,8 +39,8 @@ training:
   huber_delta: 1.0 # Threshold for switching from quadratic to linear
 
 augmentation:
-  tile_prob: 0.05 # Re-enabled - provides 6x effective data
-  mixup_prob: 0.05 # Re-enabled - gentle regularization
+  tile_prob: 0.00 # Re-enabled - provides 6x effective data
+  mixup_prob: 0.00 # Re-enabled - gentle regularization
   mixup_alpha: 0.40
 
 features:

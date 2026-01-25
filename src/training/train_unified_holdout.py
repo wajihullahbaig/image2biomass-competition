@@ -67,51 +67,26 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             # Model now returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
             biomass_out, aux_out, species_logits = model(images)
 
-            # Ground Truth (targets_g is now [Green, Dead, Clover, GDM, Total] from dataset)
-            targ_green_lin = targets_g[:, 0:1]
-            targ_dead_lin  = targets_g[:, 1:2]
-            targ_clover_lin = targets_g[:, 2:3]
-            targ_gdm_lin   = targets_g[:, 3:4]
-            targ_total_lin = targets_g[:, 4:5]
+            # Targets are [Green, Dead, Clover, GDM, Total] in linear grams from dataset
+            # Convert ALL to log space at once for efficiency
+            targets_log = torch.log1p(targets_g)
             
-            targ_green_log = torch.log1p(targ_green_lin)
-            targ_dead_log  = torch.log1p(targ_dead_lin)
-            targ_clover_log = torch.log1p(targ_clover_lin)
-            targ_gdm_log   = torch.log1p(targ_gdm_lin)
-            targ_total_log = torch.log1p(targ_total_lin)
-
-            # --- Regression Loss (Log Space) ---
+            # Direct prediction/target pairs (Log Space)
             reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
             
-            # Direct prediction/target pairs for [Green, Dead, Clover, GDM, Total]
-            p_green, t_green = biomass_out[:, 0:1], targ_green_log
-            p_dead,  t_dead  = biomass_out[:, 1:2], targ_dead_log
-            p_clover, t_clover = biomass_out[:, 2:3], targ_clover_log
-            p_gdm,   t_gdm   = biomass_out[:, 3:4], targ_gdm_log
-            p_total, t_total = biomass_out[:, 4:5], targ_total_log
+            p_bio = biomass_out
+            t_bio = targets_log
             
             if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
-                eps = 1e-9
-                p_green = (p_green - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + eps)
-                t_green = (t_green - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + eps)
-                p_dead  = (p_dead  - bio_mean[:, 1:2]) / (bio_std[:, 1:2] + eps)
-                t_dead  = (t_dead  - bio_mean[:, 1:2]) / (bio_std[:, 1:2] + eps)
-                p_clover= (p_clover- bio_mean[:, 2:3]) / (bio_std[:, 2:3] + eps)
-                t_clover= (t_clover- bio_mean[:, 2:3]) / (bio_std[:, 2:3] + eps)
-                p_gdm   = (p_gdm   - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + eps)
-                t_gdm   = (t_gdm   - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + eps)
-                p_total = (p_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
-                t_total = (t_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
+                p_bio = (p_bio - bio_mean) / (bio_std + 1e-9)
+                t_bio = (t_bio - bio_mean) / (bio_std + 1e-9)
 
-            l_green  = reg(p_green, t_green)
-            # Use Huber loss for Dead if enabled (robust to label noise)
-            if cfg.training.use_huber_loss_for_dead:
-                l_dead = nn.HuberLoss(delta=cfg.training.huber_delta)(p_dead, t_dead)
-            else:
-                l_dead = reg(p_dead, t_dead)
-            l_clover = reg(p_clover, t_clover)
-            l_gdm    = reg(p_gdm,   t_gdm)
-            l_total  = reg(p_total, t_total)
+            # Individual component losses from the standardized/processed tensors
+            l_green  = reg(p_bio[:, 0:1], t_bio[:, 0:1])
+            l_dead   = nn.HuberLoss(delta=cfg.training.huber_delta)(p_bio[:, 1:2], t_bio[:, 1:2]) if cfg.training.use_huber_loss_for_dead else reg(p_bio[:, 1:2], t_bio[:, 1:2])
+            l_clover = reg(p_bio[:, 2:3], t_bio[:, 2:3])
+            l_gdm    = reg(p_bio[:, 3:4], t_bio[:, 3:4])
+            l_total  = reg(p_bio[:, 4:5], t_bio[:, 4:5])
             
             if cfg.loss.use_weighted_regression_loss and official_weights_t is not None:
                 l_green  = l_green  * official_weights_t[0]
@@ -142,8 +117,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             # dead_hsv is at index 8 of aux_feats (visible fraction 0.0-1.0)
             t_dead_hsv = aux_feats[:, 8:9]
             
-            # min_dead_g = visible_fraction * k (k=50 as found in EDA)
-            k_scaling = getattr(cfg.training, 'dead_hsv_min_k', 50.0)
+            # min_dead_g = visible_fraction * k (k=17.5 as found in EDA y=17.3x + 10.0)
+            k_scaling = getattr(cfg.training, 'dead_hsv_min_k', 17.5)
             min_dead_lin = t_dead_hsv * k_scaling
             
             # Convert the requirement to log-space so it matches the magnitude of other losses
@@ -184,7 +159,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         with torch.no_grad():
             # biomass_out is now [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
             preds_5_log = biomass_out
-            targs_5_log = torch.cat([targ_green_log, targ_dead_log, targ_clover_log, targ_gdm_log, targ_total_log], dim=1)
+            targs_5_log = targets_log
             
             all_preds_log.append(preds_5_log.cpu().numpy())
             all_targets_full.append(targs_5_log.cpu().numpy())
@@ -196,7 +171,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_aux']  += loss_aux.item() * B
         metrics['train_sp']   += loss_sp.item() * B
         metrics['train_cons'] += l_consistency_bio.item() * B
-        metrics['train_hsv_penalty'] += l_hsv_constraint.item() * B
+        metrics['train_loss_hsv'] += l_hsv_constraint.item() * B
         
         # Individual losses for tracking
         metrics['train_loss_green']  += l_green.item() * B
@@ -205,19 +180,10 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_loss_gdm']    += l_gdm.item() * B
         metrics['train_loss_total']  += l_total.item() * B
         
-        # Flexible auxiliary feature loss tracking
-        aux_feature_names = ['ndvi', 'height_log', 'interaction_mul', 'interaction_add', 'species_count',
-                           'green_hsv', 'dry_green_hsv', 'clover_hsv', 'dead_hsv', 'soil_hsv']
-        for i in range(min(aux_out.shape[1], len(aux_feature_names))):
-            feature_name = aux_feature_names[i]
-            loss_key = f'train_loss_{feature_name}'
-            if loss_key not in metrics:
-                metrics[loss_key] = 0.0
-            metrics[loss_key] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
-        
-        # Legacy HSV tracking (last feature, which should be green_hsv now)
-        if aux_out.shape[1] > 0:
-            metrics['train_loss_hsv'] = metrics.get('train_loss_green_hsv', 0.0)
+        # Flexible auxiliary feature loss tracking (flattened)
+        aux_names = ['ndvi', 'height', 'i_mul', 'i_add', 'sp_count', 'g_hsv', 'dg_hsv', 'c_hsv', 'd_hsv', 's_hsv']
+        for i in range(min(aux_out.shape[1], len(aux_names))):
+            metrics[f"train_l_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
 
         pbar.set_postfix({'L': total_loss.item()})
 
@@ -274,51 +240,25 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
             # Model now returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
             biomass_out, aux_out, species_logits = model(images)
 
-        # Ground Truth (targets_g is now [Green, Dead, Clover, GDM, Total] from dataset)
-        targ_green_lin = targets_g[:, 0:1]
-        targ_dead_lin  = targets_g[:, 1:2]
-        targ_clover_lin = targets_g[:, 2:3]
-        targ_gdm_lin   = targets_g[:, 3:4]
-        targ_total_lin = targets_g[:, 4:5]
+        # Targets are [Green, Dead, Clover, GDM, Total] in linear grams from dataset
+        targets_log = torch.log1p(targets_g)
         
-        targ_green_log = torch.log1p(targ_green_lin)
-        targ_dead_log  = torch.log1p(targ_dead_lin)
-        targ_clover_log = torch.log1p(targ_clover_lin)
-        targ_gdm_log   = torch.log1p(targ_gdm_lin)
-        targ_total_log = torch.log1p(targ_total_lin)
-
-        # --- Regression Loss (Log Space) ---
+        # Direct prediction/target pairs (Log Space)
         reg = torch.nn.functional.smooth_l1_loss if cfg.loss.reg_loss_type == 'smoothl1' else torch.nn.functional.mse_loss
         
-        # Direct prediction/target pairs for [Green, Dead, Clover, GDM, Total]
-        p_green, t_green = biomass_out[:, 0:1], targ_green_log
-        p_dead,  t_dead  = biomass_out[:, 1:2], targ_dead_log
-        p_clover, t_clover = biomass_out[:, 2:3], targ_clover_log
-        p_gdm,   t_gdm   = biomass_out[:, 3:4], targ_gdm_log
-        p_total, t_total = biomass_out[:, 4:5], targ_total_log
+        p_bio = biomass_out
+        t_bio = targets_log
         
         if cfg.loss.use_standardized_loss and bio_mean is not None and bio_std is not None:
-            eps = 1e-9
-            p_green = (p_green - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + eps)
-            t_green = (t_green - bio_mean[:, 0:1]) / (bio_std[:, 0:1] + eps)
-            p_dead  = (p_dead  - bio_mean[:, 1:2]) / (bio_std[:, 1:2] + eps)
-            t_dead  = (t_dead  - bio_mean[:, 1:2]) / (bio_std[:, 1:2] + eps)
-            p_clover= (p_clover- bio_mean[:, 2:3]) / (bio_std[:, 2:3] + eps)
-            t_clover= (t_clover- bio_mean[:, 2:3]) / (bio_std[:, 2:3] + eps)
-            p_gdm   = (p_gdm   - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + eps)
-            t_gdm   = (t_gdm   - bio_mean[:, 3:4]) / (bio_std[:, 3:4] + eps)
-            p_total = (p_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
-            t_total = (t_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
+            p_bio = (p_bio - bio_mean) / (bio_std + 1e-9)
+            t_bio = (t_bio - bio_mean) / (bio_std + 1e-9)
 
-        l_green  = reg(p_green, t_green)
-        # Use Huber loss for Dead if enabled (robust to label noise)
-        if cfg.training.use_huber_loss_for_dead:
-            l_dead = nn.HuberLoss(delta=cfg.training.huber_delta)(p_dead, t_dead)
-        else:
-            l_dead = reg(p_dead, t_dead)
-        l_clover = reg(p_clover, t_clover)
-        l_gdm    = reg(p_gdm,   t_gdm)
-        l_total  = reg(p_total, t_total)
+        # Individual component losses
+        l_green  = reg(p_bio[:, 0:1], t_bio[:, 0:1])
+        l_dead   = nn.HuberLoss(delta=cfg.training.huber_delta)(p_bio[:, 1:2], t_bio[:, 1:2]) if cfg.training.use_huber_loss_for_dead else reg(p_bio[:, 1:2], t_bio[:, 1:2])
+        l_clover = reg(p_bio[:, 2:3], t_bio[:, 2:3])
+        l_gdm    = reg(p_bio[:, 3:4], t_bio[:, 3:4])
+        l_total  = reg(p_bio[:, 4:5], t_bio[:, 4:5])
         
         if cfg.loss.use_weighted_regression_loss and official_weights_t is not None:
             l_green  = l_green  * official_weights_t[0]
@@ -344,7 +284,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         
         # Dead HSV Constraint (Log Space)
         t_dead_hsv = aux_feats[:, 8:9]
-        k_scaling = getattr(cfg.training, 'dead_hsv_min_k', 50.0)
+        k_scaling = getattr(cfg.training, 'dead_hsv_min_k', 17.5)
         min_dead_lin = t_dead_hsv * k_scaling
         p_dead_log = biomass_out[:, 1:2]
         min_dead_log = torch.log1p(min_dead_lin)
@@ -374,7 +314,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
         metrics[f'{prefix}_cons'] += l_consistency_bio.item() * B
-        metrics[f'{prefix}_hsv_penalty'] += l_hsv_constraint.item() * B
+        metrics[f'{prefix}_loss_hsv'] += l_hsv_constraint.item() * B
         
         # Individual losses for tracking
         metrics[f'{prefix}_loss_green']  += l_green.item() * B
@@ -384,23 +324,14 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         metrics[f'{prefix}_loss_total']  += l_total.item() * B
 
         # Flexible auxiliary feature loss tracking
-        aux_feature_names = ['ndvi', 'height_log', 'interaction_mul', 'interaction_add', 'species_count',
-                           'green_hsv', 'dry_green_hsv', 'clover_hsv', 'dead_hsv', 'soil_hsv']
-        for i in range(min(aux_out.shape[1], len(aux_feature_names))):
-            feature_name = aux_feature_names[i]
-            loss_key = f'{prefix}_loss_{feature_name}'
-            if loss_key not in metrics:
-                metrics[loss_key] = 0.0
-            metrics[loss_key] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
-        
-        # Legacy HSV tracking (now points to green_hsv)
-        if aux_out.shape[1] > 0:
-            metrics[f'{prefix}_loss_hsv'] = metrics.get(f'{prefix}_loss_green_hsv', 0.0)
+        aux_names = ['ndvi', 'height', 'i_mul', 'i_add', 'sp_count', 'g_hsv', 'dg_hsv', 'c_hsv', 'd_hsv', 's_hsv']
+        for i in range(min(aux_out.shape[1], len(aux_names))):
+            metrics[f"{prefix}_l_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
 
         # Accumulate for R2 calculation
         with torch.no_grad():
             preds_5_log = biomass_out  # Now directly predicting all 5
-            targs_5_log = torch.cat([targ_green_log, targ_dead_log, targ_clover_log, targ_gdm_log, targ_total_log], dim=1)
+            targs_5_log = targets_log
             all_preds_log.append(preds_5_log.cpu().numpy())
             all_targets_full.append(targs_5_log.cpu().numpy())
 
@@ -613,7 +544,7 @@ def main():
             val_df,
             transform=val_transform,
             mode='validation',
-            tile_prob=0.15,  # Increased for better estimates
+            tile_prob=0.0,
             target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
 
@@ -621,7 +552,7 @@ def main():
             hold_df,
             transform=val_transform,
             mode='validation',
-            tile_prob=0.15,  # Increased for better estimates
+            tile_prob=0.0,
             target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
 
@@ -813,7 +744,7 @@ def main():
             better_score = current_score > best_fold_score
             
             # Save when EITHER Val or Holdout R² improves
-            save_model = better_r2_val or better_r2_holdout
+            save_model = better_r2_val and better_r2_holdout
             
             if save_model:
                 # log what we have compared to what we had previously

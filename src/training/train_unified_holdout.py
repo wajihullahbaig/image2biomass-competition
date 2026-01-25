@@ -585,7 +585,7 @@ def main():
             val_df,
             transform=val_transform,
             mode='validation',
-            tile_prob=0.0,
+            tile_prob=0.05,
             target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
 
@@ -593,7 +593,7 @@ def main():
             hold_df,
             transform=val_transform,
             mode='validation',
-            tile_prob=0.0,
+            tile_prob=0.05,
             target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
 
@@ -612,8 +612,7 @@ def main():
         # With tile_prob=0.8, effective training size is ~5x larger
         effective_size = n_upsampled * (1 + 5 * cfg.augmentation.tile_prob)
         
-        # Lowered threshold: with tile augmentation, 229 samples → ~1100 effective samples
-        freeze_threshold = 150  # Much lower than 400, accounting for augmentation
+        freeze_threshold = cfg.hyperparameters.backbone_freeze_threshold
         
         if n_upsampled < freeze_threshold:
             logger.info(f"PROTECTION: Keeping backbone FROZEN for Fold {fold+1} (n_upsampled={n_upsampled} < {freeze_threshold})")

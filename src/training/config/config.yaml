@@ -18,7 +18,7 @@ hyperparameters:
   backbone_freeze_threshold: 150
   max_grad_norm: 1.0
   backbone_lr_factor: 0.05 # Not used when frozen, but kept for consistency
-  random_seed: 42 # Change this for multi-seed ensemble (try 42, 123, 456)
+  random_seed: 313312 # Change this for multi-seed ensemble (try 42, 123, 456)
 
 training:
   freeze_backbone: true # FROZEN - unfreezing made things worse

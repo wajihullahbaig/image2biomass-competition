@@ -117,9 +117,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             l_consistency_gdm = reg(raw_gdm, p_gdm_sum_log)
             l_consistency_tot = reg(raw_total, p_total_sum_log)
             
-            # --- Dead HSV Constraint (Strategy 2) ---
-            # dead_hsv is at index 8 of aux_feats (visible fraction 0.0-1.0)
-            t_dead_hsv = aux_feats[:, 8:9]
+            # dead_hsv is at index 3 of t_hsv
+            t_dead_hsv = t_hsv[:, 3:4]
             
             # min_dead_g = visible_fraction * k (k=17.5 as found in EDA y=17.3x + 10.0)
             k_scaling = getattr(cfg.training, 'dead_hsv_min_k', 17.5)
@@ -309,7 +308,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         l_consistency_tot = reg(raw_total, p_total_sum_log)
         
         # Dead HSV Constraint (Log Space)
-        t_dead_hsv = aux_feats[:, 8:9]
+        t_dead_hsv = t_hsv[:, 3:4]
         k_scaling = getattr(cfg.training, 'dead_hsv_min_k', 17.5)
         min_dead_lin = t_dead_hsv * k_scaling
         p_dead_log = biomass_out[:, 1:2]
@@ -340,7 +339,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         else:
             loss_sp = criterion_species(species_logits, species_vec) * cfg.training.species_feat_weight
 
-        total_loss = loss_bio + loss_aux + loss_sp + l_consistency_bio
+        total_loss = loss_bio + loss_aux + loss_hsv + loss_sp + l_consistency_bio
 
         B = images.size(0)
         metrics[f'{prefix}_loss'] += total_loss.item() * B

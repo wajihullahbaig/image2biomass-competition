@@ -585,7 +585,7 @@ def main():
             val_df,
             transform=val_transform,
             mode='validation',
-            tile_prob=0.05,
+            tile_prob=0.15,  # Increased for better estimates
             target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
 
@@ -593,7 +593,7 @@ def main():
             hold_df,
             transform=val_transform,
             mode='validation',
-            tile_prob=0.05,
+            tile_prob=0.15,  # Increased for better estimates
             target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
         )
 

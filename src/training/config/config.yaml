@@ -10,9 +10,9 @@ hyperparameters:
   batch_size: 32
   learning_rate: 0.0007 # Restored - frozen backbone is stable
   n_folds: 3
-  epochs: 60
+  epochs: 30
   weight_decay: 0.10 # Restored - balanced regularization
-  early_stop_patience: 10 # Increased - allow more time to converge
+  early_stop_patience: 7 # Reduced - prevent overfitting (best epoch ~5-7)
   backbone: timm/vit_small_patch16_dinov3.lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 150
@@ -136,7 +136,7 @@ split:
   ensure_combo_train_coverage: true # Disabled for simplicity
   combo_col: "Season_State_Species"
   min_train_per_combo_key: 3
-  group_stratification_col: "State_Season"
+  group_stratification_col: "Season" # Reverted - showed better performance
   group_col: "SessionID"
 
 seasons:

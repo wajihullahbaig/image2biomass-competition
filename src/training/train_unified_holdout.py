@@ -137,7 +137,24 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             
             l_consistency_gdm = reg(raw_gdm, p_gdm_sum_log)
             l_consistency_tot = reg(raw_total, p_total_sum_log)
-            l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cons_weight
+            
+            # --- Dead HSV Constraint (Strategy 2) ---
+            # dead_hsv is at index 8 of aux_feats (visible fraction 0.0-1.0)
+            t_dead_hsv = aux_feats[:, 8:9]
+            
+            # min_dead_g = visible_fraction * k (k=50 as found in EDA)
+            k_scaling = getattr(cfg.training, 'dead_hsv_min_k', 50.0)
+            min_dead_lin = t_dead_hsv * k_scaling
+            
+            # Convert the requirement to log-space so it matches the magnitude of other losses
+            # We compare it against the RAW (unstandardized) log prediction: biomass_out[:, 1:2]
+            p_dead_log = biomass_out[:, 1:2]
+            min_dead_log = torch.log1p(min_dead_lin)
+            
+            # Penalty for predicting less than visible minimum (in log space)
+            l_hsv_constraint = torch.mean(torch.nn.functional.relu(min_dead_log - p_dead_log))
+            
+            l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cons_weight + l_hsv_constraint * getattr(cfg.training, 'hsv_constraint_weight', 10.0)
 
             # --- Auxiliary Loss ---
             p_aux, t_aux = aux_out, aux_feats
@@ -179,6 +196,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_aux']  += loss_aux.item() * B
         metrics['train_sp']   += loss_sp.item() * B
         metrics['train_cons'] += l_consistency_bio.item() * B
+        metrics['train_hsv_penalty'] += l_hsv_constraint.item() * B
         
         # Individual losses for tracking
         metrics['train_loss_green']  += l_green.item() * B
@@ -323,7 +341,16 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         
         l_consistency_gdm = reg(raw_gdm, p_gdm_sum_log)
         l_consistency_tot = reg(raw_total, p_total_sum_log)
-        l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cons_weight
+        
+        # Dead HSV Constraint (Log Space)
+        t_dead_hsv = aux_feats[:, 8:9]
+        k_scaling = getattr(cfg.training, 'dead_hsv_min_k', 50.0)
+        min_dead_lin = t_dead_hsv * k_scaling
+        p_dead_log = biomass_out[:, 1:2]
+        min_dead_log = torch.log1p(min_dead_lin)
+        l_hsv_constraint = torch.mean(torch.nn.functional.relu(min_dead_log - p_dead_log))
+        
+        l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cons_weight + l_hsv_constraint * getattr(cfg.training, 'hsv_constraint_weight', 10.0)
 
         # --- Auxiliary Loss ---
         p_aux, t_aux = aux_out, aux_feats
@@ -347,6 +374,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
         metrics[f'{prefix}_cons'] += l_consistency_bio.item() * B
+        metrics[f'{prefix}_hsv_penalty'] += l_hsv_constraint.item() * B
         
         # Individual losses for tracking
         metrics[f'{prefix}_loss_green']  += l_green.item() * B

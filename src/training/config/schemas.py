@@ -25,8 +25,9 @@ class HSVBiomassConfig:
     """Configuration for HSV-based biomass detection"""
     enabled: bool = True
     green_vegetation: Optional[HSVMatterConfig] = None
+    dry_green_vegetation: Optional[HSVMatterConfig] = None
+    clover: Optional[HSVMatterConfig] = None
     dead_matter: Optional[HSVMatterConfig] = None
-    dry_clover: Optional[HSVMatterConfig] = None
     soil: Optional[HSVMatterConfig] = None
     intelligent_tiling: Optional[IntelligentTilingConfig] = None
 
@@ -62,6 +63,8 @@ class TrainingConfig:
     aux_feat_weight: float
     species_feat_weight: float
     consistency_weight: float = 2.0
+    hsv_constraint_weight: float = 5.0
+    dead_hsv_min_k: float = 50.0
     overfitting_penalty_alpha: float = 0.5
     # Exponential moving average decay for smoothing scheduler score (0..1)
     # Higher values -> smoother (less responsive). Default: 0.9

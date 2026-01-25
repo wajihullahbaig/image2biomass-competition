@@ -46,8 +46,9 @@ def load_config(yaml_path: str = None) -> Config:
         hsv_biomass_config = HSVBiomassConfig(
             enabled=hsv_data.get('enabled', True),
             green_vegetation=build_hsv_matter_config(hsv_data.get('green_vegetation', {})),
+            dry_green_vegetation=build_hsv_matter_config(hsv_data.get('dry_green_vegetation', {})),
+            clover=build_hsv_matter_config(hsv_data.get('clover', {})),
             dead_matter=build_hsv_matter_config(hsv_data.get('dead_matter', {})),
-            dry_clover=build_hsv_matter_config(hsv_data.get('dry_clover', {})),
             soil=build_hsv_matter_config(hsv_data.get('soil', {})),
             intelligent_tiling=intelligent_tiling
         )

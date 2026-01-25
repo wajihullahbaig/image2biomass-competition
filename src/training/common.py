@@ -1060,11 +1060,24 @@ def get_hsv_biomass_scores(image_numpy):
     green_score = cv2.countNonZero(green_mask) / total_pixels
     clover_score = cv2.countNonZero(clover_mask) / total_pixels
     
-    # 4. Dead grass/plants (Yellow-brown)
-    # Hue: 10-25, moderate saturation
-    dead_lower = np.array([10, 40, 40])
-    dead_upper = np.array([25, 200, 255])
-    dead_mask = cv2.inRange(hsv, dead_lower, dead_upper)
+    # 4. Dead grass/plants (Yellow-brown + Pale/White)
+    # Range 1: Classic yellow-brown senescent material (Hue 10-30)
+    dead_lower_1 = np.array([10, 40, 40])
+    dead_upper_1 = np.array([30, 200, 255])
+    dead_mask_1 = cv2.inRange(hsv, dead_lower_1, dead_upper_1)
+    
+    # Range 2: Pale/bleached dead material (Low saturation, high value)
+    dead_lower_2 = np.array([0, 0, 160])
+    dead_upper_2 = np.array([180, 40, 255])
+    dead_mask_2 = cv2.inRange(hsv, dead_lower_2, dead_upper_2)
+    
+    # Combine masks
+    dead_mask = cv2.bitwise_or(dead_mask_1, dead_mask_2)
+    
+    # Remove overlap with vegetation (prioritize live green/clover)
+    veg_live_mask = cv2.bitwise_or(green_mask, clover_mask)
+    dead_mask = cv2.bitwise_and(dead_mask, cv2.bitwise_not(veg_live_mask))
+    
     dead_score = cv2.countNonZero(dead_mask) / total_pixels
     
     # 5. Dirt/Soil (Brown to grey)

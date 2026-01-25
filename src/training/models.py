@@ -1,4 +1,4 @@
-# models.py - FIXED VERSION
+# models.py 
 import torch
 import torch.nn as nn
 import timm
@@ -41,7 +41,7 @@ class BiomassUnifiedModel(nn.Module):
         # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(64),  
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(64,self.num_aux)
@@ -50,7 +50,7 @@ class BiomassUnifiedModel(nn.Module):
         # 3. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
-            nn.LayerNorm(32),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(32),  
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(32, self.num_species)
@@ -62,11 +62,11 @@ class BiomassUnifiedModel(nn.Module):
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, self.fusion_dim),
-            nn.LayerNorm(self.fusion_dim),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(self.fusion_dim),  
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(self.fusion_dim, 128),
-            nn.LayerNorm(128),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(128),  
             nn.ReLU(),
             nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total] predicted directly
         )
@@ -121,15 +121,42 @@ class BiomassUnifiedModel(nn.Module):
         # Fusion
         combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
         
-        # Biomass Prediction (Green, Dead_Vision, Clover, GDM, Total, Gate)
+        # 5. Biomass Prediction (Green, Dead_Direct, Clover, GDM, Total)
         log_preds_raw = self.biomass_head(combined_feats)
         
-        # Split outputs
+        # Split and process raw outputs
+        # Note: We use softplus + log1p for stability and to ensure positive values
         p_green   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
-        p_dead    = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
-        p_clover   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
+        p_dead_direct = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
+        p_clover  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
         p_gdm     = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
         p_total   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
+        
+        # --- Physics-based derivation Path ---
+        # Dead = Total - (Green + Clover)
+        # We perform this in linear space for accuracy, then back to log for blending
+        lin_total = torch.expm1(p_total)
+        lin_green = torch.expm1(p_green)
+        lin_clover = torch.expm1(p_clover)
+        
+        lin_dead_derived = torch.clamp(lin_total - (lin_green + lin_clover), min=1e-4)
+        p_dead_derived = torch.log1p(lin_dead_derived)
+        
+        # --- Visibility-Aware Blending ---
+        # The dead_hsv score is index 8 of aux_out (based on train_unified_holdout.py names)
+        # We use it as a visibility gate. If dead_hsv is high, we trust the direct visual prediction.
+        # If low, we trust the derived physics-based prediction.
+        if aux_out.shape[1] > 8:
+            vis_score = torch.sigmoid(aux_out[:, 8:9] * 5.0) # Sharp gate around 0.5 (scaled)
+            # Alternatively, since dead_hsv is already 0-1, we can just use it
+            # But let's use a learned multiplier or sigmoid for flexibility
+            p_dead = vis_score * p_dead_direct + (1 - vis_score) * p_dead_derived
+        else:
+            # Fallback if aux features are different
+            p_dead = 0.5 * p_dead_direct + 0.5 * p_dead_derived
+            
+        # Ensure GDM consistency (GDM = Green + Clover)
+        # We allow the model to predict it directly but could also blend here if needed
         
         # Final output order for competition: [Green, Dead, Clover, GDM, Total]
         biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total], dim=1)

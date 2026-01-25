@@ -104,7 +104,11 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
                 t_total = (t_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
 
             l_green  = reg(p_green, t_green)
-            l_dead   = reg(p_dead,  t_dead)
+            # Use Huber loss for Dead if enabled (robust to label noise)
+            if cfg.training.use_huber_loss_for_dead:
+                l_dead = nn.HuberLoss(delta=cfg.training.huber_delta)(p_dead, t_dead)
+            else:
+                l_dead = reg(p_dead, t_dead)
             l_clover = reg(p_clover, t_clover)
             l_gdm    = reg(p_gdm,   t_gdm)
             l_total  = reg(p_total, t_total)
@@ -289,7 +293,11 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
             t_total = (t_total - bio_mean[:, 4:5]) / (bio_std[:, 4:5] + eps)
 
         l_green  = reg(p_green, t_green)
-        l_dead   = reg(p_dead,  t_dead)
+        # Use Huber loss for Dead if enabled (robust to label noise)
+        if cfg.training.use_huber_loss_for_dead:
+            l_dead = nn.HuberLoss(delta=cfg.training.huber_delta)(p_dead, t_dead)
+        else:
+            l_dead = reg(p_dead, t_dead)
         l_clover = reg(p_clover, t_clover)
         l_gdm    = reg(p_gdm,   t_gdm)
         l_total  = reg(p_total, t_total)
@@ -425,7 +433,7 @@ def ensure_fold_coverage(train_df, val_df, group_col='SessionID', logger=None):
 def main():
     session_dir = setup_logging(file_name_part="unified_holdout")
     logger = logging.getLogger("System Logger")
-    set_seed(311, logger)
+    set_seed(cfg.hyperparameters.random_seed, logger)
 
     logger.info("="*70)
     logger.info("UNIFIED TRAIN/VAL + RANDOM HOLDOUT")
@@ -626,7 +634,7 @@ def main():
                 # Keep patch embedding and early blocks frozen (general features)
                 if hasattr(model.backbone, 'blocks'):  # ViT architecture
                     total_blocks = len(model.backbone.blocks)
-                    unfreeze_last_n = 2  # Reduced from 4 to 2 for better stability
+                    unfreeze_last_n = 1  # Ultra-conservative: only last block
                     
                     # Freeze patch embedding and early blocks
                     if hasattr(model.backbone, 'patch_embed'):
@@ -710,7 +718,7 @@ def main():
         ema_decay = cfg.training.ema_decay
 
         for epoch in range(cfg.hyperparameters.epochs):
-            # --- Linear Warmup for first 5 epochs (gentler ramp) ---
+            # --- Linear Warmup for first 5 epochs ---
             warmup_epochs = 5
             if epoch < warmup_epochs:
                 # Calculate warmup factor (0.3 at ep 0, 1.0 at ep 5)
@@ -777,8 +785,8 @@ def main():
             better_r2_holdout = h_r2 > best_fold_h_r2
             better_score = current_score > best_fold_score
             
-            # Save when ALL three metrics improve
-            save_model = better_r2_val and better_r2_holdout and better_score
+            # Save when EITHER Val or Holdout R² improves
+            save_model = better_r2_val or better_r2_holdout
             
             if save_model:
                 # log what we have compared to what we had previously

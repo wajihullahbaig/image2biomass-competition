@@ -7,40 +7,44 @@ preprocessing:
   image_width: 256
 
 hyperparameters:
-  batch_size: 32 # Reduced from 64 - more stable gradients with unfrozen backbone
-  learning_rate: 0.0007 # Reduced - warmup ramp to 0.001 caused epoch 5 collapse
+  batch_size: 32
+  learning_rate: 0.0007 # Restored - frozen backbone is stable
   n_folds: 3
-  epochs: 60 # Increased - still improving at epoch 32
-  weight_decay: 0.10 # Increased - combat Dead biomass overfitting
-  early_stop_patience: 15 # Increased - allow more time to converge
+  epochs: 60
+  weight_decay: 0.10 # Restored - balanced regularization
+  early_stop_patience: 10 # Increased - allow more time to converge
   backbone: timm/vit_small_patch16_dinov3.lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 400
   max_grad_norm: 1.0
-  backbone_lr_factor: 0.05 # Reduced to 0.05 to ensure backbone changes very slowly
+  backbone_lr_factor: 0.05 # Not used when frozen, but kept for consistency
+  random_seed: 42 # Change this for multi-seed ensemble (try 42, 123, 456)
 
 training:
-  freeze_backbone: true # FROZEN - use DINOv3's general features to avoid species overfitting
+  freeze_backbone: true # FROZEN - unfreezing made things worse
   backbone_freeze_fraction: 0.8 # Only used if freeze_backbone=true
   use_tta: true
-  fusion_dim: 256
-  biomass_feat_weight: 50.0 # Massively increased - focus on visual biomass
-  aux_feat_weight: 0.05 # Further reduced - minimize interaction oscillations
-  species_feat_weight: 0.0 # DISABLED - causing oscillations, conflicts with frozen backbone
+  fusion_dim: 384 # Keep - showed improvement
+  biomass_feat_weight: 50.0 # Dominant task
+  aux_feat_weight: 0.15 # Increased - stronger regularization
+  species_feat_weight: 0.1 # Increased - stronger species signal
   consistency_weight: 5.0 # Increased - Dead loss diverging, need stronger physics constraint
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
   ema_decay: 0.9
+  # Use Huber loss for Dead biomass (robust to label noise)
+  use_huber_loss_for_dead: true
+  huber_delta: 1.0 # Threshold for switching from quadratic to linear
 
 augmentation:
-  tile_prob: 0.0 # Disabled - causing too much noise in holdout predictions
-  mixup_prob: 0.0
+  tile_prob: 0.05 # Re-enabled - provides 6x effective data
+  mixup_prob: 0.05 # Re-enabled - gentle regularization
   mixup_alpha: 0.40
 
 features:
   use_bin_features: false
   bin_encoding: "ordinal"
-  use_species_count_feature: true
+  use_species_count_feature: true # Re-enabled - noise might help as regularization
   biomass_composite_bins: 3
   # Enhanced HSV feature configuration
   hsv_biomass_scores:
@@ -71,7 +75,7 @@ features:
 
 loss:
   use_standardized_loss: true
-  use_weighted_regression_loss: true
+  use_weighted_regression_loss: false
   reg_loss_type: "smoothl1" # options: smoothl1, mse
 
 targets:
@@ -114,7 +118,7 @@ species_taxonomy:
 
 upsample:
   enabled: true
-  target_min_samples: 15 # Reduced from 25 to avoid overwhelming training with synthetic data
+  target_min_samples: 10 # Reduced to balance species better per fold
   method: "smart"
   noise_scale: 0.025
   seasonal_drift: true
@@ -132,7 +136,7 @@ split:
   ensure_combo_train_coverage: true # Disabled for simplicity
   combo_col: "Season_State_Species"
   min_train_per_combo_key: 3
-  group_stratification_col: "Season"
+  group_stratification_col: "State_Season"
   group_col: "SessionID"
 
 seasons:

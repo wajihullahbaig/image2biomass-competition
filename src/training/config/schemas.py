@@ -50,6 +50,7 @@ class HyperparametersConfig:
     backbone_freeze_threshold: int
     max_grad_norm: float
     backbone_lr_factor: float
+    random_seed: int = 42
 
 @dataclass
 class TrainingConfig:
@@ -65,6 +66,9 @@ class TrainingConfig:
     # Exponential moving average decay for smoothing scheduler score (0..1)
     # Higher values -> smoother (less responsive). Default: 0.9
     ema_decay: float = 0.9
+    # Use Huber loss for Dead biomass (robust to label noise)
+    use_huber_loss_for_dead: bool = True
+    huber_delta: float = 1.0
 
 @dataclass
 class AugmentationConfig:

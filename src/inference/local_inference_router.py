@@ -27,12 +27,12 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260124_075420'
+MODEL_DIR = './logs/unified_holdout_20260125_094744'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
 IMAGE_WIDTH = 256
-FUSION_DIM = 256
+FUSION_DIM = 384
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 16
@@ -200,8 +200,26 @@ def get_largest_rotated_crop(h, w, angle):
 def rotate_crop_resize(img, angle):
     """
     Handles both Single Image (C, H, W) and Batch (B, C, H, W).
+    For 90/270 degree rotations, just rotate without cropping.
+    For small angles, rotate, crop to remove black corners, and resize back.
     """
     h, w = img.shape[-2:]
+    
+    # For 90° and 270°, just rotate (dimensions swap)
+    if abs(angle) in [90, 270]:
+        img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR)
+        # Resize back to original dimensions (since rotation swaps H and W)
+        if img.ndim == 3:
+            img_resized = torch.nn.functional.interpolate(
+                img_rot.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False
+            ).squeeze(0)
+        else:
+            img_resized = torch.nn.functional.interpolate(
+                img_rot, size=(h, w), mode='bilinear', align_corners=False
+            )
+        return img_resized
+    
+    # For small angles, use crop method
     img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR)
     
     ch, cw = get_largest_rotated_crop(h, w, angle)
@@ -250,6 +268,8 @@ def apply_tta(model, image, batch_idx=0):
         ('vflip', lambda x: torch.flip(x, [2])),
         ('rot5', lambda x: rotate_crop_resize(x, 5)),
         ('rot-5', lambda x: rotate_crop_resize(x, -5)),
+        ('rot90', lambda x: rotate_crop_resize(x, 90)),
+        ('rot270', lambda x: rotate_crop_resize(x, 270)),
     ]
 
     for view_name, transform_fn in tta_views:

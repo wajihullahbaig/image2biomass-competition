@@ -13,8 +13,7 @@ def plot_training_history(history, fold, session_dir):
     fig, axes = plt.subplots(2, 4, figsize=(24, 10))
     axes = axes.flatten()
     
-    # Hide the last axes (we only have 7 plots now)
-    axes[7].set_visible(False)
+    # axes[7] will be used for HSV Task Loss
     
     def try_plot(ax_idx, key, label, color, style='-'):
         if key in history and len(history[key]) > 0:
@@ -96,6 +95,12 @@ def plot_training_history(history, fold, session_dir):
     try_plot(6, 'lr', 'Learning Rate', 'tab:purple')
     axes[6].set_title('Learning Rate')
     axes[6].set_yscale('log')
+
+    # 8. HSV Task Loss
+    try_plot(7, 'train_hsv', 'Train', 'tab:blue')
+    try_plot(7, 'val_hsv', 'Val', 'tab:red')
+    try_plot(7, 'holdout_hsv', 'Holdout', 'tab:green')
+    axes[7].set_title('HSV Task Loss')
 
 
     for ax in axes:
@@ -352,7 +357,8 @@ def get_formatted_loss_log(epoch, train_metrics, val_metrics, hol_metrics, curre
         ("Biomass",      fmt_num(train_metrics.get('train_bio')),  fmt_num(val_metrics.get('val_bio')),  fmt_num(hol_metrics.get('holdout_bio'))),
         ("Aux",          fmt_num(train_metrics.get('train_aux')),  fmt_num(val_metrics.get('val_aux')),  fmt_num(hol_metrics.get('holdout_aux'))),
         ("Species",      fmt_num(train_metrics.get('train_sp')),   fmt_num(val_metrics.get('val_sp')),   fmt_num(hol_metrics.get('holdout_sp'))),
-        ("HSV",          fmt_num(train_metrics.get('train_loss_hsv')), fmt_num(val_metrics.get('val_loss_hsv')), fmt_num(hol_metrics.get('holdout_loss_hsv'))),
+        ("HSV Task",     fmt_num(train_metrics.get('train_hsv')),   fmt_num(val_metrics.get('val_hsv')),   fmt_num(hol_metrics.get('holdout_hsv'))),
+        ("HSV Const",    fmt_num(train_metrics.get('train_loss_hsv_constraint')), fmt_num(val_metrics.get('val_loss_hsv_constraint')), fmt_num(hol_metrics.get('holdout_loss_hsv_constraint'))),
         ("R2",           fmt_num(train_metrics.get('train_r2')),   fmt_num(v_r2),                         fmt_num(h_r2)),
     ]
 

@@ -149,13 +149,13 @@ class SubtleSharpen:
     Applies subtle sharpening to grass images.
     Uses PIL's UnsharpMask filter with conservative parameters.
     """
-    def __init__(self, probability=0.5, radius=1, percent=50, threshold=3):
+    def __init__(self, probability=0.5, radius=1, percent=80, threshold=2):
         """
         Args:
             probability: Chance to apply sharpening (0.0 to 1.0)
             radius: Sharpening radius (1-2 is subtle for grass)
-            percent: Sharpening strength (50-100 is gentle)
-            threshold: Minimum brightness change to sharpen (higher = less aggressive)
+            percent: Sharpening strength (80-150 is now the standard range)
+            threshold: Minimum brightness change to sharpen (lower = more aggressive)
         """
         self.probability = probability
         self.radius = radius
@@ -179,7 +179,7 @@ def get_image_data_transforms():
     train_transform = transforms.Compose([
         # 1. Ensure Baseline Resolution
         transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
-        SubtleSharpen(probability=0.5, radius=1, percent=50, threshold=3),
+        SubtleSharpen(probability=0.6, radius=1, percent=100, threshold=2),
         # 2. Geometry (Manifold Alignment with TTA)
         transforms.RandomApply([
             RandomRotateCropResize(degrees=5),    

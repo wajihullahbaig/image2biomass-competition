@@ -212,10 +212,9 @@ class TiledBiomassDataset(Dataset):
             final_image = tiles[tile_idx]
             biomass_scores = tile_scores[tile_idx]
             
-            # TILE SHARPENING: Apply subtle sharpening to individual tiles
-            # This compensates for the softening effect of cropping and helps tiles
-            # look more like natural full-resolution images
-            tile_sharpener = SubtleSharpen(probability=1.0, radius=1, percent=60, threshold=2)
+            # TILE SHARPENING: Apply slightly more aggressive sharpening to individual tiles
+            # to recover details lost during the crop/resize process.
+            tile_sharpener = SubtleSharpen(probability=1.0, radius=1, percent=130, threshold=1)
             final_image = tile_sharpener(final_image)
             
             # INTELLIGENT TILING: Use HSV scores to weight targets appropriately

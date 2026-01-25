@@ -64,8 +64,12 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         optimizer.zero_grad()
 
         with torch.amp.autocast('cuda'):
-            # Model now returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
-            biomass_out, aux_out, species_logits = model(images)
+            # Model returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total], aux_out (tabular), hsv_out (visual), species_logits
+            biomass_out, aux_out, hsv_out, species_logits = model(images)
+
+            # Split aux_feats from dataset into tabular and hsv targets
+            t_aux = aux_feats[:, :5]
+            t_hsv = aux_feats[:, 5:]
 
             # Targets are [Green, Dead, Clover, GDM, Total] in linear grams from dataset
             # Convert ALL to log space at once for efficiency
@@ -131,18 +135,29 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             
             l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cons_weight + l_hsv_constraint * getattr(cfg.training, 'hsv_constraint_weight', 10.0)
 
-            # --- Auxiliary Loss ---
-            p_aux, t_aux = aux_out, aux_feats
+            # --- Auxiliary Loss (Tabular) ---
+            p_aux = aux_out
             if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
                 eps = 1e-9
-                p_aux = (p_aux - aux_mean) / (aux_std + eps)
-                t_aux = (t_aux - aux_mean) / (aux_std + eps)
+                # Tabular means/stds are stored in the first 5 elements
+                p_aux = (p_aux - aux_mean[:, :5]) / (aux_std[:, :5] + eps)
+                t_aux = (t_aux - aux_mean[:, :5]) / (aux_std[:, :5] + eps)
             loss_aux = nn.MSELoss()(p_aux, t_aux) * cfg.training.aux_feat_weight
+
+            # --- HSV Loss (Visual scores) ---
+            p_hsv = hsv_out
+            # HSV scores are usually already 0-1, so standardization may not be needed, 
+            # but if it is, they are in indices 5-9
+            if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
+                eps = 1e-9
+                p_hsv = (p_hsv - aux_mean[:, 5:]) / (aux_std[:, 5:] + eps)
+                t_hsv = (t_hsv - aux_mean[:, 5:]) / (aux_std[:, 5:] + eps)
+            loss_hsv = nn.MSELoss()(p_hsv, t_hsv) * cfg.training.hsv_feat_weight
 
             # --- Species Loss ---
             loss_sp = nn.BCEWithLogitsLoss()(species_logits, species_vec) * cfg.training.species_feat_weight
 
-            total_loss = loss_bio + loss_aux + loss_sp + l_consistency_bio
+            total_loss = loss_bio + loss_aux + loss_hsv + loss_sp + l_consistency_bio
 
         if torch.isnan(total_loss):
             if logger:
@@ -169,9 +184,10 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_loss'] += total_loss.item() * B
         metrics['train_bio']  += loss_bio.item() * B
         metrics['train_aux']  += loss_aux.item() * B
+        metrics['train_hsv']  += loss_hsv.item() * B
         metrics['train_sp']   += loss_sp.item() * B
         metrics['train_cons'] += l_consistency_bio.item() * B
-        metrics['train_loss_hsv'] += l_hsv_constraint.item() * B
+        metrics['train_loss_hsv_constraint'] += l_hsv_constraint.item() * B
         
         # Individual losses for tracking
         metrics['train_loss_green']  += l_green.item() * B
@@ -180,10 +196,15 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
         metrics['train_loss_gdm']    += l_gdm.item() * B
         metrics['train_loss_total']  += l_total.item() * B
         
-        # Flexible auxiliary feature loss tracking (flattened)
-        aux_names = ['ndvi', 'height', 'i_mul', 'i_add', 'sp_count', 'g_hsv', 'dg_hsv', 'c_hsv', 'd_hsv', 's_hsv']
+        # Tabular auxiliary feature loss tracking
+        aux_names = ['ndvi', 'height', 'i_mul', 'i_add', 'sp_count']
         for i in range(min(aux_out.shape[1], len(aux_names))):
-            metrics[f"train_loss_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
+            metrics[f"train_loss_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], t_aux[:, i]).item() * B
+            
+        # HSV feature loss tracking
+        hsv_names = ['g_hsv', 'dg_hsv', 'c_hsv', 'd_hsv', 's_hsv']
+        for i in range(min(hsv_out.shape[1], len(hsv_names))):
+            metrics[f"train_loss_{hsv_names[i]}"] += nn.functional.mse_loss(hsv_out[:, i], t_hsv[:, i]).item() * B
 
         pbar.set_postfix({'L': total_loss.item()})
 
@@ -221,24 +242,29 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         if use_tta:
             accum_bio_linear = 0
             accum_aux = 0
+            accum_hsv = 0
             accum_sp_probs = 0
             for view_name, transform_fn in tta_views:
                 img_aug = transform_fn(images)
-                if session_dir is not None:
-                    save_tta_images(img_aug, view_name, batch_idx, fold, epoch, session_dir)
-                # Model now returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
-                bio_out_tta, aux_out_tta, sp_logits_tta = model(img_aug)
+                bio_out_tta, aux_out_tta, hsv_out_tta, sp_logits_tta = model(img_aug)
                 accum_bio_linear += torch.expm1(bio_out_tta) # Sum linear predictions
                 accum_aux += aux_out_tta
+                accum_hsv += hsv_out_tta
                 accum_sp_probs += torch.sigmoid(sp_logits_tta)
             
             avg_bio_linear = accum_bio_linear / len(tta_views)
             biomass_out = torch.log1p(avg_bio_linear) # Convert back to log for loss
             aux_out = accum_aux / len(tta_views)
+            hsv_out = accum_hsv / len(tta_views)
             species_probs = accum_sp_probs / len(tta_views)
         else:
-            # Model now returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total]
-            biomass_out, aux_out, species_logits = model(images)
+            # Model returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total], aux_out, hsv_out, species_logits
+            biomass_out, aux_out, hsv_out, species_logits = model(images)
+            species_probs = torch.sigmoid(species_logits)
+
+        # Split aux_feats into tabular and hsv targets
+        t_aux = aux_feats[:, :5]
+        t_hsv = aux_feats[:, 5:]
 
         # Targets are [Green, Dead, Clover, GDM, Total] in linear grams from dataset
         targets_log = torch.log1p(targets_g)
@@ -292,13 +318,21 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         
         l_consistency_bio = (l_consistency_gdm + l_consistency_tot) * cons_weight + l_hsv_constraint * getattr(cfg.training, 'hsv_constraint_weight', 10.0)
 
-        # --- Auxiliary Loss ---
-        p_aux, t_aux = aux_out, aux_feats
+        # --- Auxiliary Loss (Tabular) ---
+        p_aux = aux_out
         if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
             eps = 1e-9
-            p_aux = (p_aux - aux_mean) / (aux_std + eps)
-            t_aux = (t_aux - aux_mean) / (aux_std + eps)
+            p_aux = (p_aux - aux_mean[:, :5]) / (aux_std[:, :5] + eps)
+            t_aux = (t_aux - aux_mean[:, :5]) / (aux_std[:, :5] + eps)
         loss_aux = criterion_reg(p_aux, t_aux) * cfg.training.aux_feat_weight
+
+        # --- HSV Loss (Visual scores) ---
+        p_hsv = hsv_out
+        if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
+            eps = 1e-9
+            p_hsv = (p_hsv - aux_mean[:, 5:]) / (aux_std[:, 5:] + eps)
+            t_hsv = (t_hsv - aux_mean[:, 5:]) / (aux_std[:, 5:] + eps)
+        loss_hsv = criterion_reg(p_hsv, t_hsv) * cfg.training.hsv_feat_weight
 
         # --- Species Loss ---
         if use_tta:
@@ -312,9 +346,10 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         metrics[f'{prefix}_loss'] += total_loss.item() * B
         metrics[f'{prefix}_bio'] += loss_bio.item() * B
         metrics[f'{prefix}_aux'] += loss_aux.item() * B
+        metrics[f'{prefix}_hsv'] += loss_hsv.item() * B
         metrics[f'{prefix}_sp']  += loss_sp.item() * B
         metrics[f'{prefix}_cons'] += l_consistency_bio.item() * B
-        metrics[f'{prefix}_loss_hsv'] += l_hsv_constraint.item() * B
+        metrics[f'{prefix}_loss_hsv_constraint'] += l_hsv_constraint.item() * B
         
         # Individual losses for tracking
         metrics[f'{prefix}_loss_green']  += l_green.item() * B
@@ -323,10 +358,15 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         metrics[f'{prefix}_loss_gdm']    += l_gdm.item() * B
         metrics[f'{prefix}_loss_total']  += l_total.item() * B
 
-        # Flexible auxiliary feature loss tracking
-        aux_names = ['ndvi', 'height', 'i_mul', 'i_add', 'sp_count', 'g_hsv', 'dg_hsv', 'c_hsv', 'd_hsv', 's_hsv']
+        # Tabular auxiliary feature loss tracking
+        aux_names = ['ndvi', 'height', 'i_mul', 'i_add', 'sp_count']
         for i in range(min(aux_out.shape[1], len(aux_names))):
-            metrics[f"{prefix}_loss_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], aux_feats[:, i]).item() * B
+            metrics[f"{prefix}_loss_{aux_names[i]}"] += nn.functional.mse_loss(aux_out[:, i], t_aux[:, i]).item() * B
+            
+        # HSV feature loss tracking
+        hsv_names = ['g_hsv', 'dg_hsv', 'c_hsv', 'd_hsv', 's_hsv']
+        for i in range(min(hsv_out.shape[1], len(hsv_names))):
+            metrics[f"{prefix}_loss_{hsv_names[i]}"] += nn.functional.mse_loss(hsv_out[:, i], t_hsv[:, i]).item() * B
 
         # Accumulate for R2 calculation
         with torch.no_grad():
@@ -561,11 +601,12 @@ def main():
         holdout_loader = DataLoader(holdout_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
         dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation', target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g'])
-        n_aux = dummy_ds[0]['aux_feats'].shape[0]
-        model = BiomassUnifiedModel(num_aux=n_aux, config=cfg).to(cfg.device)
+        # Tabular features (5) + HSV scores (5) = 10 total
+        model = BiomassUnifiedModel(num_aux=5, num_hsv=5, config=cfg).to(cfg.device)
+        n_aux_metadata = 10 # For metadata backward compatibility
 
         if fold == 0:
-            save_metadata(session_dir, cfg.species_taxonomy.core_species, cfg.targets.cols, n_aux)
+            save_metadata(session_dir, cfg.species_taxonomy.core_species, cfg.targets.cols, n_aux_metadata)
 
         n_upsampled = len(train_df)
         # With tile_prob=0.8, effective training size is ~5x larger

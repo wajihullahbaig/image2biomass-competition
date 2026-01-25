@@ -6,7 +6,8 @@ from config.loader import cfg
 
 class BiomassUnifiedModel(nn.Module):
     def __init__(self, 
-                 num_aux=3, 
+                 num_aux=5, 
+                 num_hsv=5,
                  config=None):
         super(BiomassUnifiedModel, self).__init__()
         
@@ -38,16 +39,25 @@ class BiomassUnifiedModel(nn.Module):
                 
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         
-        # 2. Auxiliary Head (NDVI, Height)
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
             nn.LayerNorm(64),  
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(64,self.num_aux)
+            nn.Linear(64, self.num_aux)
         )
         
-        # 3. Species Head (Fine-Grained: 14 classes)
+        # 3. HSV Head (Visual Biomass Scores)
+        self.num_hsv = num_hsv
+        self.hsv_head = nn.Sequential(
+            nn.Linear(self.backbone_dim, 64),
+            nn.LayerNorm(64),  
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, self.num_hsv)
+        )
+        
+        # 4. Species Head (Fine-Grained: 14 classes)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
             nn.LayerNorm(32),  
@@ -57,8 +67,8 @@ class BiomassUnifiedModel(nn.Module):
         )
         
         # 5. Biomass Head
-        # Inputs: Backbone + Aux + Specie
-        input_dim = self.backbone_dim + self.num_aux + self.num_species
+        # Inputs: Backbone + Aux + HSV + Species
+        input_dim = self.backbone_dim + self.num_aux + self.num_hsv + self.num_species
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, self.fusion_dim),
@@ -77,7 +87,7 @@ class BiomassUnifiedModel(nn.Module):
         
     def _init_biomass_head(self):
         # 1. Global Initialization for all heads
-        for m in [self.aux_head, self.species_head, self.biomass_head]:
+        for m in [self.aux_head, self.hsv_head, self.species_head, self.biomass_head]:
             for layer in m:
                 if isinstance(layer, nn.Linear):
                     # Use He initialization for ReLU activated layers
@@ -116,10 +126,11 @@ class BiomassUnifiedModel(nn.Module):
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
         
-        aux_out = self.aux_head(img_feats) 
+        aux_out = self.aux_head(img_feats)
+        hsv_out = self.hsv_head(img_feats)
         
         # Fusion
-        combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
+        combined_feats = torch.cat([img_feats, aux_out, hsv_out, species_probs], dim=1)
         
         # 5. Biomass Prediction (Green, Dead_Direct, Clover, GDM_Direct, Total_Direct)
         log_preds_raw = self.biomass_head(combined_feats)
@@ -148,14 +159,12 @@ class BiomassUnifiedModel(nn.Module):
         p_dead_derived = torch.log1p(lin_dead_derived)
         
         # --- Visibility-Aware Blending for Dead ---
-        # The dead_hsv score is index 8 of aux_out (predicted visibility)
-        if aux_out.shape[1] > 8:
+        # The dead_hsv score is index 3 of hsv_out (predicted visibility)
+        if hsv_out.shape[1] > 3:
             # Predict visibility fraction. We use a sigmoid to create a smooth but decisive gate.
-            # If dead_hsv prediction is > 0.1, we start trusting the direct visual path more.
-            vis_score = torch.sigmoid((aux_out[:, 8:9] - 0.08) * 20.0) 
+            vis_score = torch.sigmoid((hsv_out[:, 3:4] - 0.08) * 20.0) 
             p_dead = vis_score * p_dead_direct + (1 - vis_score) * p_dead_derived
         else:
-            # Fallback if aux features are different
             p_dead = 0.5 * p_dead_direct + 0.5 * p_dead_derived
             
         # 3. Final Total consistency
@@ -167,5 +176,5 @@ class BiomassUnifiedModel(nn.Module):
         # Final output order for competition: [Green, Dead, Clover, GDM, Total]
         biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total_final], dim=1)
         
-        return biomass_out, aux_out, species_logits
+        return biomass_out, aux_out, hsv_out, species_logits
 

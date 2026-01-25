@@ -60,6 +60,7 @@ class TrainingConfig:
     use_tta: bool
     fusion_dim: int
     biomass_feat_weight: float
+    hsv_feat_weight: float
     aux_feat_weight: float
     species_feat_weight: float
     consistency_weight: float = 2.0

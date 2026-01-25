@@ -18,7 +18,7 @@ hyperparameters:
   backbone_freeze_threshold: 150
   max_grad_norm: 1.0
   backbone_lr_factor: 0.05 # Not used when frozen, but kept for consistency
-  random_seed: 313312 # Change this for multi-seed ensemble (try 42, 123, 456)
+  random_seed: 1979 # Change this for multi-seed ensemble (try 42, 123, 456)
 
 training:
   freeze_backbone: true # FROZEN - unfreezing made things worse
@@ -26,7 +26,8 @@ training:
   use_tta: true
   fusion_dim: 384 # Keep - showed improvement
   biomass_feat_weight: 50.0 # Dominant task
-  aux_feat_weight: 0.15 # Increased - stronger regularization
+  hsv_feat_weight: 20.0 # Newly separated HSV task - heavily prioritized
+  aux_feat_weight: 0.05 # Reduced - tabular features only
   species_feat_weight: 0.1 # Increased - stronger species signal
   consistency_weight: 8.0 # Increased - Dead loss still diverging
   hsv_constraint_weight: 15.0 # Strength of the visually-observable minimum dead constraint

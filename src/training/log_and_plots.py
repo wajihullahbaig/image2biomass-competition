@@ -463,7 +463,8 @@ def log_fold_summary_tables(logger, fold, history, best_epoch):
         ('Biomass',      'train_bio',  'val_bio',  'holdout_bio'),
         ('Aux',          'train_aux',  'val_aux',  'holdout_aux'),
         ('Species',      'train_sp',   'val_sp',   'holdout_sp'),
-        ('HSV',          'train_loss_hsv', 'val_loss_hsv', 'holdout_loss_hsv'),
+        ('HSV Task',     'train_hsv',  'val_hsv',  'holdout_hsv'),
+        ('HSV Const',    'train_loss_hsv_constraint', 'val_loss_hsv_constraint', 'holdout_loss_hsv_constraint'),
         ('R2',           'train_r2',   'val_r2',   'holdout_r2'),
     ]
 

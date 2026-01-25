@@ -666,7 +666,7 @@ def main():
             {'params': head_params, 'lr': cfg.hyperparameters.learning_rate}
         ]
         optimizer = AdamW(param_groups, weight_decay=cfg.hyperparameters.weight_decay)
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.7, patience=3, threshold=5e-4, min_lr=1e-6, verbose=True)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.75, patience=4, threshold=5e-4, min_lr=1e-6, verbose=True)
 
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()
@@ -835,11 +835,22 @@ def main():
         except Exception:
             best_train_loss = None
 
+        try:
+            best_val_hsv = history.get('val_hsv', [None])[be]
+        except Exception:
+            best_val_hsv = None
+        try:
+            best_val_hsv_cons = history.get('val_loss_hsv_constraint', [None])[be]
+        except Exception:
+            best_val_hsv_cons = None
+
         per_fold_best.append({
             'best_score': best_fold_score,
             'best_val_loss': best_val_loss,
             'best_holdout_loss': best_holdout_loss,
             'best_train_loss': best_train_loss,
+            'best_val_hsv': best_val_hsv,
+            'best_val_hsv_cons': best_val_hsv_cons,
             'best_val_r2': best_fold_v_r2,
             'best_holdout_r2': best_fold_h_r2,
             'best_epoch': be

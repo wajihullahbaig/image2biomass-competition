@@ -9,8 +9,8 @@ preprocessing:
 hyperparameters:
   batch_size: 32
   learning_rate: 0.0007 # Restored - frozen backbone is stable
-  n_folds: 4
-  epochs: 30
+  n_folds: 3
+  epochs: 20
   weight_decay: 0.10 # Restored - balanced regularization
   early_stop_patience: 11 # Reduced - prevent overfitting (best epoch ~5-7)
   backbone: timm/vit_small_patch16_dinov3.lvd1689m
@@ -22,7 +22,7 @@ hyperparameters:
 
 training:
   freeze_backbone: true # FROZEN - unfreezing made things worse
-  backbone_freeze_fraction: 0.85 # Only used if freeze_backbone=true
+  backbone_freeze_fraction: 0.7 # Only used if freeze_backbone=true
   use_tta: true
   fusion_dim: 384 # Keep - showed improvement
   biomass_feat_weight: 50.0 # Dominant task
@@ -40,8 +40,8 @@ training:
   huber_delta: 1.0 # Threshold for switching from quadratic to linear
 
 augmentation:
-  tile_prob: 0.00 # Re-enabled - provides 6x effective data
-  mixup_prob: 0.00 # Re-enabled - gentle regularization
+  tile_prob: 0.05 # Re-enabled - provides 6x effective data
+  mixup_prob: 0.05 # Re-enabled - gentle regularization
   mixup_alpha: 0.40
 
 features:
@@ -139,8 +139,8 @@ split:
   ensure_combo_train_coverage: true # Disabled for simplicity
   combo_col: "Season_State_Species"
   min_train_per_combo_key: 3
-  group_stratification_col: "State" # Reverted - showed better performance
-  group_col: "Sampling_Date"
+  group_stratification_col: "Season" # Reverted - showed better performance
+  group_col: "SessionID"
 
 seasons:
   month_map:

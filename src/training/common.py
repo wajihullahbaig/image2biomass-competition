@@ -1208,7 +1208,7 @@ def calculate_scheduler_score(
     # Proportional Overfit Penalty
     # We allow a gap of up to 0.15 before penalizing excess.
     gap = train_r2 - val_r2
-    threshold = 0.12
+    threshold = 0.07
     if gap > threshold:
         penalty = (gap - threshold) * 0.3
         score_mix -= penalty

@@ -67,9 +67,10 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             # Model returns [Log_Green, Log_Dead, Log_Clover, Log_GDM, Log_Total], aux_out (tabular), hsv_out (visual), species_logits
             biomass_out, aux_out, hsv_out, species_logits = model(images)
 
-            # Split aux_feats from dataset into tabular and hsv targets
-            t_aux = aux_feats[:, :5]
-            t_hsv = aux_feats[:, 5:]
+            # Split aux_feats from dataset into tabular and hsv targets based on model architecture
+            n_tab = model.num_aux
+            t_aux = aux_feats[:, :n_tab]
+            t_hsv = aux_feats[:, n_tab:]
 
             # Targets are [Green, Dead, Clover, GDM, Total] in linear grams from dataset
             # Convert ALL to log space at once for efficiency
@@ -138,9 +139,9 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             p_aux = aux_out
             if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
                 eps = 1e-9
-                # Tabular means/stds are stored in the first 5 elements
-                p_aux = (p_aux - aux_mean[:, :5]) / (aux_std[:, :5] + eps)
-                t_aux = (t_aux - aux_mean[:, :5]) / (aux_std[:, :5] + eps)
+                # Tabular means/stds are stored in the first n_tab elements
+                p_aux = (p_aux - aux_mean[:, :n_tab]) / (aux_std[:, :n_tab] + eps)
+                t_aux = (t_aux - aux_mean[:, :n_tab]) / (aux_std[:, :n_tab] + eps)
             loss_aux = nn.MSELoss()(p_aux, t_aux) * cfg.training.aux_feat_weight
 
             # --- HSV Loss (Visual scores) ---
@@ -149,8 +150,8 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
             # but if it is, they are in indices 5-9
             if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
                 eps = 1e-9
-                p_hsv = (p_hsv - aux_mean[:, 5:]) / (aux_std[:, 5:] + eps)
-                t_hsv = (t_hsv - aux_mean[:, 5:]) / (aux_std[:, 5:] + eps)
+                p_hsv = (p_hsv - aux_mean[:, n_tab:]) / (aux_std[:, n_tab:] + eps)
+                t_hsv = (t_hsv - aux_mean[:, n_tab:]) / (aux_std[:, n_tab:] + eps)
             loss_hsv = nn.MSELoss()(p_hsv, t_hsv) * cfg.training.hsv_feat_weight
 
             # --- Species Loss ---
@@ -261,9 +262,10 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
             biomass_out, aux_out, hsv_out, species_logits = model(images)
             species_probs = torch.sigmoid(species_logits)
 
-        # Split aux_feats into tabular and hsv targets
-        t_aux = aux_feats[:, :5]
-        t_hsv = aux_feats[:, 5:]
+        # Split aux_feats into tabular and hsv targets based on model architecture
+        n_tab = model.num_aux
+        t_aux = aux_feats[:, :n_tab]
+        t_hsv = aux_feats[:, n_tab:]
 
         # Targets are [Green, Dead, Clover, GDM, Total] in linear grams from dataset
         targets_log = torch.log1p(targets_g)
@@ -321,16 +323,16 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         p_aux = aux_out
         if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
             eps = 1e-9
-            p_aux = (p_aux - aux_mean[:, :5]) / (aux_std[:, :5] + eps)
-            t_aux = (t_aux - aux_mean[:, :5]) / (aux_std[:, :5] + eps)
+            p_aux = (p_aux - aux_mean[:, :n_tab]) / (aux_std[:, :n_tab] + eps)
+            t_aux = (t_aux - aux_mean[:, :n_tab]) / (aux_std[:, :n_tab] + eps)
         loss_aux = criterion_reg(p_aux, t_aux) * cfg.training.aux_feat_weight
 
         # --- HSV Loss (Visual scores) ---
         p_hsv = hsv_out
         if cfg.loss.use_standardized_loss and aux_mean is not None and aux_std is not None:
             eps = 1e-9
-            p_hsv = (p_hsv - aux_mean[:, 5:]) / (aux_std[:, 5:] + eps)
-            t_hsv = (t_hsv - aux_mean[:, 5:]) / (aux_std[:, 5:] + eps)
+            p_hsv = (p_hsv - aux_mean[:, n_tab:]) / (aux_std[:, n_tab:] + eps)
+            t_hsv = (t_hsv - aux_mean[:, n_tab:]) / (aux_std[:, n_tab:] + eps)
         loss_hsv = criterion_reg(p_hsv, t_hsv) * cfg.training.hsv_feat_weight
 
         # --- Species Loss ---
@@ -600,9 +602,12 @@ def main():
         holdout_loader = DataLoader(holdout_ds, batch_size=cfg.hyperparameters.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
         dummy_ds = TiledBiomassDataset(train_df[:1], transform=train_transform, mode='validation', target_cols=['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g'])
-        # Tabular features (5) + HSV scores (5) = 10 total
-        model = BiomassUnifiedModel(num_aux=5, num_hsv=5, config=cfg).to(cfg.device)
-        n_aux_metadata = 10 # For metadata backward compatibility
+        n_total_aux = dummy_ds[0]['aux_feats'].shape[0]
+        n_hsv = 5 # Fixed architectural choice for visual biomass scores
+        n_tab = n_total_aux - n_hsv
+        model = BiomassUnifiedModel(num_aux=n_tab, num_hsv=n_hsv, config=cfg).to(cfg.device)
+        n_aux_metadata = n_total_aux 
+
 
         if fold == 0:
             save_metadata(session_dir, cfg.species_taxonomy.core_species, cfg.targets.cols, n_aux_metadata)

@@ -8,20 +8,33 @@ class BiomassUnifiedModel(nn.Module):
     def __init__(self, 
                  num_aux=5, 
                  num_hsv=5,
-                 config=None):
+                 config=None,
+                 backbone_name=None,
+                 num_species=None,
+                 fusion_dim=384,
+                 img_h=256,
+                 img_w=256,
+                 biomass_clamp=2500.0):
         super(BiomassUnifiedModel, self).__init__()
         
         # 1. Image Backbone
-        # Use config if provided, else use passed arguments or defaults
+        # Priority: explicit arguments -> config -> defaults
         if config:
-            self.backbone_name = config.hyperparameters.backbone
-            self.num_species = len(config.species_taxonomy.core_species)
-            self.fusion_dim = config.training.fusion_dim
-            self.img_h = config.preprocessing.image_height
-            self.img_w = config.preprocessing.image_width
+            self.backbone_name = backbone_name or config.hyperparameters.backbone
+            self.num_species = num_species or len(config.species_taxonomy.core_species)
+            self.fusion_dim = fusion_dim if fusion_dim != 384 else config.training.fusion_dim
+            self.img_h = img_h if img_h != 256 else config.preprocessing.image_height
+            self.img_w = img_w if img_w != 256 else config.preprocessing.image_width
             self.num_aux = num_aux
+            self.biomass_clamp_val = config.targets.biomass_clamp
         else:
-            raise ValueError("Config must be provided")
+            self.backbone_name = backbone_name or "resnet18"
+            self.num_species = num_species or 14
+            self.fusion_dim = fusion_dim
+            self.img_h = img_h
+            self.img_w = img_w
+            self.num_aux = num_aux
+            self.biomass_clamp_val = biomass_clamp
         
         self.backbone = timm.create_model(self.backbone_name, pretrained=True, num_classes=0, global_pool='')
         
@@ -57,7 +70,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(64, self.num_hsv)
         )
         
-        # 4. Species Head (Fine-Grained: 14 classes)
+        # 4. Species Head (Fine-Grained)
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
             nn.LayerNorm(32),  
@@ -81,7 +94,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total] predicted directly
         )
 
-        self.log_clamp = torch.log1p(torch.tensor(cfg.targets.biomass_clamp))
+        self.log_clamp = torch.log1p(torch.tensor(float(self.biomass_clamp_val)))
         
         self._init_biomass_head()
         

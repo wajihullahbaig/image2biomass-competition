@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_no_holdout_20260126_090542'
+MODEL_DIR = './logs/unified_no_holdout_20260126_153509'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -66,9 +66,153 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
     # Save as grid
     save_path = os.path.join(output_dir, f'batch_{batch_idx:03d}_{view_name}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
-# ADD SRC TO PATH FOR IMPORTS
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from training.models import BiomassUnifiedModel
+# ====================== MODEL ARCHITECTURE (HARDCODED) ======================
+class BiomassUnifiedModel(nn.Module):
+    def __init__(self, 
+                 num_aux=5, 
+                 num_hsv=5,
+                 backbone_name="resnet18",
+                 num_species=14,
+                 fusion_dim=384,
+                 img_h=256,
+                 img_w=256,
+                 biomass_clamp=2500.0):
+        super(BiomassUnifiedModel, self).__init__()
+        
+        self.backbone_name = backbone_name
+        self.num_species = num_species
+        self.fusion_dim = fusion_dim
+        self.img_h = img_h
+        self.img_w = img_w
+        self.num_aux = num_aux
+        self.biomass_clamp_val = biomass_clamp
+        
+        self.backbone = timm.create_model(self.backbone_name, pretrained=False, num_classes=0, global_pool='')
+        
+        with torch.no_grad():
+            dummy_input = torch.randn(1, 3, self.img_h, self.img_w)
+            feats = self.backbone(dummy_input)
+            
+            if len(feats.shape) == 4:  # CNN: [B, C, H, W]
+                self.backbone_dim = feats.shape[1]
+            elif len(feats.shape) == 3:  # ViT: [B, seq_len, embed_dim]
+                self.backbone_dim = feats.shape[2]
+            else:  # Already pooled: [B, features]
+                self.backbone_dim = feats.shape[1]
+                
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        
+        self.aux_head = nn.Sequential(
+            nn.Linear(self.backbone_dim, 64),
+            nn.LayerNorm(64),  
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, self.num_aux)
+        )
+        
+        self.num_hsv = num_hsv
+        self.hsv_head = nn.Sequential(
+            nn.Linear(self.backbone_dim, 64),
+            nn.LayerNorm(64),  
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, self.num_hsv)
+        )
+        
+        self.species_head = nn.Sequential(
+            nn.Linear(self.backbone_dim, 32),
+            nn.LayerNorm(32),  
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(32, self.num_species)
+        )
+        
+        input_dim = self.backbone_dim + self.num_aux + self.num_hsv + self.num_species
+                
+        self.biomass_head = nn.Sequential(
+            nn.Linear(input_dim, self.fusion_dim),
+            nn.LayerNorm(self.fusion_dim),  
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(self.fusion_dim, 128),
+            nn.LayerNorm(128),  
+            nn.ReLU(),
+            nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total]
+        )
+
+        self.log_clamp = torch.log1p(torch.tensor(float(self.biomass_clamp_val)))
+        self._init_biomass_head()
+        
+    def _init_biomass_head(self):
+        for m in [self.aux_head, self.hsv_head, self.species_head, self.biomass_head]:
+            for layer in m:
+                if isinstance(layer, nn.Linear):
+                    nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
+                    if layer.bias is not None:
+                        nn.init.constant_(layer.bias, 0)
+                elif isinstance(layer, (nn.BatchNorm1d, nn.LayerNorm)):
+                    nn.init.constant_(layer.weight, 1)
+                    nn.init.constant_(layer.bias, 0)
+
+        last_layer = self.biomass_head[-1]
+        nn.init.xavier_uniform_(last_layer.weight)
+        
+        with torch.no_grad():
+            last_layer.bias[0] = 3.0 # Green (~20g)
+            last_layer.bias[1] = 2.0 # Dead (~7g)
+            last_layer.bias[2] = 2.5 # Clover (~12g)
+            last_layer.bias[3] = 3.2 # GDM (~25g)
+            last_layer.bias[4] = 3.5 # Total (~30g)
+
+    def forward(self, x):
+        feat_map = self.backbone(x)
+        
+        if len(feat_map.shape) == 4:  # CNN
+            img_feats = self.global_pool(feat_map).flatten(1)
+        elif len(feat_map.shape) == 3:  # ViT
+            img_feats = feat_map.mean(dim=1)
+        else:
+            img_feats = feat_map
+        
+        species_logits = self.species_head(img_feats)
+        species_probs = torch.softmax(species_logits, dim=1)
+        
+        aux_out = self.aux_head(img_feats)
+        hsv_out = self.hsv_head(img_feats)
+        
+        combined_feats = torch.cat([img_feats, aux_out, hsv_out, species_probs], dim=1)
+        log_preds_raw = self.biomass_head(combined_feats)
+        
+        p_green        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
+        p_dead_direct  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
+        p_clover       = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
+        p_gdm_direct   = torch.clamp(nn.functional.softplus(log_preds_raw[:, 3:4]), 0.0, self.log_clamp)
+        p_total_direct = torch.clamp(nn.functional.softplus(log_preds_raw[:, 4:5]), 0.0, self.log_clamp)
+        
+        lin_green = torch.expm1(p_green)
+        lin_clover = torch.expm1(p_clover)
+        lin_gdm_derived = torch.clamp(lin_green + lin_clover, min=1e-4)
+        p_gdm_derived = torch.log1p(lin_gdm_derived)
+        
+        p_gdm = 0.7 * p_gdm_direct + 0.3 * p_gdm_derived
+        
+        lin_total = torch.expm1(p_total_direct)
+        lin_dead_derived = torch.clamp(lin_total - (lin_green + lin_clover), min=1e-4)
+        p_dead_derived = torch.log1p(lin_dead_derived)
+        
+        if hsv_out.shape[1] > 3:
+            vis_score = torch.sigmoid((hsv_out[:, 3:4] - 0.08) * 20.0) 
+            p_dead = vis_score * p_dead_direct + (1 - vis_score) * p_dead_derived
+        else:
+            p_dead = 0.5 * p_dead_direct + 0.5 * p_dead_derived
+            
+        lin_gdm_final = torch.expm1(p_gdm)
+        lin_dead_final = torch.expm1(p_dead)
+        p_total_final = torch.log1p(torch.clamp(lin_gdm_final + lin_dead_final, min=1e-4))
+        
+        biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total_final], dim=1)
+        
+        return biomass_out, aux_out, hsv_out, species_logits
 
 # ====================== DATASET ======================
 def get_largest_rotated_crop(h, w, angle):

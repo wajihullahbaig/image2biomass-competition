@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_holdout_20260124_075420'
+MODEL_DIR = './logs/unified_no_holdout_20260126_090542'
 
 # DEFAULTS
 IMAGE_HEIGHT = 256
@@ -68,7 +68,7 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
     save_image(images_denorm, save_path, nrow=4, padding=2)
 # ====================== UPDATED MODEL ARCHITECTURE ======================
 class BiomassUnifiedModel(nn.Module):
-    def __init__(self, backbone_name, num_aux=10, num_species=14, pretrained=False, biomass_clamp=None):
+    def __init__(self, backbone_name, num_aux=5, num_hsv=5, num_species=14, pretrained=False, biomass_clamp=None):
         super(BiomassUnifiedModel, self).__init__()
         
         # Use provided clamp or fallback to default
@@ -90,36 +90,48 @@ class BiomassUnifiedModel(nn.Module):
                 
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         
-        # 2. Auxiliary Head
+        # 2. Auxiliary Head (Tabular: NDVI, Height, etc.)
+        self.num_aux = num_aux
         self.aux_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 64),
-            nn.LayerNorm(64),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(64, num_aux)
         )
         
-        # 3. Species Head
+        # 3. HSV Head (Visual Biomass Scores)
+        self.num_hsv = num_hsv
+        self.hsv_head = nn.Sequential(
+            nn.Linear(self.backbone_dim, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, num_hsv)
+        )
+        
+        # 4. Species Head (Fine-Grained)
+        self.num_species = num_species
         self.species_head = nn.Sequential(
             nn.Linear(self.backbone_dim, 32),
-            nn.LayerNorm(32),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(32),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(32, num_species)
         )
         
         # 5. Biomass Head
-        input_dim = self.backbone_dim + num_aux + num_species
+        input_dim = self.backbone_dim + num_aux + num_hsv + num_species
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, FUSION_DIM),
-            nn.LayerNorm(FUSION_DIM),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(FUSION_DIM),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(FUSION_DIM, 128),
-            nn.LayerNorm(128),  # Changed from BatchNorm1d for stability
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Linear(128, 5),  # [Green, Dead, Clover, GDM, Total] - NO PHYSICS GATE
+            nn.Linear(128, 5),
         )
         
         self.log_clamp = torch.log1p(torch.tensor(float(clamp_value)))
@@ -127,13 +139,13 @@ class BiomassUnifiedModel(nn.Module):
 
     def _init_biomass_head(self):
         # Global Initialization for all heads
-        for m in [self.aux_head, self.species_head, self.biomass_head]:
+        for m in [self.aux_head, self.hsv_head, self.species_head, self.biomass_head]:
             for layer in m:
                 if isinstance(layer, nn.Linear):
                     nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
                     if layer.bias is not None:
                         nn.init.constant_(layer.bias, 0)
-                elif isinstance(layer, (nn.BatchNorm1d, nn.LayerNorm)):  # Support both
+                elif isinstance(layer, (nn.BatchNorm1d, nn.LayerNorm)):
                     nn.init.constant_(layer.weight, 1)
                     nn.init.constant_(layer.bias, 0)
 
@@ -141,11 +153,11 @@ class BiomassUnifiedModel(nn.Module):
         last_layer = self.biomass_head[-1]
         nn.init.xavier_uniform_(last_layer.weight)
         with torch.no_grad():
-            last_layer.bias[0] = 3.0  # Green (~20g)
-            last_layer.bias[1] = 2.0  # Dead (~7g)
-            last_layer.bias[2] = 2.5  # Clover (~12g)
-            last_layer.bias[3] = 3.2  # GDM (~25g)
-            last_layer.bias[4] = 3.5  # Total (~30g)
+            last_layer.bias[0] = 3.0  # Green
+            last_layer.bias[1] = 2.0  # Dead
+            last_layer.bias[2] = 2.5  # Clover
+            last_layer.bias[3] = 3.2  # GDM
+            last_layer.bias[4] = 3.5  # Total
 
     def forward(self, x):
         feat_map = self.backbone(x)
@@ -159,13 +171,15 @@ class BiomassUnifiedModel(nn.Module):
         
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
-        aux_out = self.aux_head(img_feats)
         
-        combined_feats = torch.cat([img_feats, aux_out, species_probs], dim=1)
+        aux_out = self.aux_head(img_feats)
+        hsv_out = self.hsv_head(img_feats)
+        
+        combined_feats = torch.cat([img_feats, aux_out, hsv_out, species_probs], dim=1)
         
         log_preds_raw = self.biomass_head(combined_feats)
         
-        # Split and process raw outputs
+        # Softplus activation for biomass targets
         p_green        = torch.clamp(nn.functional.softplus(log_preds_raw[:, 0:1]), 0.0, self.log_clamp)
         p_dead_direct  = torch.clamp(nn.functional.softplus(log_preds_raw[:, 1:2]), 0.0, self.log_clamp)
         p_clover       = torch.clamp(nn.functional.softplus(log_preds_raw[:, 2:3]), 0.0, self.log_clamp)
@@ -186,12 +200,10 @@ class BiomassUnifiedModel(nn.Module):
         lin_dead_derived = torch.clamp(lin_total - (lin_green + lin_clover), min=1e-4)
         p_dead_derived = torch.log1p(lin_dead_derived)
         
-        # --- Visibility-Aware Blending for Dead ---
-        if aux_out.shape[1] > 8:
-            vis_score = torch.sigmoid((aux_out[:, 8:9] - 0.08) * 20.0) 
-            p_dead = vis_score * p_dead_direct + (1 - vis_score) * p_dead_derived
-        else:
-            p_dead = 0.5 * p_dead_direct + 0.5 * p_dead_derived
+        # --- Visibility-Aware Blending for Dead (Using HSV head) ---
+        # dead_hsv score is at index 3 of hsv_out
+        vis_score = torch.sigmoid((hsv_out[:, 3:4] - 0.08) * 20.0) 
+        p_dead = vis_score * p_dead_direct + (1 - vis_score) * p_dead_derived
             
         # 3. Final Total consistency
         lin_gdm_final = torch.expm1(p_gdm)
@@ -199,7 +211,7 @@ class BiomassUnifiedModel(nn.Module):
         p_total_final = torch.log1p(torch.clamp(lin_gdm_final + lin_dead_final, min=1e-4))
         
         biomass_out = torch.cat([p_green, p_dead, p_clover, p_gdm, p_total_final], dim=1)
-        return biomass_out, aux_out, species_logits
+        return biomass_out, aux_out, hsv_out, species_logits
 
 
 # ====================== TTA HELPERS ======================
@@ -261,7 +273,7 @@ def no_tta(model, image, batch_idx=0):
         save_tta_images(image, batch_idx, 'original')
     
     with torch.no_grad():
-        biomass_out, aux, sp_logits = model(image)
+        biomass_out, aux, hsv, sp_logits = model(image)
         # Extract Confidence from Species Logits (Max Probability)
         probs = torch.sigmoid(sp_logits)
         conf, _ = torch.max(probs, dim=1)
@@ -296,8 +308,8 @@ def apply_tta(model, image, batch_idx=0):
             if SAVE_IMAGES:
                 save_tta_images(img_aug, batch_idx, view_name)
             
-            # Predict all 5 targets directly
-            biomass_out, aux, sp_logits = model(img_aug) 
+            # Predict all targets directly
+            biomass_out, aux, hsv, sp_logits = model(img_aug) 
             
             # Linear space for all 5 targets
             bio_lin = torch.expm1(biomass_out)
@@ -362,10 +374,16 @@ def get_inference_transforms(h, w, mean=None, std=None):
         transforms.Normalize(mean, std)
     ])
 
-def load_model(fold_path, device, num_species, backbone_name, num_aux=7, biomass_clamp=None):
-    model = BiomassUnifiedModel(backbone_name=backbone_name, num_species=num_species, num_aux=num_aux, biomass_clamp=biomass_clamp).to(device)
+def load_model(fold_path, device, num_species, backbone_name, num_aux=5, num_hsv=5, biomass_clamp=None):
+    model = BiomassUnifiedModel(
+        backbone_name=backbone_name, 
+        num_species=num_species, 
+        num_aux=num_aux, 
+        num_hsv=num_hsv,
+        biomass_clamp=biomass_clamp
+    ).to(device)
+    
     state_dict = torch.load(fold_path, map_location=device, weights_only=True)
-    # Allow loading older checkpoints with 4-output biomass head by ignoring mismatches
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
         print(f"[load_model] Non-strict load. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
@@ -416,9 +434,18 @@ def run_inference(use_tta=False):
     img_w = metadata['image_width']
     imagenet_mean = tuple(metadata['imagenet_mean'])
     imagenet_std = tuple(metadata['imagenet_std'])
-    num_aux = metadata['num_aux']
+    num_aux_total = metadata['num_aux']
+    # Split models have 9 or 10 total aux features (4 or 5 tabular + 5 hsv)
+    if num_aux_total >= 9:
+        num_hsv = 5
+        num_aux = num_aux_total - 5
+    else:
+        # Fallback for old models (not splitting)
+        num_aux = num_aux_total
+        num_hsv = 0
+
     biomass_clamp = metadata['biomass_clamp']
-    print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux} | clamp: {biomass_clamp}g")
+    print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux}, num_hsv: {num_hsv} | clamp: {biomass_clamp}g")
     print(f"Normalization: mean={imagenet_mean}, std={imagenet_std}")
 
     # 3. DISCOVER MODELS
@@ -446,7 +473,7 @@ def run_inference(use_tta=False):
     for i, model_path in enumerate(found_folds):
         fold_name = os.path.basename(model_path)
         print(f"-> Processing {fold_name}...")
-        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=num_aux, biomass_clamp=biomass_clamp)
+        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=num_aux, num_hsv=num_hsv, biomass_clamp=biomass_clamp)
         
         fold_preds = []
         with torch.no_grad():

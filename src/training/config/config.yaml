@@ -9,20 +9,20 @@ preprocessing:
 hyperparameters:
   batch_size: 32
   learning_rate: 0.0007 # Restored - frozen backbone is stable
-  n_folds: 3
+  n_folds: 4
   epochs: 30
   weight_decay: 0.10 # Restored - balanced regularization
-  early_stop_patience: 7 # Reduced - prevent overfitting (best epoch ~5-7)
+  early_stop_patience: 11 # Reduced - prevent overfitting (best epoch ~5-7)
   backbone: timm/vit_small_patch16_dinov3.lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 150
   max_grad_norm: 1.0
   backbone_lr_factor: 0.05 # Not used when frozen, but kept for consistency
-  random_seed: 1979 # Change this for multi-seed ensemble (try 42, 123, 456)
+  random_seed: 100001 # Change this for multi-seed ensemble (try 42, 123, 456)
 
 training:
   freeze_backbone: true # FROZEN - unfreezing made things worse
-  backbone_freeze_fraction: 0.8 # Only used if freeze_backbone=true
+  backbone_freeze_fraction: 0.85 # Only used if freeze_backbone=true
   use_tta: true
   fusion_dim: 384 # Keep - showed improvement
   biomass_feat_weight: 50.0 # Dominant task
@@ -47,7 +47,7 @@ augmentation:
 features:
   use_bin_features: false
   bin_encoding: "ordinal"
-  use_species_count_feature: true # Re-enabled - noise might help as regularization
+  use_species_count_feature: false # Re-enabled - noise might help as regularization
   biomass_composite_bins: 3
   # Enhanced HSV feature configuration
   hsv_biomass_scores:
@@ -139,8 +139,8 @@ split:
   ensure_combo_train_coverage: true # Disabled for simplicity
   combo_col: "Season_State_Species"
   min_train_per_combo_key: 3
-  group_stratification_col: "Season" # Reverted - showed better performance
-  group_col: "SessionID"
+  group_stratification_col: "State" # Reverted - showed better performance
+  group_col: "Sampling_Date"
 
 seasons:
   month_map:

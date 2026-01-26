@@ -19,7 +19,7 @@ from configs import config_str
 from common import (
     calculate_scheduler_score, get_season, load_data, get_image_data_transforms, save_batch_images,
     save_hsv_mask_batch,
-    set_seed, calculate_global_weighted_r2,
+    set_seed, calculate_competition_r2,
     rotate_crop_resize, save_tta_images, build_weighted_sampler_from_df
 )
 from feature_transform import BiomassFeatureTransform, apply_deterministic_features
@@ -213,7 +213,7 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
     preds_linear = np.expm1(preds_log)
     targets_log = np.concatenate(all_targets_full)
     targets_linear = np.expm1(targets_log)
-    final_metrics['train_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, cfg.targets.official_weights)
+    final_metrics['train_r2'] = calculate_competition_r2(targets_linear, preds_linear, cfg.targets.official_weights)
     return final_metrics
 
 
@@ -366,7 +366,7 @@ def validate(model, loader, criterion_reg, criterion_species, cfg, prefix='val',
         preds_linear = np.expm1(preds_log)
         targets_log = np.concatenate(all_targets_full)
         targets_linear = np.expm1(targets_log)
-        final_metrics[f'{prefix}_r2'] = calculate_global_weighted_r2(targets_linear, preds_linear, cfg.targets.official_weights)
+        final_metrics[f'{prefix}_r2'] = calculate_competition_r2(targets_linear, preds_linear, cfg.targets.official_weights)
     else:
         final_metrics[f'{prefix}_r2'] = 0.0
     return final_metrics
@@ -496,7 +496,7 @@ def main():
             {'params': [p for n, p in model.named_parameters() if 'backbone' not in n], 'lr': cfg.hyperparameters.learning_rate}
         ], weight_decay=cfg.hyperparameters.weight_decay)
         
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.75, patience=4, threshold=5e-4, min_lr=1e-6, verbose=True)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.75, patience=4, threshold=5e-4, min_lr=1e-6)
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()
 

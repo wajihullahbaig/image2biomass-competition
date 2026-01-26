@@ -944,26 +944,52 @@ def assign_functional_groups(df):
     return df
 
 
-def calculate_global_weighted_r2(y_true, y_pred, weights):
+def calculate_competition_r2(y_true, y_pred, weights):
     """
-    Competition Metric: Global Weighted R2.
+    Competition Metric: Weighted Sum of Individual Log-Space R2 scores.
+    Formula: FinalScore = sum(w_i * R2_i) where R2_i is computed on log(1+y).
+    
+    Args:
+        y_true: Linear ground truth grams [N, 5] or [N*5] flattened.
+        y_pred: Linear predicted grams [N, 5] or [N*5] flattened.
+        weights: Official weights [0.1, 0.1, 0.1, 0.2, 0.5]
     """
-    y_true = np.array(y_true, dtype=float).flatten()
-    y_pred = np.array(y_pred, dtype=float).flatten()
+    # Ensure numpy and correct shape [N, 5]
+    y_true = np.array(y_true, dtype=float)
+    y_pred = np.array(y_pred, dtype=float)
     weights = np.array(weights, dtype=float)
     
-    # Repeat weights for flattened arrays
-    n_targets = len(weights)
-    n_samples = len(y_true) // n_targets
-    w_flat = np.tile(weights, n_samples)
+    if y_true.ndim == 1:
+        y_true = y_true.reshape(-1, 5)
+    if y_pred.ndim == 1:
+        y_pred = y_pred.reshape(-1, 5)
+        
+    # 1. Log-Stabilizing Transformation: log(1+y)
+    # Note: We take linear inputs and transform them here for absolute clarity.
+    yt = np.log1p(np.maximum(0, y_true))
+    yp = np.log1p(np.maximum(0, y_pred))
     
-    y_weighted_mean = np.sum(y_true * w_flat) / np.sum(w_flat)
-    
-    ss_res = np.sum(w_flat * (y_true - y_pred)**2)
-    ss_tot = np.sum(w_flat * (y_true - y_weighted_mean)**2)
-    
-    if ss_tot == 0: return 0.0
-    return 1 - (ss_res / ss_tot)
+    # 2. Calculate R2 for each of the 5 targets independently
+    r2_scores = []
+    for i in range(5):
+        target_true = yt[:, i]
+        target_pred = yp[:, i]
+        
+        ss_res = np.sum((target_true - target_pred)**2)
+        ss_tot = np.sum((target_true - np.mean(target_true))**2)
+        
+        if ss_tot == 0:
+            # If all ground truth values are the same, R2 is undefined.
+            # Competition usually treats this as 0.0 unless predictions also match exactly.
+            score = 1.0 if ss_res == 0 else 0.0
+        else:
+            score = 1 - (ss_res / ss_tot)
+        
+        r2_scores.append(score)
+        
+    # 3. Final weighted sum
+    final_score = np.sum(np.array(r2_scores) * weights)
+    return final_score
 
 def set_seed(seed: Optional[int] = 42, logger=None) -> None:
     if seed is not None:

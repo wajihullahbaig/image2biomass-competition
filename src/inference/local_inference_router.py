@@ -27,12 +27,12 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_triplet_20260127_162003'
+MODEL_DIR = './logs/unified_triplet_20260127_202201'
 
 # DEFAULTS
 IMAGE_HEIGHT = 224
 IMAGE_WIDTH = 224
-FUSION_DIM = 384
+FUSION_DIM = 192
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 BATCH_SIZE = 16
@@ -42,9 +42,6 @@ BIOMASS_CLAMP = 2500.0  # grams - max realistic biomass for dense pasture (~1-2 
 USE_TTA = True              # Enable/Disable Test-Time Augmentation
 SAVE_IMAGES = True          # Save augmented images for debugging
 MAX_IMAGES_TO_SAVE = 10     # Only save first N batches to avoid disk fill
-
-# ====================== SHARPENING TRANSFORM ======================
-
 
 # ====================== IMAGE SAVING HELPER ======================
 def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images_routed', max_to_save=MAX_IMAGES_TO_SAVE):
@@ -445,14 +442,21 @@ def run_inference(USE_TTA=True):
 
     # 3. DISCOVER MODELS (Only fold-specific models)
     found_folds = []
-    for f in range(10):
-        p = os.path.join(MODEL_DIR, f"best_model_fold{f+1}.pth")
-        if os.path.exists(p): 
-            found_folds.append(p)
-            
-    # Fallback to overall best model if no folds found
-    if not found_folds and os.path.exists(os.path.join(MODEL_DIR, "best_model_overall.pth")):
-        found_folds.append(os.path.join(MODEL_DIR, "best_model_overall.pth"))
+    # Check both "best_model_foldX.pth" (Standard) and "best_foldX.pt" (Triplet)
+    for f in range(1, 11):
+        for pattern in [f"best_fold{f}.pt", f"best_model_fold{f}.pth"]:
+            p = os.path.join(MODEL_DIR, pattern)
+            if os.path.exists(p): 
+                found_folds.append(p)
+                break # Found one for this fold, move to next
+                
+    if not found_folds:
+        # Check overall models
+        for pattern in ["best_model_overall.pth", "best_model.pt"]:
+            p = os.path.join(MODEL_DIR, pattern)
+            if os.path.exists(p): 
+                found_folds.append(p)
+                break
             
     if not found_folds: 
         raise FileNotFoundError(f"No fold models found in {MODEL_DIR}")

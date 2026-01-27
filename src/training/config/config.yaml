@@ -11,25 +11,25 @@ hyperparameters:
   learning_rate: 0.0007 # Restored - frozen backbone is stable
   n_folds: 5
   epochs: 20
-  weight_decay: 0.10 # Restored - balanced regularization
+  weight_decay: 0.05 # Restored - balanced regularization
   early_stop_patience: 11 # Reduced - prevent overfitting (best epoch ~5-7)
   backbone: timm/vit_small_patch16_dinov3.lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 500
   max_grad_norm: 1.0
   backbone_lr_factor: 0.05 # Not used when frozen, but kept for consistency
-  random_seed: 100001 # Change this for multi-seed ensemble (try 42, 123, 456)
+  random_seed: 121 # Change this for multi-seed ensemble (try 42, 123, 456)
 
 training:
   freeze_backbone: true
-  backbone_freeze_fraction: 0.9 # Only used if freeze_backbone=true
+  backbone_freeze_fraction: 0.75 # Only used if freeze_backbone=true
   use_tta: true
   fusion_dim: 384 # Keep - showed improvement
   biomass_feat_weight: 50.0 # Dominant task
-  hsv_feat_weight: 20.0 # Newly separated HSV task - heavily prioritized
-  aux_feat_weight: 0.05 # Reduced - tabular features only
+  hsv_feat_weight: 30.0 # Newly separated HSV task - heavily prioritized
+  aux_feat_weight: 0.1 # Reduced - tabular features only
   species_feat_weight: 0.1 # Increased - stronger species signal
-  consistency_weight: 8.0 # Increased - Dead loss still diverging
+  consistency_weight: 15.0 # Increased - Dead loss still diverging
   hsv_constraint_weight: 15.0 # Strength of the visually-observable minimum dead constraint
   dead_hsv_min_k: 17.5 # Scaling: visible_dead_fraction * k = min_dead_grams (based on EDA y=17.3x + 10.0)
   # Exponential moving average decay for smoothing scheduler score (0..1)

@@ -507,8 +507,15 @@ def main():
             # Unfreeze last layer if requested by logic in existing script
             if hasattr(model.backbone, 'blocks'):
                 for param in model.backbone.blocks[-1].parameters(): param.requires_grad = True
+        
+        # Dual-Group Optimizer: Separate backbone and head
+        # Backbone LR = learning_rate * backbone_lr_factor
+        # Head LR = learning_rate
+        optimizer = AdamW([
+            {'params': model.backbone.parameters(), 'lr': cfg.hyperparameters.learning_rate * cfg.hyperparameters.backbone_lr_factor},
+            {'params': [p for n, p in model.named_parameters() if 'backbone' not in n], 'lr': cfg.hyperparameters.learning_rate}
+        ], weight_decay=cfg.hyperparameters.weight_decay)
 
-        optimizer = AdamW(model.parameters(), lr=cfg.hyperparameters.learning_rate, weight_decay=cfg.hyperparameters.weight_decay)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.75, patience=4, threshold=5e-4)
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()
@@ -523,6 +530,13 @@ def main():
         history = defaultdict(list)
 
         for epoch in range(cfg.hyperparameters.epochs):
+            # LR Warmup (First 5 Epochs)
+            # Linearly scale from 30% to 100% of target LRs
+            if epoch < 5:
+                wf = 0.3 + 0.7 * (epoch / 5)
+                optimizer.param_groups[0]['lr'] = cfg.hyperparameters.learning_rate * wf * cfg.hyperparameters.backbone_lr_factor
+                optimizer.param_groups[1]['lr'] = cfg.hyperparameters.learning_rate * wf
+            
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, criterion_reg, criterion_species, cfg, epoch,
                 session_dir, logger, bio_mean_t, bio_std_t, aux_mean_t, aux_std_t, official_weights_t
@@ -546,10 +560,10 @@ def main():
             ema_score_prev = ema_score
             scheduler.step(ema_score)
 
-            # Logging
+            # Logging (Using optimizer.param_groups[1]['lr'] as the primary "Head" LR)
             logger.info(get_formatted_loss_log(
                 epoch, train_metrics, val_metrics, hold_metrics, ema_score, gap,
-                optimizer.param_groups[0]['lr'], v_r2, h_r2
+                optimizer.param_groups[1]['lr'], v_r2, h_r2
             ))
 
             # History tracking
@@ -557,12 +571,11 @@ def main():
             for k, v in val_metrics.items(): history[k].append(v)
             for k, v in hold_metrics.items(): history[k].append(v)
             history['score'].append(ema_score)
-            history['lr'].append(optimizer.param_groups[0]['lr'])
+            history['lr'].append(optimizer.param_groups[1]['lr'])
+
 
             # Plot every epoch for real-time monitoring
             plot_training_history(history, fold_idx+1, session_dir)
-            if (epoch + 1) % 1 == 0:
-                logger.info(f"   [Plot] Updated metrics plots for Fold {fold_idx+1} in {session_dir}/plots/")
 
             better_r2_val = v_r2 > best_fold_v_r2
             better_r2_holdout = h_r2 > best_fold_h_r2

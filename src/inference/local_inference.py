@@ -31,8 +31,8 @@ TEST_IMG_DIR = './test/'
 MODEL_DIR = './logs/unified_no_holdout_20260126_153509'
 
 # DEFAULTS
-IMAGE_HEIGHT = 256
-IMAGE_WIDTH = 256
+IMAGE_HEIGHT = 224
+IMAGE_WIDTH = 224
 FUSION_DIM = 384
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -71,11 +71,11 @@ class BiomassUnifiedModel(nn.Module):
     def __init__(self, 
                  num_aux=5, 
                  num_hsv=5,
-                 backbone_name="resnet18",
+                 backbone_name="vit_tiny_patch16_224.augreg_in21k_ft_in1k",
                  num_species=14,
-                 fusion_dim=384,
-                 img_h=256,
-                 img_w=256,
+                 fusion_dim=192,  # Matches new training default
+                 img_h=224,
+                 img_w=224,
                  biomass_clamp=2500.0):
         super(BiomassUnifiedModel, self).__init__()
         
@@ -97,7 +97,7 @@ class BiomassUnifiedModel(nn.Module):
                 self.backbone_dim = feats.shape[1]
             elif len(feats.shape) == 3:  # ViT: [B, seq_len, embed_dim]
                 self.backbone_dim = feats.shape[2]
-            else:  # Already pooled: [B, features]
+            else:  # Already pooled
                 self.backbone_dim = feats.shape[1]
                 
         self.global_pool = nn.AdaptiveAvgPool2d(1)
@@ -106,7 +106,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 64),
             nn.LayerNorm(64),  
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.5), # Matches new training
             nn.Linear(64, self.num_aux)
         )
         
@@ -115,7 +115,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 64),
             nn.LayerNorm(64),  
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.5), # Matches new training
             nn.Linear(64, self.num_hsv)
         )
         
@@ -123,7 +123,7 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(self.backbone_dim, 32),
             nn.LayerNorm(32),  
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.5), # Matches new training
             nn.Linear(32, self.num_species)
         )
         
@@ -131,13 +131,10 @@ class BiomassUnifiedModel(nn.Module):
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, self.fusion_dim),
-            nn.LayerNorm(self.fusion_dim),  
+            nn.BatchNorm1d(self.fusion_dim), # Matches new training
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(self.fusion_dim, 128),
-            nn.LayerNorm(128),  
-            nn.ReLU(),
-            nn.Linear(128, 5), # [Green, Dead, Clover, GDM, Total]
+            nn.Dropout(0.5), # Matches new training
+            nn.Linear(self.fusion_dim, 5), # Predicting 5 targets directly
         )
 
         self.log_clamp = torch.log1p(torch.tensor(float(self.biomass_clamp_val)))
@@ -173,6 +170,9 @@ class BiomassUnifiedModel(nn.Module):
             img_feats = feat_map.mean(dim=1)
         else:
             img_feats = feat_map
+            
+        # Add stochastic depth after backbone (matches training)
+        img_feats = nn.functional.dropout(img_feats, p=0.3, training=self.training)
         
         species_logits = self.species_head(img_feats)
         species_probs = torch.softmax(species_logits, dim=1)
@@ -201,8 +201,9 @@ class BiomassUnifiedModel(nn.Module):
         p_dead_derived = torch.log1p(lin_dead_derived)
         
         if hsv_out.shape[1] > 3:
-            vis_score = torch.sigmoid((hsv_out[:, 3:4] - 0.08) * 20.0) 
-            p_dead = vis_score * p_dead_direct + (1 - vis_score) * p_dead_derived
+            # Gentler blending
+            vis_weight = torch.clamp(hsv_out[:, 3:4] * 5.0, 0.0, 1.0)
+            p_dead = vis_weight * p_dead_direct + (1 - vis_weight) * p_dead_derived
         else:
             p_dead = 0.5 * p_dead_direct + 0.5 * p_dead_derived
             
@@ -511,18 +512,17 @@ def run_inference(use_tta=False):
     # Model already clamps during forward pass, but this provides extra safety against numerical errors
     all_preds = np.clip(all_preds, 0.0, 2500.0)
     
-    pred_green = all_preds[:, 0]
-    pred_dead = all_preds[:, 1]
-    pred_clover = all_preds[:, 2]
-    pred_gdm = all_preds[:, 3]
-    pred_total = all_preds[:, 4]
-
-    # 6. ENSURE NO NEGATIVE VALUES
-    pred_total = np.maximum(0, pred_total)
-    pred_gdm = np.maximum(0, pred_gdm)
-    pred_green = np.maximum(0, pred_green)
-    pred_dead = np.maximum(0, pred_dead)
-    pred_clover = np.maximum(0, pred_clover)
+    # 6. ENFORCE PHYSICS (Total = Green + Dead + Clover, GDM = Green + Clover)
+    print("Enforcing physics constraints...")
+    # Order: [Green, Dead, Clover, GDM, Total]
+    pred_green = np.maximum(0, all_preds[:, 0])
+    pred_dead = np.maximum(0, all_preds[:, 1])
+    pred_clover = np.maximum(0, all_preds[:, 2])
+    
+    # GDM = Green + Clover
+    pred_gdm = pred_green + pred_clover
+    # Total = GDM + Dead
+    pred_total = pred_gdm + pred_dead
 
     # 7. EXPORT in correct order [green, dead, clover, gdm, total]
     final_df = pd.DataFrame({

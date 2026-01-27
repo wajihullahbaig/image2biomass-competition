@@ -73,6 +73,7 @@ class TrainingConfig:
     # Use Huber loss for Dead biomass (robust to label noise)
     use_huber_loss_for_dead: bool = True
     huber_delta: float = 1.0
+    warmup_percentage_epochs: float = 0.7
 
 @dataclass
 class AugmentationConfig:

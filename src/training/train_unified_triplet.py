@@ -530,12 +530,14 @@ def main():
         history = defaultdict(list)
 
         for epoch in range(cfg.hyperparameters.epochs):
-            # LR Warmup (First 5 Epochs)
-            # Linearly scale from 30% to 100% of target LRs
-            if epoch < 5:
-                wf = 0.3 + 0.7 * (epoch / 5)
-                optimizer.param_groups[0]['lr'] = cfg.hyperparameters.learning_rate * wf * cfg.hyperparameters.backbone_lr_factor
-                optimizer.param_groups[1]['lr'] = cfg.hyperparameters.learning_rate * wf
+            warmup_epochs = int(cfg.training.warmup_percentage_epochs * cfg.hyperparameters.epochs)
+            if epoch < warmup_epochs:
+                warmup_factor = 0.3 + 0.7 * (epoch / warmup_epochs)
+                base_lr = cfg.hyperparameters.learning_rate * warmup_factor
+                optimizer.param_groups[0]['lr'] = base_lr * cfg.hyperparameters.backbone_lr_factor
+                optimizer.param_groups[1]['lr'] = base_lr
+                logger.info(f"  [Warmup] Epoch {epoch}: LR scales to {warmup_factor:.2f}x ({base_lr:.6f})")
+
             
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, criterion_reg, criterion_species, cfg, epoch,
@@ -580,8 +582,8 @@ def main():
             better_r2_val = v_r2 > best_fold_v_r2
             better_r2_holdout = h_r2 > best_fold_h_r2
             
-            # Save when EITHER Val or Holdout R² improves (Simple logic)
-            if ema_score > best_fold_score:
+            
+            if better_r2_val and better_r2_holdout:
                 best_fold_score = ema_score
                 best_fold_v_r2 = v_r2
                 best_fold_h_r2 = h_r2

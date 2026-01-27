@@ -38,6 +38,7 @@ training:
   # Use Huber loss for Dead biomass (robust to label noise)
   use_huber_loss_for_dead: true
   huber_delta: 1.0 # Threshold for switching from quadratic to linear
+  warmup_percentage_epochs: 0.7 # Percetnage of actual epochs used for warmup
 
 augmentation:
   tile_prob: 0.05 # Re-enabled - provides 6x effective data

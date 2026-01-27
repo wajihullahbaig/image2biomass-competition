@@ -721,10 +721,8 @@ def main():
         ema_decay = cfg.training.ema_decay
 
         for epoch in range(cfg.hyperparameters.epochs):
-            # --- Linear Warmup for first 5 epochs ---
-            warmup_epochs = 5
+            warmup_epochs = int(cfg.training.warmup_percentage_epochs * cfg.hyperparameters.epochs) 
             if epoch < warmup_epochs:
-                # Calculate warmup factor (0.3 at ep 0, 1.0 at ep 5)
                 warmup_factor = 0.3 + 0.7 * (epoch / warmup_epochs)
                 base_lr = cfg.hyperparameters.learning_rate * warmup_factor
                 optimizer.param_groups[0]['lr'] = base_lr * cfg.hyperparameters.backbone_lr_factor
@@ -764,9 +762,7 @@ def main():
             current_score = ema_score
             ema_score_prev = ema_score
 
-            # Step the scheduler (only after warmup)
-            if epoch >= warmup_epochs:
-                scheduler.step(ema_score)
+            scheduler.step(ema_score)
 
             log_msg = get_formatted_loss_log(epoch,
                                              train_metrics,

@@ -529,10 +529,13 @@ def main():
 
         for epoch in range(cfg.hyperparameters.epochs):
             # Warmup
-            if epoch < 5:
-                wf = 0.3 + 0.7 * (epoch / 5)
-                optimizer.param_groups[0]['lr'] = cfg.hyperparameters.learning_rate * wf * cfg.hyperparameters.backbone_lr_factor
-                optimizer.param_groups[1]['lr'] = cfg.hyperparameters.learning_rate * wf
+            warmup_epochs = int(cfg.training.warmup_percentage_epochs * cfg.hyperparameters.epochs)
+            if epoch < warmup_epochs:
+                warmup_factor = 0.3 + 0.7 * (epoch / warmup_epochs)
+                base_lr = cfg.hyperparameters.learning_rate * warmup_factor
+                optimizer.param_groups[0]['lr'] = base_lr * cfg.hyperparameters.backbone_lr_factor
+                optimizer.param_groups[1]['lr'] = base_lr
+                logger.info(f"  [Warmup] Epoch {epoch}: LR scales to {warmup_factor:.2f}x ({base_lr:.6f})")
 
             train_metrics = train_one_epoch(model, train_loader, optimizer, criterion_reg, criterion_species, cfg, epoch, session_dir, logger, bio_mean_t, bio_std_t, aux_mean_t, aux_std_t, official_weights_t)
             val_metrics = validate(model, val_loader, criterion_reg, criterion_species, cfg, 'val', False, epoch, fold, session_dir, bio_mean_t, bio_std_t, aux_mean_t, aux_std_t, official_weights_t)
@@ -544,7 +547,7 @@ def main():
             ema_score, score_gap, raw_score = calculate_scheduler_score(train_r2=t_r2, val_r2=v_r2, holdout_r2=v_r2, ema_score_prev=ema_score_prev, ema_decay=ema_decay)
             ema_score_prev = ema_score
             
-            if epoch >= 5: scheduler.step(ema_score)
+            scheduler.step(ema_score)
 
             logger.info(get_formatted_loss_log(epoch, train_metrics, val_metrics, {}, ema_score, score_gap, optimizer.param_groups[1]['lr'], v_r2, 0.0))
 

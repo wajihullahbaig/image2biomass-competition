@@ -9,20 +9,20 @@ preprocessing:
 hyperparameters:
   batch_size: 32
   learning_rate: 0.0007 # Restored - frozen backbone is stable
-  n_folds: 3
+  n_folds: 5
   epochs: 20
   weight_decay: 0.10 # Restored - balanced regularization
   early_stop_patience: 11 # Reduced - prevent overfitting (best epoch ~5-7)
   backbone: timm/vit_small_patch16_dinov3.lvd1689m
   min_train_samples: 50
-  backbone_freeze_threshold: 150
+  backbone_freeze_threshold: 500
   max_grad_norm: 1.0
   backbone_lr_factor: 0.05 # Not used when frozen, but kept for consistency
   random_seed: 100001 # Change this for multi-seed ensemble (try 42, 123, 456)
 
 training:
-  freeze_backbone: true # FROZEN - unfreezing made things worse
-  backbone_freeze_fraction: 0.7 # Only used if freeze_backbone=true
+  freeze_backbone: true
+  backbone_freeze_fraction: 0.9 # Only used if freeze_backbone=true
   use_tta: true
   fusion_dim: 384 # Keep - showed improvement
   biomass_feat_weight: 50.0 # Dominant task
@@ -38,7 +38,7 @@ training:
   # Use Huber loss for Dead biomass (robust to label noise)
   use_huber_loss_for_dead: true
   huber_delta: 1.0 # Threshold for switching from quadratic to linear
-  warmup_percentage_epochs: 0.7 # Percetnage of actual epochs used for warmup
+  warmup_percentage_epochs: 0.5 # Percetnage of actual epochs used for warmup
 
 augmentation:
   tile_prob: 0.05 # Re-enabled - provides 6x effective data

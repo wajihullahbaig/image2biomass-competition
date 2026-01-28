@@ -592,7 +592,7 @@ def main():
             better_r2_holdout = h_r2 > best_fold_h_r2
             
             
-            if better_r2_val and better_r2_holdout:
+            if better_r2_val or better_r2_holdout:
                 best_fold_score = ema_score
                 best_fold_v_r2 = v_r2
                 best_fold_h_r2 = h_r2

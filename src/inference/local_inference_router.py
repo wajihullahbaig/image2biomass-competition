@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # PATHS (Update MODEL_DIR to your upload location)
 TEST_CSV_PATH = './test.csv'  
 TEST_IMG_DIR = './test/' 
-MODEL_DIR = './logs/unified_triplet_20260128_124643'
+MODEL_DIR = './logs/unified_triplet_20260128_164746'
 
 # DEFAULTS
 IMAGE_HEIGHT = 224
@@ -62,22 +62,6 @@ def save_tta_images(images, batch_idx, view_name, output_dir='./inference_images
     # Save as grid
     save_path = os.path.join(output_dir, f'batch_{batch_idx:03d}_{view_name}.png')
     save_image(images_denorm, save_path, nrow=4, padding=2)
-
-class ResidualBlock(nn.Module):
-    def __init__(self, dim, dropout=0.5):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.LayerNorm(dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim, dim),
-            nn.LayerNorm(dim),
-        )
-        self.dropout = nn.Dropout(dropout)
-    
-    def forward(self, x):
-        return x + self.dropout(self.block(x))
 
 # ====================== MODEL ARCHITECTURE (HARDCODED) ======================
 class BiomassUnifiedModel(nn.Module):
@@ -140,16 +124,14 @@ class BiomassUnifiedModel(nn.Module):
             nn.Linear(32, self.num_species)
         )
         
-        # 5. Biomass Head (Enhanced Complexity)
+        # 5. Biomass Head
         input_dim = self.backbone_dim + self.num_aux + self.num_hsv + self.num_species
                 
         self.biomass_head = nn.Sequential(
             nn.Linear(input_dim, self.fusion_dim),
-            nn.LayerNorm(self.fusion_dim), 
-            nn.GELU(),
-            nn.Dropout(0.5),
-            ResidualBlock(self.fusion_dim, dropout=0.5),
-            ResidualBlock(self.fusion_dim, dropout=0.5),
+            nn.BatchNorm1d(self.fusion_dim), # Better regularization than LayerNorm
+            nn.ReLU(),
+            nn.Dropout(0.5), # Increased from 0.3
             nn.Linear(self.fusion_dim, 5), # Predicting 5 targets directly
         )
 
@@ -157,20 +139,15 @@ class BiomassUnifiedModel(nn.Module):
         self._init_biomass_head()
         
     def _init_biomass_head(self):
-        # Recursive initialization for all sub-modules
-        def init_weights(m):
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, (nn.BatchNorm1d, nn.LayerNorm)):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-
-        self.aux_head.apply(init_weights)
-        self.hsv_head.apply(init_weights)
-        self.species_head.apply(init_weights)
-        self.biomass_head.apply(init_weights)
+        for m in [self.aux_head, self.hsv_head, self.species_head, self.biomass_head]:
+            for layer in m:
+                if isinstance(layer, nn.Linear):
+                    nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
+                    if layer.bias is not None:
+                        nn.init.constant_(layer.bias, 0)
+                elif isinstance(layer, (nn.BatchNorm1d, nn.LayerNorm)):
+                    nn.init.constant_(layer.weight, 1)
+                    nn.init.constant_(layer.bias, 0)
 
         # Final layer specific init
         last_layer = self.biomass_head[-1]

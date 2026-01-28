@@ -372,13 +372,14 @@ def get_inference_transforms(h, w, mean=None, std=None):
         transforms.Normalize(mean, std)
     ])
 
-def load_model(fold_path, device, num_species, backbone_name, num_aux=5, num_hsv=5, biomass_clamp=None):
+def load_model(fold_path, device, num_species, backbone_name, num_aux=5, num_hsv=5, biomass_clamp=None, fusion_dim=192):
     model = BiomassUnifiedModel(
         backbone_name=backbone_name, 
         num_species=num_species, 
         num_aux=num_aux, 
         num_hsv=num_hsv,
-        biomass_clamp=biomass_clamp
+        biomass_clamp=biomass_clamp,
+        fusion_dim=fusion_dim
     ).to(device)
     
     state_dict = torch.load(fold_path, map_location=device, weights_only=True)
@@ -434,16 +435,12 @@ def run_inference(use_tta=False):
     imagenet_std = tuple(metadata['imagenet_std'])
     num_aux_total = metadata['num_aux']
     # Split models have 9 or 10 total aux features (4 or 5 tabular + 5 hsv)
-    if num_aux_total >= 9:
-        num_hsv = 5
-        num_aux = num_aux_total - 5
-    else:
-        # Fallback for old models (not splitting)
-        num_aux = num_aux_total
-        num_hsv = 0
+    num_aux = num_aux_total - 5 if num_aux_total >= 9 else num_aux_total
+    num_hsv = 5 if num_aux_total >= 9 else 0
+    fusion_dim = metadata.get('fusion_dim', 192)
 
     biomass_clamp = metadata['biomass_clamp']
-    print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux}, num_hsv: {num_hsv} | clamp: {biomass_clamp}g")
+    print(f"Config: {backbone_name} | {img_w}x{img_h} | num_aux: {num_aux}, num_hsv: {num_hsv} | fusion_dim: {fusion_dim} | clamp: {biomass_clamp}g")
     print(f"Normalization: mean={imagenet_mean}, std={imagenet_std}")
 
     # 3. DISCOVER MODELS
@@ -479,7 +476,7 @@ def run_inference(use_tta=False):
     for i, model_path in enumerate(found_folds):
         fold_name = os.path.basename(model_path)
         print(f"-> Processing {fold_name}...")
-        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=num_aux, num_hsv=num_hsv, biomass_clamp=biomass_clamp)
+        model = load_model(model_path, DEVICE, num_species, backbone_name, num_aux=num_aux, num_hsv=num_hsv, biomass_clamp=biomass_clamp, fusion_dim=fusion_dim)
         
         fold_preds = []
         with torch.no_grad():

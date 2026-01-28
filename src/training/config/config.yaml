@@ -8,12 +8,12 @@ preprocessing:
 
 hyperparameters:
   batch_size: 32
-  learning_rate: 0.0007 # Restored - frozen backbone is stable
+  learning_rate: 0.0009 # Restored - frozen backbone is stable
   n_folds: 5
-  epochs: 20
+  epochs: 40
   weight_decay: 0.1 # Increased from 0.05
-  early_stop_patience: 6 # Reduced from 11 (stop at epoch ~8-9)
-  backbone: vit_tiny_patch16_224.augreg_in21k_ft_in1k
+  early_stop_patience: 11 # Reduced from 11 (stop at epoch ~8-9)
+  backbone: vit_small_patch16_224.dino
   min_train_samples: 50
   backbone_freeze_threshold: 500
   max_grad_norm: 1.0
@@ -24,7 +24,7 @@ training:
   freeze_backbone: true
   backbone_freeze_fraction: 0.75 # Only used if freeze_backbone=true
   use_tta: true
-  fusion_dim: 192 # Reduced from 384
+  fusion_dim: 512 # Reduced from 384
   biomass_feat_weight: 10.0 # Reduced - let other tasks help
   hsv_feat_weight: 2.0 # Reduced significantly (was 30.0)
   aux_feat_weight: 1.0 # Increased - NDVI/height are reliable
@@ -38,7 +38,7 @@ training:
   # Use Huber loss for Dead biomass (robust to label noise)
   use_huber_loss_for_dead: false # Set to false - use same loss as other targets
   huber_delta: 1.0 # Threshold for switching from quadratic to linear
-  warmup_percentage_epochs: 0.5 # Percetnage of actual epochs used for warmup
+  warmup_percentage_epochs: 0.75 # Percetnage of actual epochs used for warmup
 
 augmentation:
   tile_prob: 0.02 # Reduced from 0.05

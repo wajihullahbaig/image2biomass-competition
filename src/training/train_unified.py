@@ -377,6 +377,7 @@ def save_metadata(session_dir, species_list, target_cols, num_aux):
         'species_list': species_list,
         'target_cols': target_cols,
         'num_aux': num_aux,
+        'fusion_dim': cfg.training.fusion_dim,
         'backbone': cfg.hyperparameters.backbone,
         'image_height': cfg.preprocessing.image_height,
         'image_width': cfg.preprocessing.image_width,

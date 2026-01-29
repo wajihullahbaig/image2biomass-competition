@@ -7,7 +7,7 @@ import pandas as pd
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from sklearn.model_selection import StratifiedGroupKFold
 from tqdm import tqdm
 from datetime import datetime
@@ -154,8 +154,9 @@ def train_one_epoch(model, loader, optimizer, criterion_reg, criterion_species, 
                 t_hsv = (t_hsv - aux_mean[:, n_tab:]) / (aux_std[:, n_tab:] + eps)
             loss_hsv = nn.MSELoss()(p_hsv, t_hsv) * cfg.training.hsv_feat_weight
 
-            # --- Species Loss ---
-            loss_sp = nn.BCEWithLogitsLoss()(species_logits, species_vec) * cfg.training.species_feat_weight
+            # --- Species Loss with Label Smoothing ---
+            # loss_sp = nn.BCEWithLogitsLoss()(species_logits, species_vec) * cfg.training.species_feat_weight
+            loss_sp = nn.BCEWithLogitsLoss()(species_logits, species_vec * 0.9 + 0.05) * cfg.training.species_feat_weight
 
             total_loss = loss_bio + loss_aux + loss_hsv + loss_sp + l_consistency_bio
 
@@ -461,7 +462,10 @@ def main():
             train_df, transform=train_transform, mode='training',
             tile_prob=cfg.augmentation.tile_prob, target_cols=target_cols
         )
-        train_ds = TiledMixupDataset(train_ds_base, prob=cfg.augmentation.mixup_prob, alpha=cfg.augmentation.mixup_alpha)
+        train_ds = TiledMixupDataset(
+            train_ds_base, prob=cfg.augmentation.mixup_prob, alpha=cfg.augmentation.mixup_alpha,
+            use_cutmix=getattr(cfg.augmentation, 'use_cutmix', False)
+        )
 
         val_ds = TiledBiomassDataset(
             val_df, transform=val_transform, mode='validation', target_cols=target_cols
@@ -497,7 +501,7 @@ def main():
             {'params': [p for n, p in model.named_parameters() if 'backbone' not in n], 'lr': cfg.hyperparameters.learning_rate}
         ], weight_decay=cfg.hyperparameters.weight_decay)
         
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.75, patience=4, threshold=5e-4, min_lr=1e-6)
+        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()
 
@@ -528,15 +532,33 @@ def main():
         ema_score_prev = None
         ema_decay = cfg.training.ema_decay
 
+        warmup_epochs = int(cfg.training.warmup_percentage_epochs * cfg.hyperparameters.epochs)
         for epoch in range(cfg.hyperparameters.epochs):
+            # Status Logging
+            is_unfrozen = epoch >= getattr(cfg.training, 'unfreeze_epoch', 999)
+            is_warmup = epoch < warmup_epochs
+            logger.info(f"--- Epoch {epoch} Status: Backbone={'UNFROZEN' if is_unfrozen else 'FROZEN'}, Warmup={'ACTIVE' if is_warmup else 'DONE'} ---")
+
             # Warmup
-            warmup_epochs = int(cfg.training.warmup_percentage_epochs * cfg.hyperparameters.epochs)
             if epoch < warmup_epochs:
                 warmup_factor = 0.3 + 0.7 * (epoch / warmup_epochs)
                 base_lr = cfg.hyperparameters.learning_rate * warmup_factor
                 optimizer.param_groups[0]['lr'] = base_lr * cfg.hyperparameters.backbone_lr_factor
                 optimizer.param_groups[1]['lr'] = base_lr
                 logger.info(f"  [Warmup] Epoch {epoch}: LR scales to {warmup_factor:.2f}x ({base_lr:.6f})")
+
+            # --- Gradual Backbone Unfreezing ---
+            if epoch == getattr(cfg.training, 'unfreeze_epoch', -1):
+                unfreeze_layers = getattr(cfg.training, 'unfreeze_layers', 6)
+                if hasattr(model.backbone, 'blocks'):
+                    for param in model.backbone.blocks[-unfreeze_layers:].parameters():
+                        param.requires_grad = True
+                    logger.info(f"!!! Unfroze last {unfreeze_layers} backbone blocks at epoch {epoch} !!!")
+                
+                # Update optimizer with new backbone LR factor if unfreezing
+                unfreeze_lr_factor = getattr(cfg.training, 'unfreeze_lr_factor', 0.01)
+                optimizer.param_groups[0]['lr'] = optimizer.param_groups[1]['lr'] * unfreeze_lr_factor
+                logger.info(f"Backbone LR factor updated to {unfreeze_lr_factor}x head LR")
 
             train_metrics = train_one_epoch(model, train_loader, optimizer, criterion_reg, criterion_species, cfg, epoch, session_dir, logger, bio_mean_t, bio_std_t, aux_mean_t, aux_std_t, official_weights_t)
             val_metrics = validate(model, val_loader, criterion_reg, criterion_species, cfg, 'val', False, epoch, fold, session_dir, bio_mean_t, bio_std_t, aux_mean_t, aux_std_t, official_weights_t)
@@ -548,7 +570,8 @@ def main():
             ema_score, score_gap, raw_score = calculate_scheduler_score(train_r2=t_r2, val_r2=v_r2, holdout_r2=v_r2, ema_score_prev=ema_score_prev, ema_decay=ema_decay)
             ema_score_prev = ema_score
             
-            scheduler.step(ema_score)
+            # Scheduler Step (Cosine Annealing) - step per epoch
+            scheduler.step(epoch)
 
             logger.info(get_formatted_loss_log(epoch, train_metrics, val_metrics, {}, ema_score, score_gap, optimizer.param_groups[1]['lr'], v_r2, 0.0))
 

@@ -13,7 +13,7 @@ hyperparameters:
   epochs: 40
   weight_decay: 0.1 # Increased from 0.05
   early_stop_patience: 6 # Balanced for CV stability
-  backbone: vit_small_patch16_224.dino
+  backbone: timm/vit_base_patch16_dinov3_qkvb.lvd1689m
   min_train_samples: 50
   backbone_freeze_threshold: 500
   max_grad_norm: 1.0

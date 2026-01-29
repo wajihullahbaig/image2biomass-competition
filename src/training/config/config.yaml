@@ -12,7 +12,7 @@ hyperparameters:
   n_folds: 5
   epochs: 40
   weight_decay: 0.1 # Increased from 0.05
-  early_stop_patience: 11 # Reduced from 11 (stop at epoch ~8-9)
+  early_stop_patience: 6 # Down from 11
   backbone: vit_small_patch16_224.dino
   min_train_samples: 50
   backbone_freeze_threshold: 500
@@ -28,7 +28,7 @@ training:
   biomass_feat_weight: 10.0 # Reduced - let other tasks help
   hsv_feat_weight: 2.0 # Reduced significantly (was 30.0)
   aux_feat_weight: 1.0 # Increased - NDVI/height are reliable
-  species_feat_weight: 0.5 # Increased - provides regularization
+  species_feat_weight: 0.1 # Down from 0.5 - make it a hint, not a task
   consistency_weight: 5.0 # Reduced - physics constraints already in architecture
   hsv_constraint_weight: 1.0 # Reduce drastically (was 15.0)
   dead_hsv_min_k: 10.0 # Reduced from 17.5
@@ -38,12 +38,16 @@ training:
   # Use Huber loss for Dead biomass (robust to label noise)
   use_huber_loss_for_dead: false # Set to false - use same loss as other targets
   huber_delta: 1.0 # Threshold for switching from quadratic to linear
-  warmup_percentage_epochs: 0.75 # Percetnage of actual epochs used for warmup
+  warmup_percentage_epochs: 0.25 # Down from 0.75 - 10 epochs warmup
+  unfreeze_epoch: 8 # Unfreeze after warmup ends
+  unfreeze_lr_factor: 0.01 # 100x smaller LR for backbone
+  unfreeze_layers: 6 # Only unfreeze last 6 transformer blocks
 
 augmentation:
   tile_prob: 0.02 # Reduced from 0.05
-  mixup_prob: 0.0 # Disabled - you have limited data
-  mixup_alpha: 0.40
+  mixup_prob: 0.3
+  mixup_alpha: 1.0
+  use_cutmix: true # Add this - cuts patches instead of blending
 
 features:
   use_bin_features: false
@@ -79,7 +83,7 @@ features:
 
 loss:
   use_standardized_loss: true
-  use_weighted_regression_loss: false
+  use_weighted_regression_loss: true
   reg_loss_type: "smoothl1" # options: smoothl1, mse
 
 targets:

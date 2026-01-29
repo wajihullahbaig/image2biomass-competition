@@ -383,20 +383,21 @@ class TiledBiomassDataset(Dataset):
 
 class TiledMixupDataset(Dataset):
     """
-    MixUp wrapper for TiledBiomassDataset.
-    Applies texture blending AFTER tiling augmentation.
+    MixUp and CutMix wrapper for TiledBiomassDataset.
+    Applies texture blending or cutting AFTER tiling augmentation.
     """
-    def __init__(self, dataset, prob=0.5, alpha=0.4):
+    def __init__(self, dataset, prob=0.5, alpha=0.4, use_cutmix=False):
         self.dataset = dataset
         self.prob = prob
         self.alpha = alpha
+        self.use_cutmix = use_cutmix
         self.indices = list(range(len(dataset)))
     
     def __len__(self):
         return len(self.dataset)
     
     def __getitem__(self, idx):
-        # Coin flip: Apply MixUp?
+        # Coin flip: Apply MixUp/CutMix?
         if np.random.rand() >= self.prob:
             return self.dataset[idx]
         
@@ -408,8 +409,31 @@ class TiledMixupDataset(Dataset):
         # Sample mixing ratio
         lam = np.random.beta(self.alpha, self.alpha)
         
-        # Mix images
-        mixed_img = (lam * sample1['image'] + (1 - lam) * sample2['image']).to(torch.float32)
+        if self.use_cutmix:
+            # --- CutMix Logic ---
+            mixed_img = sample1['image'].clone()
+            W, H = sample1['image'].shape[1], sample1['image'].shape[2]
+            
+            # Draw random box coordinates
+            r_x = np.random.randint(W)
+            r_y = np.random.randint(H)
+            r_w = int(W * np.sqrt(1 - lam))
+            r_h = int(H * np.sqrt(1 - lam))
+            
+            # Clip bounds
+            x1 = np.clip(r_x - r_w // 2, 0, W)
+            y1 = np.clip(r_y - r_h // 2, 0, H)
+            x2 = np.clip(r_x + r_w // 2, 0, W)
+            y2 = np.clip(r_y + r_h // 2, 0, H)
+            
+            # Patch from image 2 into image 1
+            mixed_img[:, x1:x2, y1:y2] = sample2['image'][:, x1:x2, y1:y2]
+            
+            # Adjust lambda to be the actual pixel ratio
+            lam = 1 - ((x2 - x1) * (y2 - y1) / (W * H))
+        else:
+            # --- Standard MixUp ---
+            mixed_img = (lam * sample1['image'] + (1 - lam) * sample2['image']).to(torch.float32)
         
         # Mix targets (handles tiled targets correctly)
         mixed_targets = (lam * sample1['targets'] + (1 - lam) * sample2['targets']).to(torch.float32)

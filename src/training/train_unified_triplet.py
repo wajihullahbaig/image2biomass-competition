@@ -7,7 +7,7 @@ import pandas as pd
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.model_selection import StratifiedGroupKFold
 from tqdm import tqdm
 from datetime import datetime
@@ -527,7 +527,7 @@ def main():
             {'params': [p for n, p in model.named_parameters() if 'backbone' not in n], 'lr': cfg.hyperparameters.learning_rate}
         ], weight_decay=cfg.hyperparameters.weight_decay)
 
-        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+        scheduler = CosineAnnealingLR(optimizer, T_max=cfg.hyperparameters.epochs)
         criterion_reg = nn.MSELoss()
         criterion_species = nn.BCEWithLogitsLoss()
 
@@ -613,7 +613,7 @@ def main():
             better_r2_holdout = h_r2 > best_fold_h_r2
             
             
-            if better_r2_val or better_r2_holdout:
+            if better_r2_val and better_r2_holdout:
                 best_fold_score = ema_score
                 best_fold_v_r2 = v_r2
                 best_fold_h_r2 = h_r2

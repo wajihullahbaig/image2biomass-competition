@@ -12,7 +12,7 @@ hyperparameters:
   n_folds: 5
   epochs: 40
   weight_decay: 0.1 # Increased from 0.05
-  early_stop_patience: 6 # Down from 11
+  early_stop_patience: 11 # Reduced from 11 (stop at epoch ~8-9)
   backbone: vit_small_patch16_224.dino
   min_train_samples: 50
   backbone_freeze_threshold: 500
@@ -24,14 +24,14 @@ training:
   freeze_backbone: true
   backbone_freeze_fraction: 0.75 # Only used if freeze_backbone=true
   use_tta: true
-  fusion_dim: 512 # Reduced from 384
+  fusion_dim: 256 # Reduced from 384
   biomass_feat_weight: 10.0 # Reduced - let other tasks help
   hsv_feat_weight: 2.0 # Reduced significantly (was 30.0)
   aux_feat_weight: 1.0 # Increased - NDVI/height are reliable
-  species_feat_weight: 0.1 # Down from 0.5 - make it a hint, not a task
+  species_feat_weight: 0.5 # Increased - provides regularization
   consistency_weight: 5.0 # Reduced - physics constraints already in architecture
-  hsv_constraint_weight: 1.0 # Reduce drastically (was 15.0)
-  dead_hsv_min_k: 10.0 # Reduced from 17.5
+  hsv_constraint_weight: 2.0 # Reduce drastically (was 15.0)
+  dead_hsv_min_k: 5.0 # Reduced from 17.5
   # Exponential moving average decay for smoothing scheduler score (0..1)
   # Higher values -> smoother (less responsive). Default: 0.9
   ema_decay: 0.9

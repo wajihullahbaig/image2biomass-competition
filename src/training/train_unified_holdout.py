@@ -786,7 +786,7 @@ def main():
             better_score = current_score > best_fold_score
             
             # Save when EITHER Val or Holdout R² improves
-            save_model = better_r2_val and better_r2_holdout
+            save_model = (better_score and better_r2_val) or (better_score and better_r2_holdout)
             
             if save_model:
                 # log what we have compared to what we had previously

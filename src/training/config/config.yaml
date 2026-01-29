@@ -12,7 +12,7 @@ hyperparameters:
   n_folds: 5
   epochs: 40
   weight_decay: 0.1 # Increased from 0.05
-  early_stop_patience: 11 # Balanced for CV stability
+  early_stop_patience: 6 # Balanced for CV stability
   backbone: vit_small_patch16_224.dino
   min_train_samples: 50
   backbone_freeze_threshold: 500

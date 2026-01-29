@@ -74,12 +74,16 @@ class TrainingConfig:
     use_huber_loss_for_dead: bool = True
     huber_delta: float = 1.0
     warmup_percentage_epochs: float = 0.7
+    unfreeze_epoch: int = -1
+    unfreeze_lr_factor: float = 0.01
+    unfreeze_layers: int = 6
 
 @dataclass
 class AugmentationConfig:
     tile_prob: float
     mixup_prob: float
     mixup_alpha: float
+    use_cutmix: bool = False
 
 @dataclass
 class FeatureConfig:

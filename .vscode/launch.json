@@ -1,0 +1,44 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Train Unified (Dual-Stream DINO)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/training/train_unified.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/training"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Run Inference (Dual-Stream DINO)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/inference/local_inference.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/training;${workspaceFolder}/src/inference"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Test-Time Online Training (Pseudo-Labeling)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/inference/test_time_pseudolabel.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/training;${workspaceFolder}/src/inference"
+            },
+            "justMyCode": false
+        }
+    ]
+}

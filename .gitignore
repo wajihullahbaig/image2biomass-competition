@@ -26,7 +26,6 @@ env/
 .ipynb_checkpoints/
 
 # IDEs
-.vscode/
 .idea/
 
 # Logs and misc
@@ -44,3 +43,4 @@ analysis_results/
 inference_images/
 inference_images_routed/
 tiling_visualizations/
+archive/

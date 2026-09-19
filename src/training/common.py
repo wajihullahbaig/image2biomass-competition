@@ -1,1253 +1,164 @@
-# common.py
+# common.py - Core Constants, Losses, Metrics, and Post-Processing
 import os
-import math
 import random
-import logging
-from typing import Optional, Tuple
-
-import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.transforms.functional as TF
-from torchvision import transforms
-from torchvision.utils import save_image
-import cv2
-from PIL import ImageFilter
-from sklearn.preprocessing import KBinsDiscretizer
 
-from config.loader import cfg
+# ==============================================================================
+# Constants & Targets
+# ==============================================================================
+IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 
-IMAGENET_DEFAULT_MEAN = cfg.preprocessing.imagenet_mean
-IMAGENET_DEFAULT_STD = cfg.preprocessing.imagenet_std
-IMAGE_HEIGHT = cfg.preprocessing.image_height
-IMAGE_WIDTH = cfg.preprocessing.image_width
-CORE_SPECIES = cfg.species_taxonomy.core_species
-GROUP_DEFINITIONS = cfg.species_taxonomy.groups
-N_FOLDS = cfg.hyperparameters.n_folds
-UPSAMPLE_CONFIG = {
-    'enabled': cfg.upsample.enabled,
-    'target_min_samples': cfg.upsample.target_min_samples,
-    'method': cfg.upsample.method,
-    'noise_scale': cfg.upsample.noise_scale,
-    'seasonal_drift': cfg.upsample.seasonal_drift,
-    'day_shift_prob': cfg.upsample.day_shift_prob,
-    'drift_strength': cfg.upsample.drift_strength
+TARGET_ORDER = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
+OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.2, 0.5]
+
+# UEPNet (CVPR 2021) 7-interval partition thresholds for each target
+BORDERS_DICT = {
+    'Dry_Green_g':  [1.6e-05, 13.4232, 27.0782, 45.5236, 79.834, 157.9836],
+    'Dry_Dead_g':   [1.6e-05, 6.1407, 13.1192, 23.277, 38.8581, 83.8407],
+    'Dry_Clover_g': [1.6e-05, 3.9, 10.5353, 20.6523, 37.5911, 71.7865],
+    'GDM_g':        [1.6e-05, 16.5143, 30.507, 49.5585, 81.0, 157.9836],
+    'Dry_Total_g':  [1.6e-05, 23.4907, 41.1, 61.1, 96.8288, 185.7],
 }
-SPLIT_CONFIG = {
-    'holdout_pct': cfg.split.holdout_pct,
-}
-SEASON_MONTH_MAP = cfg.seasons.month_map
-SEASONAL_DRIFT = cfg.seasons.drift
-USE_BIN_FEATURES = cfg.features.use_bin_features
-BIN_ENCODING = cfg.features.bin_encoding
-USE_SPECIES_COUNT_FEATURE = cfg.features.use_species_count_feature
 
-from configs import get_key1_specie_pair
 
-def get_largest_rotated_crop(h: int, w: int, angle: float) -> Tuple[int, int]:
-    """
-    Calculates the dimensions of the largest axis-aligned rectangle 
-    that fits inside a rotated image without including any borders/artifacts.
-    
-    Math: W_new = W / (sin(a) + cos(a)) for a square.
-    """
-    angle_rad = math.radians(abs(angle))
-    sin_a = math.sin(angle_rad)
-    cos_a = math.cos(angle_rad)
-    
-    # Calculate scale factor to remain within the valid image area
-    scale = 1.0 / (cos_a + sin_a)
-    
-    new_h = int(h * scale)
-    new_w = int(w * scale)
-    return new_h, new_w
+def set_seed(seed=42):
+    """Sets deterministic seeds across Python, NumPy, and PyTorch."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-def rotate_crop_resize(img: torch.Tensor, angle: float) -> torch.Tensor:
-    """
-    Deterministic transformation for TTA.
-    1. Rotates the image.
-    2. Crops to the largest valid center (zooming in).
-    3. Resizes back to original dimensions.
-    """
-    # Handle inputs
-    if isinstance(img, torch.Tensor):
-        h, w = img.shape[-2:]
-    else:
-        # Fallback for PIL (though we usually pass Tensors in TTA)
-        w, h = img.size
 
-    # 1. Rotate (Bilinear matches training behavior)
-    img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR)
-    
-    # 2. Calculate valid crop
-    ch, cw = get_largest_rotated_crop(h, w, angle)
-    
-    # 3. Center Crop (The "Zoom")
-    img_crop = TF.center_crop(img_rot, [ch, cw])
-    
-    # 4. Resize back (The "upsample")
-    # align_corners=False prevents sub-pixel phase shifts
-    if img.ndim == 4:
-        # Batched input (B, C, H, W) -> Directly interpolate
-        img_resized = torch.nn.functional.interpolate(
-            img_crop, size=(h, w), mode='bilinear', align_corners=False
-        )
-    else:
-        # Single image (C, H, W) -> Unsqueeze to (1, C, H, W)
-        img_resized = torch.nn.functional.interpolate(
-            img_crop.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False
-        ).squeeze(0)
-    
-    return img_resized
+# ==============================================================================
+# Label Binning (UEPNet Interval Partitioning)
+# ==============================================================================
+def get_interval_labels(targets_np, target_cols=TARGET_ORDER):
+    """
+    Discretizes continuous biomass values (grams) into 7 intervals (classes 0..6)
+    using the non-uniform borders derived from UEPNet crowd counting.
+    """
+    labels_cls = np.zeros_like(targets_np, dtype=np.int64)
+    for col_idx, col_name in enumerate(target_cols):
+        borders = BORDERS_DICT.get(col_name)
+        if borders is not None:
+            labels_cls[:, col_idx] = np.digitize(targets_np[:, col_idx], borders)
+        else:
+            labels_cls[:, col_idx] = np.clip(
+                np.digitize(targets_np[:, col_idx], [0, 5, 15, 30, 60, 120]), 0, 6
+            )
+    return labels_cls
 
-class RandomRotateCropResize(nn.Module):
+
+# ==============================================================================
+# Dual-Objective Loss (SmoothL1 + Cross-Entropy)
+# ==============================================================================
+class WeightedBiomassLoss(nn.Module):
     """
-    Biomass-Safe Rotation for Training.
-    
-    Standard rotation introduces black corners.
-    Standard RandomResizedCrop changes density (mass/pixel) too aggressively.
-    
-    This transform mimics the Inference TTA:
-    It rotates and 'zooms' into the valid area. This forces the model to learn
-    density estimation even when the field of view changes slightly.
+    Dual-Objective Biomass Loss:
+    1. SmoothL1 Loss for continuous regression on raw continuous biomass (grams)
+    2. CrossEntropy Loss for auxiliary interval classification
+    3. Scaled according to official competition weights [0.1, 0.1, 0.1, 0.2, 0.5]
     """
-    def __init__(self, degrees=30):
+    def __init__(self, loss_weights=None, cls_weight=0.3):
         super().__init__()
-        self.degrees = degrees
+        self.criterion_reg = nn.SmoothL1Loss()
+        self.criterion_cls = nn.CrossEntropyLoss()
+        self.cls_weight = cls_weight
+        self.weights = loss_weights if loss_weights is not None else OFFICIAL_WEIGHTS
 
-    def forward(self, img):
-        # 1. Pick Random Angle
-        angle = random.uniform(-self.degrees, self.degrees)
+    def forward(self, predictions_reg, predictions_cls, targets_reg, targets_cls=None):
+        device = targets_reg.device
+        w = torch.tensor(self.weights, device=device, dtype=torch.float32)
         
-        # 2. Rotate (Fill with Mean Color ~ Gray/Brown to match TTA/ImageNet Mean)
-        # ImageNet Mean (0.485, 0.456, 0.406) * 255 ~= (124, 116, 104)
-        img_rot = TF.rotate(img, angle, interpolation=transforms.InterpolationMode.BILINEAR, fill=(124, 116, 104))
-        
-        # 3. Get Dimensions
-        if isinstance(img, torch.Tensor):
-            _, h, w = img.shape
-        else:
-            w, h = img.size
-            
-        # 4. Crop Valid Area
-        ch, cw = get_largest_rotated_crop(h, w, angle)
-        img_crop = TF.center_crop(img_rot, [ch, cw])
-        
-        # 5. Resize Back
-        img_final = TF.resize(
-            img_crop, [h, w], 
-            interpolation=transforms.InterpolationMode.BILINEAR, 
-            antialias=True
-        )
-        
-        return img_final
+        # 1. Continuous Regression Loss
+        loss_reg_total = torch.tensor(0.0, device=device)
+        for i in range(5):
+            pred_i = predictions_reg[i].squeeze(-1) if isinstance(predictions_reg, list) else predictions_reg[:, i]
+            true_i = targets_reg[:, i]
+            loss_i = self.criterion_reg(pred_i, true_i)
+            loss_reg_total += w[i] * loss_i
 
-class SubtleSharpen:
+        # 2. Auxiliary Interval Classification Loss
+        loss_cls_total = torch.tensor(0.0, device=device)
+        if predictions_cls is not None and targets_cls is not None:
+            for i in range(5):
+                pred_cls_i = predictions_cls[i]
+                true_cls_i = targets_cls[:, i].long()
+                loss_cls_i = self.criterion_cls(pred_cls_i, true_cls_i)
+                loss_cls_total += w[i] * loss_cls_i
+
+        total_loss = loss_reg_total + (self.cls_weight * loss_cls_total)
+        return total_loss, loss_reg_total, loss_cls_total
+
+
+# ==============================================================================
+# Competition Metric: Weighted R^2 in Log-Space
+# ==============================================================================
+def calculate_competition_r2(y_true, y_pred, weights=OFFICIAL_WEIGHTS):
     """
-    Applies subtle sharpening to grass images.
-    Uses PIL's UnsharpMask filter with conservative parameters.
+    Official Competition Metric: Weighted sum of individual log-space R^2 scores.
+    Formula: FinalScore = sum(w_i * R2_i) where R2_i is computed on log(1 + y).
     """
-    def __init__(self, probability=0.5, radius=1, percent=80, threshold=2):
-        """
-        Args:
-            probability: Chance to apply sharpening (0.0 to 1.0)
-            radius: Sharpening radius (1-2 is subtle for grass)
-            percent: Sharpening strength (80-150 is now the standard range)
-            threshold: Minimum brightness change to sharpen (lower = more aggressive)
-        """
-        self.probability = probability
-        self.radius = radius
-        self.percent = percent
-        self.threshold = threshold
-    
-    def __call__(self, img):
-        if random.random() < self.probability:
-            return img.filter(ImageFilter.UnsharpMask(
-                radius=self.radius,
-                percent=self.percent,
-                threshold=self.threshold
-            ))
-        return img
-    
-
-def get_image_data_transforms():
-    """
-    Safe Transforms.
-    """
-    train_transform = transforms.Compose([
-        # 1. Ensure Baseline Resolution
-        transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
-        SubtleSharpen(probability=0.6, radius=1, percent=100, threshold=2),
-        # 2. Geometry (Manifold Alignment with TTA)
-        transforms.RandomApply([
-            RandomRotateCropResize(degrees=5),    
-            RandomRotateCropResize(degrees=-5),
-        ], p=0.5),     
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),
-
-        # 3. Spatial 
-        # Hue/Sat are sensitive for "Dead vs Green" classification.
-        # Brightness/Contrast simulate time-of-day/clouds safely.
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.0),
-
-        # 4. Normalization
-        transforms.ToTensor(),
-        transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
-    ])
-
-    val_transform = transforms.Compose([
-        transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
-        transforms.ToTensor(),
-        transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
-    ])
-
-    return train_transform, val_transform
-
-def load_data(logger):
-    """
-    Load and preprocess train.csv.
-    This creates the initial wide dataframe with all raw features and targets.
-    """
-    logger.info("Loading and Pivoting Data...")
-    if not os.path.exists('train.csv'):
-        raise FileNotFoundError("train.csv not found in current directory")
-    
-    df = pd.read_csv('train.csv')
-    df['clean_id'] = df['sample_id'].astype(str).apply(lambda x: x.split('__')[0])
-    
-    # Pivot Targets
-    targets = df.pivot_table(
-        index='clean_id', 
-        columns='target_name', 
-        values='target',
-        aggfunc='max' 
-    ).reset_index()
-    
-    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-    for col in target_cols:
-        if col not in targets.columns: 
-            targets[col] = 0.0
-    targets[target_cols] = targets[target_cols].fillna(0.0)
-
-    # Merge Metadata
-    meta_cols = ['clean_id', 'image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm']
-    valid_meta_cols = [c for c in meta_cols if c in df.columns]
-    
-    meta = df[valid_meta_cols].drop_duplicates(subset=['clean_id']).reset_index(drop=True)
-    wide = pd.merge(meta, targets, on='clean_id', how='left')
-    
-    # Parse Dates
-    wide['Sampling_Date'] = pd.to_datetime(wide['Sampling_Date'], format='mixed', dayfirst=False)
-    
-    # Basic numeric conversion
-    wide['Height_Ave_cm'] = pd.to_numeric(wide['Height_Ave_cm'], errors='coerce').fillna(0)
-    wide['Pre_GSHH_NDVI'] = pd.to_numeric(wide['Pre_GSHH_NDVI'], errors='coerce').fillna(0)
-    
-    wide = wide.rename(columns={'clean_id': 'sample_id'})
-    wide[target_cols] = wide[target_cols].astype(float)
-
-    logger.info(f"Data Loaded. Rows: {len(wide)}")
-    return wide
-
-def engineer_features(wide, logger):
-    """
-    Perform feature engineering on the wide dataframe.
-    This includes species parsing, upsampling, and derived features.
-    """
-    logger.info("Engineering Features...")
-    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-
-    logger.info("Parsing species to vectors...")
-    # Initialize columns for each core species
-    wide['Species'] = wide['Species'].str.lower()
-    for sp in CORE_SPECIES:
-        wide[f'Species_{sp}'] = 0.0
-
-    # Apply species parsing
-    species_vectors = wide['Species'].apply(parse_species_to_vector)
-    species_matrix = np.stack(species_vectors.values)
-    for i, sp in enumerate(CORE_SPECIES):
-        wide[f'Species_{sp}'] = species_matrix[:, i]
-
-    wide = assign_functional_groups(wide)
-    
-    wide['State_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='State'), axis=1)
-    
-    logger.info("Applying smart upsampling with NDVI and Height augmentation...")
-    wide = apply_smart_upsample_with_features(wide, logger)
-    
-    # Feature Engineering (Auxiliary Inputs)
-    wide['Height_Ave_cm_log'] = np.log1p(wide['Height_Ave_cm'])
-    wide['Interaction_Mul'] = wide['Pre_GSHH_NDVI'] * wide['Height_Ave_cm_log']
-    wide['Interaction_Add'] = (wide['Pre_GSHH_NDVI'] + wide['Height_Ave_cm_log']) / 2.0
-
-    # Species richness (per-sample count) and soft labels
-    # Always compute an internal count for soft-label normalization
-    species_cols_all = [f'Species_{sp}' for sp in CORE_SPECIES if f'Species_{sp}' in wide.columns]
-    if len(species_cols_all) > 0:
-        # Count of present species (sum of one-hot/multi-hot entries)
-        species_count_internal = wide[species_cols_all].sum(axis=1).astype(float)
-        # Avoid divide-by-zero; if zero, fall back to count=1 so probs remain 0
-        species_count_internal = species_count_internal.replace(0.0, 1.0)
-        # Create soft probability columns SpeciesProb_{sp}
-        for sp in CORE_SPECIES:
-            col = f'Species_{sp}'
-            if col in wide.columns:
-                wide[f'SpeciesProb_{sp}'] = wide[col].astype(float) / species_count_internal
-            else:
-                wide[f'SpeciesProb_{sp}'] = 0.0
-
-        # Optionally expose Species_Count feature according to config (richness excludes generic 'clover')
-        if USE_SPECIES_COUNT_FEATURE:
-            richness_cols = [f'Species_{sp}' for sp in CORE_SPECIES if sp != 'clover' and f'Species_{sp}' in wide.columns]
-            if len(richness_cols) > 0:
-                wide['Species_Count'] = wide[richness_cols].sum(axis=1).astype(float)
-
-    # Composite Biomass Stratification Bins (KBinsDiscretizer: ordinal/quantile)
-    try:
-        wts = cfg.targets.official_weights
-        tgt_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-        comp = np.zeros(len(wide), dtype=float)
-        for col, wt in zip(tgt_cols, wts):
-            if col in wide.columns:
-                comp += wt * wide[col].astype(float).values
-        n_bins = int(getattr(cfg.features, 'biomass_composite_bins', 5))
-        kbd = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile', quantile_method='averaged_inverted_cdf')
-        bins = kbd.fit_transform(comp.reshape(-1, 1)).astype(int).ravel()
-        # Guard against fewer effective bins due to duplicates; still store as int labels
-        wide['biomass_binned_composite'] = bins
-    except Exception:
-        # Fallback: single-bin if distribution too uniform/small
-        wide['biomass_binned_composite'] = 0
-
-    # Quantile Bin Features
-    if USE_BIN_FEATURES:
-        try:
-            ndvi_bins_ord = None
-            height_bins_ord = None
-            if 'Pre_GSHH_NDVI' in wide.columns:
-                ndvi_bins_ord = pd.qcut(wide['Pre_GSHH_NDVI'], q=4, labels=False, duplicates='drop').astype(int)
-            if 'Height_Ave_cm' in wide.columns:
-                height_bins_ord = pd.qcut(wide['Height_Ave_cm'], q=4, labels=False, duplicates='drop').astype(int)
-
-            if BIN_ENCODING == 'ordinal':
-                if ndvi_bins_ord is not None:
-                    wide['NDVI_Bin_Ordinal'] = ndvi_bins_ord.astype(float)
-                if height_bins_ord is not None:
-                    wide['Height_Bin_Ordinal'] = height_bins_ord.astype(float)
-            elif BIN_ENCODING == 'onehot':
-                if ndvi_bins_ord is not None:
-                    for k in range(4):
-                        wide[f'NDVI_Bin_OH_{k}'] = (ndvi_bins_ord == k).astype(float)
-                if height_bins_ord is not None:
-                    for k in range(4):
-                        wide[f'Height_Bin_OH_{k}'] = (height_bins_ord == k).astype(float)
-        except Exception:
-            if BIN_ENCODING == 'ordinal':
-                if 'Pre_GSHH_NDVI' in wide.columns and 'NDVI_Bin_Ordinal' not in wide.columns:
-                    wide['NDVI_Bin_Ordinal'] = 1.0
-                if 'Height_Ave_cm' in wide.columns and 'Height_Bin_Ordinal' not in wide.columns:
-                    wide['Height_Bin_Ordinal'] = 1.0
-            elif BIN_ENCODING == 'onehot':
-                for k in range(4):
-                    wide[f'NDVI_Bin_OH_{k}'] = 1.0 if k == 1 else 0.0
-                    wide[f'Height_Bin_OH_{k}'] = 1.0 if k == 1 else 0.0
-    
-    wide['SessionID'] = wide.apply(lambda r: f"{r['State']}_{pd.to_datetime(r['Sampling_Date']).strftime('%Y%m%d')}", axis=1)
-    wide['Season'] = wide['Sampling_Date'].apply(get_season)
-    wide['State_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='State'), axis=1)
-    wide["Season_State_Species"] = wide.apply(lambda r: f"{r['Season']}_{r['State_Species']}", axis=1)
-    wide["State_Season"] = wide.apply(lambda r: f"{r['State']}_{r['Season']}", axis=1)
-    wide['Season_Species'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Season'), axis=1)
-    wide['Species_Season'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Season', flip=True), axis=1)
-    wide['Species_Sampling_Date'] = wide.apply(lambda row: get_key1_specie_pair(row, key1='Sampling_Date',flip=True), axis=1)
-    wide['State_Sampling_Date'] = wide.apply(lambda r: f"{r['State']}_{r['Sampling_Date']}", axis=1)
-    wide['Season_Sampling_Date'] = wide.apply(lambda r: f"{r['Season']}_{r['Sampling_Date']}", axis=1)
-                
-    logger.info(f"Feature Engineering Complete. Rows: {len(wide)}")
-    wide.to_csv('wide.csv', index=False)
-    return wide
-
-
-def parse_species_to_vector(species_str):
-    """
-    Parse species string to 14-dim binary vector.
-    Handles mixtures like 'Ryegrass_Clover' and 'Mixed'.
-    """
-    if pd.isna(species_str):
-        return np.zeros(14, dtype=np.float32)
-    
-    species_str = str(species_str).lower().replace(' ', '')
-    vec = np.zeros(14, dtype=np.float32)
-    
-    # Special case: Mixed = all species
-    if species_str == 'mixed':
-        return np.ones(14, dtype=np.float32)
-    
-    # Split by underscore and expand 'clover'
-    parts = species_str.split('_')
-    for part in parts:
-        if part == 'clover':
-            # Expand to 4 sub-types
-            for idx, sp in enumerate(CORE_SPECIES):
-                if 'clover' in sp:
-                    vec[idx] = 1.0
-        else:
-            # Direct match
-            for idx, sp in enumerate(CORE_SPECIES):
-                if part == sp:
-                    vec[idx] = 1.0
-    
-    return vec
-
-def add_species_columns(df):
-    """
-    Add Species_{name} columns for each core species.
-    This is used by the dataset class.
-    """
-    for idx, sp in enumerate(CORE_SPECIES):
-        df[f'Species_{sp}'] = df['Species'].apply(
-            lambda x: parse_species_to_vector(x)[idx]
-        )
-    return df
-
-
-def coverage_aware_split(df, stratify_col='Species_Season', 
-                         min_train_per_combo=2, holdout_pct=0.15, 
-                         random_state=42, logger=None,
-                         ensure_species_train_coverage=True, species_col='Species',
-                         min_train_per_species=1,
-                         ensure_combo_train_coverage=True, combo_col='Season_State_Species',
-                         min_train_per_combo_key=1,
-                         ensure_holdout_coverage=True,
-                         min_holdout_per_species=1,
-                         min_holdout_per_combo=1,
-                         group_col='SessionID'):
-    """
-    Group-aware, bidirectional coverage-prioritized splitting that guarantees minimum 
-    representation for both training and holdout across key stratification dimensions 
-    while keeping sessions together and avoiding leakage.
-    
-    Args:
-        df: Input dataframe
-        stratify_col: Column for stratification
-        min_train_per_combo: Min samples per combo reserved for training
-        holdout_pct: Target percentage for holdout set
-        random_state: Random seed
-        logger: Optional logger
-        ensure_species_train_coverage: Ensure all species in training
-        species_col: Column containing species information
-        min_train_per_species: Min training samples per species
-        ensure_combo_train_coverage: Ensure all combos in training
-        combo_col: Column for combo coverage (e.g., 'Season_State_Species')
-        min_train_per_combo_key: Min training samples per combo
-        ensure_holdout_coverage: Ensure representative holdout coverage
-        min_holdout_per_species: Min holdout samples per species
-        min_holdout_per_combo: Min holdout samples per combo
-        group_col: Column for grouping (e.g., 'SessionID'). If None, defaults to sample-level.
-        
-    Returns:
-        train_df, holdout_df
-    """
-    np.random.seed(random_state)
-    df = df.copy()
-    
-    # 1. Ensure columns exist
-    if stratify_col not in df.columns:
-        if 'Species' in df.columns and 'Season' in df.columns:
-            df[stratify_col] = df['Species'].astype(str) + '_' + df['Season'].astype(str)
-        else:
-            raise ValueError(f"Missing columns for stratification: {stratify_col}")
-
-    if group_col and group_col not in df.columns:
-        if logger:
-            logger.warning(f"Group column '{group_col}' not found. Falling back to sample-level split.")
-        group_col = None
-
-    # 2. Group by session if group_col is provided
-    if group_col:
-        # For each group (session), we need to decide its stratification labels.
-        # We'll take the most frequent stratify_col, species_col, and combo_col for the session.
-        session_groups = df.groupby(group_col).agg({
-            stratify_col: lambda x: x.mode()[0] if not x.mode().empty else x.iloc[0],
-            species_col: lambda x: x.mode()[0] if not x.mode().empty else x.iloc[0],
-            combo_col: lambda x: x.mode()[0] if not x.mode().empty else x.iloc[0] if combo_col in df.columns else None,
-            'sample_id': 'count'  # To track session sizes
-        }).reset_index()
-        
-        # Rename for clarity in the splitting logic
-        session_groups = session_groups.rename(columns={'sample_id': 'n_samples'})
-        
-        # Mapping from SessionID to sample indices
-        group_to_indices = df.groupby(group_col).indices
-        
-        # Work with session labels instead of sample indices
-        working_df = session_groups
-        working_indices = session_groups.index.tolist()
-        index_to_original_indices = group_to_indices
-        mapping_key = group_col
-    else:
-        # Sample-level split (legacy mode)
-        working_df = df
-        working_indices = df.index.tolist()
-        index_to_original_indices = {i: [i] for i in working_indices}
-        mapping_key = 'sample_id'
-
-    # 3. Bidirectional coverage-aware allocation
-    groups = working_df[stratify_col].unique()
-    n_total_samples = len(df)
-    target_holdout_samples = int(n_total_samples * holdout_pct)
-    
-    reserved_train_idx = []  # Indices of working_df (sessions)
-    reserved_holdout_idx = []  # Indices reserved specifically for holdout coverage
-    remaining_idx = []  # Flexible allocation pool
-    
-    coverage_stats = {
-        'train_guaranteed': {},
-        'holdout_guaranteed': {},
-        'insufficient_data': []
-    }
-    
-    # Phase 1: Guarantee minimum coverage for both train and holdout
-    for group in groups:
-        group_mask = working_df[stratify_col] == group
-        group_idx = working_df[group_mask].index.tolist()
-        np.random.shuffle(group_idx)
-        
-        # Calculate requirements
-        train_needed = min(len(group_idx), min_train_per_combo)
-        holdout_needed = min(len(group_idx) - train_needed, 
-                           min_holdout_per_combo if ensure_holdout_coverage else 0)
-        
-        # Check if we have enough data
-        total_needed = train_needed + holdout_needed
-        if len(group_idx) < total_needed:
-            if logger:
-                logger.warning(f"Group {group}: only {len(group_idx)} sessions, need {total_needed} "
-                             f"(train:{train_needed}, holdout:{holdout_needed}). Prioritizing training.")
-            coverage_stats['insufficient_data'].append({
-                'group': group, 
-                'available': len(group_idx), 
-                'needed': total_needed
-            })
-            holdout_needed = max(0, len(group_idx) - train_needed)
-        
-        # Allocate
-        reserved_train_idx.extend(group_idx[:train_needed])
-        if holdout_needed > 0:
-            reserved_holdout_idx.extend(group_idx[train_needed:train_needed + holdout_needed])
-            remaining_idx.extend(group_idx[train_needed + holdout_needed:])
-        else:
-            remaining_idx.extend(group_idx[train_needed:])
-            
-        coverage_stats['train_guaranteed'][group] = train_needed
-        coverage_stats['holdout_guaranteed'][group] = holdout_needed
-    
-    # Phase 2: Flexible allocation from remaining pool to meet target holdout size
-    holdout_idx = reserved_holdout_idx.copy()
-    
-    # Calculate current sample counts (not session counts)
-    current_train_samples = sum(len(index_to_original_indices[working_df.loc[idx, mapping_key]]) 
-                              for idx in reserved_train_idx)
-    current_holdout_samples = sum(len(index_to_original_indices[working_df.loc[idx, mapping_key]]) 
-                                for idx in holdout_idx)
-    
-    # Allocate remaining sessions to reach target holdout size
-    np.random.shuffle(remaining_idx)
-    train_idx = reserved_train_idx.copy()
-    
-    for idx in remaining_idx:
-        key = working_df.loc[idx, mapping_key]
-        session_sample_count = len(index_to_original_indices[key])
-        
-        if current_holdout_samples + session_sample_count <= target_holdout_samples:
-            holdout_idx.append(idx)
-            current_holdout_samples += session_sample_count
-        else:
-            train_idx.append(idx)
-            current_train_samples += session_sample_count
-            
-    # 4. Species coverage enforcement with bidirectional consideration
-    if ensure_species_train_coverage:
-        train_species = set(working_df.loc[train_idx, species_col].unique())
-        all_species = set(working_df[species_col].unique())
-        missing_species = all_species - train_species
-        
-        if missing_species and logger:
-            logger.warning(f"Species missing from training: {missing_species}. Pulling from holdout...")
-            
-        for sp in missing_species:
-            # Pull one session of this species back from holdout if available
-            sp_holdout = [i for i in holdout_idx if working_df.loc[i, species_col] == sp]
-            if sp_holdout:
-                take_idx = sp_holdout[0]
-                train_idx.append(take_idx)
-                holdout_idx.remove(take_idx)
-                if logger:
-                    logger.info(f"  Moved 1 session of {sp} from holdout to training.")
-
-    # 5. Holdout species coverage enforcement (new)
-    if ensure_holdout_coverage:
-        holdout_species = set(working_df.loc[holdout_idx, species_col].unique())
-        all_species = set(working_df[species_col].unique())
-        missing_holdout_species = all_species - holdout_species
-        
-        if missing_holdout_species and logger:
-            logger.warning(f"Species missing from holdout: {missing_holdout_species}. Pulling from training...")
-            
-        for sp in missing_holdout_species:
-            # Pull one session of this species back from training if available
-            # But make sure we don't break training coverage
-            sp_train = [i for i in train_idx if working_df.loc[i, species_col] == sp]
-            train_sp_count = len([i for i in train_idx if working_df.loc[i, species_col] == sp])
-            
-            if sp_train and train_sp_count > min_train_per_species:
-                take_idx = sp_train[0]
-                holdout_idx.append(take_idx)
-                train_idx.remove(take_idx)
-                if logger:
-                    logger.info(f"  Moved 1 session of {sp} from training to holdout.")
-            elif missing_holdout_species and logger:
-                logger.warning(f"  Cannot move {sp} to holdout without breaking training coverage.")
-                
-    # 6. Combo coverage enforcement for both sets
-    if ensure_combo_train_coverage and combo_col in working_df.columns:
-        train_combos = set(working_df.loc[train_idx, combo_col].unique())
-        all_combos = set(working_df[combo_col].unique())
-        missing_combos = all_combos - train_combos
-        
-        for cmb in missing_combos:
-            cmb_holdout = [i for i in holdout_idx if working_df.loc[i, combo_col] == cmb]
-            if cmb_holdout:
-                take_idx = cmb_holdout[0]
-                train_idx.append(take_idx)
-                holdout_idx.remove(take_idx)
-                if logger:
-                    logger.info(f"  Moved 1 session of combo {cmb} from holdout to training.")
-
-    if ensure_holdout_coverage and combo_col in working_df.columns:
-        holdout_combos = set(working_df.loc[holdout_idx, combo_col].unique())
-        all_combos = set(working_df[combo_col].unique())
-        missing_holdout_combos = all_combos - holdout_combos
-        
-        for cmb in missing_holdout_combos:
-            cmb_train = [i for i in train_idx if working_df.loc[i, combo_col] == cmb]
-            train_cmb_count = len([i for i in train_idx if working_df.loc[i, combo_col] == cmb])
-            
-            if cmb_train and train_cmb_count > min_train_per_combo_key:
-                take_idx = cmb_train[0]
-                holdout_idx.append(take_idx)
-                train_idx.remove(take_idx)
-                if logger:
-                    logger.info(f"  Moved 1 session of combo {cmb} from training to holdout.")
-            elif missing_holdout_combos and logger:
-                logger.warning(f"  Cannot move combo {cmb} to holdout without breaking training coverage.")
-
-    # 7. Map working indices back to original sample indices
-    final_train_samples = []
-    for idx in train_idx:
-        key = working_df.loc[idx, mapping_key]
-        final_train_samples.extend(index_to_original_indices[key])
-        
-    final_holdout_samples = []
-    for idx in holdout_idx:
-        key = working_df.loc[idx, mapping_key]
-        final_holdout_samples.extend(index_to_original_indices[key])
-        
-    train_df = df.loc[final_train_samples].copy().reset_index(drop=True)
-    holdout_df = df.loc[final_holdout_samples].copy().reset_index(drop=True) if final_holdout_samples else pd.DataFrame()
-    
-    if logger:
-        logger.info(f"Split Summary (Grouped by {group_col if group_col else 'None'}):")
-        logger.info(f"  Train: {len(train_df)} samples, {train_df[group_col].nunique() if group_col else 'N/A'} groups")
-        logger.info(f"  Holdout: {len(holdout_df)} samples, {holdout_df[group_col].nunique() if group_col else 'N/A'} groups")
-        
-        # Enhanced coverage reporting
-        if len(holdout_df) > 0:
-            logger.info("Coverage Analysis:")
-            
-            # Species coverage
-            train_species = set(train_df[species_col].unique())
-            holdout_species = set(holdout_df[species_col].unique())
-            all_species = train_species | holdout_species
-            logger.info(f"  Species - Train: {len(train_species)}/{len(all_species)}, "
-                       f"Holdout: {len(holdout_species)}/{len(all_species)}")
-            
-            species_overlap = train_species & holdout_species
-            logger.info(f"  Species overlap: {len(species_overlap)}/{len(all_species)} "
-                       f"({len(species_overlap)/len(all_species)*100:.1f}%)")
-            
-            # Combo coverage if available
-            if combo_col in df.columns:
-                train_combos = set(train_df[combo_col].unique())
-                holdout_combos = set(holdout_df[combo_col].unique())
-                all_combos = train_combos | holdout_combos
-                combo_overlap = train_combos & holdout_combos
-                logger.info(f"  Combos - Train: {len(train_combos)}/{len(all_combos)}, "
-                           f"Holdout: {len(holdout_combos)}/{len(all_combos)}")
-                logger.info(f"  Combo overlap: {len(combo_overlap)}/{len(all_combos)} "
-                           f"({len(combo_overlap)/len(all_combos)*100:.1f}%)")
-            
-            # State and Season coverage
-            if 'State' in df.columns:
-                train_states = set(train_df['State'].unique())
-                holdout_states = set(holdout_df['State'].unique())
-                state_overlap = train_states & holdout_states
-                logger.info(f"  State overlap: {len(state_overlap)}/{len(train_states | holdout_states)}")
-                
-            if 'Season' in df.columns:
-                train_seasons = set(train_df['Season'].unique())
-                holdout_seasons = set(holdout_df['Season'].unique())
-                season_overlap = train_seasons & holdout_seasons
-                logger.info(f"  Season overlap: {len(season_overlap)}/{len(train_seasons | holdout_seasons)}")
-        
-        # Verify leakage
-        if group_col:
-            train_groups = set(train_df[group_col].unique())
-            holdout_groups = set(holdout_df[group_col].unique())
-            leaky = train_groups & holdout_groups
-            if leaky:
-                logger.error(f"LEAKAGE DETECTED: {len(leaky)} groups shared between train and holdout!")
-            else:
-                logger.info(f"✓ No leakage detected between train and holdout.")
-                
-        # Report insufficient data warnings
-        if coverage_stats['insufficient_data']:
-            logger.warning(f"Coverage constraints could not be fully met for {len(coverage_stats['insufficient_data'])} groups due to insufficient data.")
-
-    return train_df, holdout_df
-
-
-
-def get_season(date_val):
-    """
-    Map a timestamp to Australian meteorological seasons.
-    Returns one of: 'summer','autumn','winter','spring'.
-    """
-    if pd.isna(date_val):
-        return 'spring'
-    month = int(pd.to_datetime(date_val).month)
-    return SEASON_MONTH_MAP.get(month, 'spring')
-
-def apply_seasonal_drift(row: pd.Series, season: str, drift_strength: float) -> pd.Series:
-    """
-    Adjust biomass targets according to seasonal tendencies.
-    - Applies multiplicative drift to selected components.
-    - Recomputes `Dry_Total_g` as Clover + Dead + Green.
-    - Scales `GDM_g` proportionally to total change when possible.
-    """
-    tendencies = SEASONAL_DRIFT.get(season, {})
-    # Copy to avoid mutating original during pandas operations
-    new_row = row.copy()
-
-    # Components potentially present
-    components = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g']
-    for comp in components:
-        if comp in new_row.index:
-            base = float(new_row.get(comp, 0.0))
-            t = float(tendencies.get(comp, 0.0))
-            # Randomize magnitude slightly to avoid monotony
-            mag = np.random.uniform(0.5, 1.0)
-            factor = 1.0 + (t * drift_strength * mag)
-            # Clamp factor to reasonable bounds
-            factor = max(0.5, min(1.5, factor))
-            new_row[comp] = max(0.0, base * factor)
-
-    # Recompute total
-    if all(c in new_row.index for c in components):
-        total_old = float(row.get('Dry_Total_g', 0.0))
-        total_new = float(new_row['Dry_Clover_g']) + float(new_row['Dry_Dead_g']) + float(new_row['Dry_Green_g'])
-        new_row['Dry_Total_g'] = max(0.0, total_new)
-
-        # Scale GDM proportionally if present
-        if 'GDM_g' in new_row.index:
-            if total_old > 0:
-                scale = total_new / total_old
-                new_row['GDM_g'] = max(0.0, float(new_row['GDM_g']) * scale)
-            else:
-                # fallback: track green dominance
-                g = float(new_row['Dry_Green_g'])
-                new_row['GDM_g'] = max(0.0, g)
-
-    return new_row
-
-def apply_smart_upsample_with_features(wide_df, logger):
-    """
-    Apply smart upsampling with enhanced feature augmentation.
-    Uses new target order: [Green, Dead, Clover, GDM, Total]
-    Includes proper biomass constraints: GDM = Clover + Green, Total = Clover + Dead + Green
-    """
-    if not UPSAMPLE_CONFIG['enabled']:
-        logger.info("Upsampling disabled, skipping...")
-        return wide_df
-    
-    target_min = UPSAMPLE_CONFIG['target_min_samples']
-    noise_scale = UPSAMPLE_CONFIG['noise_scale']
-    use_seasonal = UPSAMPLE_CONFIG.get('seasonal_drift', False)
-    day_shift_prob = UPSAMPLE_CONFIG.get('day_shift_prob', 0.0)
-    drift_strength = UPSAMPLE_CONFIG.get('drift_strength', 0.0)
-    
-    logger.info(f"Smart upsampling config: target_min={target_min}, noise_scale={noise_scale}, seasonal_drift={use_seasonal}")
-    
-    groups = []
-    original_count = len(wide_df)
-    groups_processed = 0
-    total_synthetic_added = 0
-    
-    for key in wide_df['State_Species'].unique():
-        key_df = wide_df[wide_df['State_Species'] == key].copy()
-        n = len(key_df)
-        groups_processed += 1
-        
-        if n >= target_min:
-            # Already sufficient
-            key_df['is_synthetic'] = False
-            groups.append(key_df)
-            logger.info(f"  [{groups_processed:2d}] {key}: {n} samples (sufficient, no upsampling)")
-        else:
-            # Upsample to target_min
-            n_needed = target_min - n
-            upsampled = key_df.sample(n=n_needed, replace=True, random_state=313).copy()
-            total_synthetic_added += n_needed
-            logger.info(f"  [{groups_processed:2d}] {key}: {n} → {target_min} samples (+{n_needed} synthetic)")
-            
-            # Apply date shifting and seasonal drift if enabled
-            if day_shift_prob > 0:
-                shift_mask = np.random.rand(len(upsampled)) < day_shift_prob
-                if shift_mask.any():
-                    offsets = np.random.choice([-1, 1], size=int(shift_mask.sum()))
-                    shifted_dates = pd.to_datetime(upsampled.loc[shift_mask, 'Sampling_Date']) + pd.to_timedelta(offsets, unit='D')
-                    upsampled.loc[shift_mask, 'Sampling_Date'] = shifted_dates
-
-            if use_seasonal:
-                seasons = upsampled['Sampling_Date'].apply(get_season)
-                rand_mag = np.random.uniform(0.5, 1.0, size=len(upsampled))
-                
-                # Apply drift to component biomass (correct order: [Green, Dead, Clover])
-                components = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
-                for comp in components:
-                    if comp in upsampled.columns:
-                        t_series = seasons.map(lambda s: SEASONAL_DRIFT.get(s, {}).get(comp, 0.0)).astype(float)
-                        factors = np.clip(1.0 + t_series.values * drift_strength * rand_mag, 0.5, 1.5)
-                        base = upsampled[comp].astype(float).values
-                        upsampled[comp] = np.maximum(0.0, base * factors)
-
-                # Recompute derived targets: Total = Green + Dead + Clover, GDM = Green + Clover  
-                if all(c in upsampled.columns for c in components):
-                    green = upsampled['Dry_Green_g'].astype(float).values
-                    dead = upsampled['Dry_Dead_g'].astype(float).values 
-                    clover = upsampled['Dry_Clover_g'].astype(float).values
-                    
-                    new_total = green + dead + clover
-                    new_gdm = green + clover
-                    
-                    if 'Dry_Total_g' in upsampled.columns:
-                        upsampled['Dry_Total_g'] = np.maximum(0.0, new_total)
-                    if 'GDM_g' in upsampled.columns:
-                        upsampled['GDM_g'] = np.maximum(0.0, new_gdm)
-
-            # Add noise to component biomass, then recompute derived targets
-            comp_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
-            
-            for col in comp_cols:
-                if col in upsampled.columns:
-                    s = upsampled[col].std()
-                    if np.isnan(s) or s == 0:
-                        s = upsampled[col].mean()
-                    noise = np.random.normal(0, s * noise_scale, size=len(upsampled))
-                    upsampled[col] = np.maximum(0.0, upsampled[col] + noise)
-
-            # Recompute derived targets with proper constraints
-            if all(c in upsampled.columns for c in comp_cols):
-                green = upsampled['Dry_Green_g'].astype(float).values
-                dead = upsampled['Dry_Dead_g'].astype(float).values
-                clover = upsampled['Dry_Clover_g'].astype(float).values
-                
-                new_total = green + dead + clover
-                new_gdm = green + clover
-                
-                upsampled['Dry_Total_g'] = np.maximum(0.0, new_total)
-                if 'GDM_g' in upsampled.columns:
-                    upsampled['GDM_g'] = np.maximum(0.0, new_gdm)
-
-            # Clamp to competition target limits 
-            clamp_val = float(cfg.targets.biomass_clamp)
-            biomass_cols = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total_g']
-            for col in biomass_cols:
-                if col in upsampled.columns:
-                    upsampled[col] = np.clip(upsampled[col].astype(float).values, 0.0, clamp_val)
-            
-            # Add noise to auxiliary features (NDVI and Height) 
-            if 'Pre_GSHH_NDVI' in upsampled.columns:
-                ndvi_noise_std = 0.015  # Fixed small noise for NDVI
-                ndvi_noise = np.random.normal(0, ndvi_noise_std, size=len(upsampled))
-                upsampled['Pre_GSHH_NDVI'] = np.clip(upsampled['Pre_GSHH_NDVI'] + ndvi_noise, 0.0, 1.0)
-                
-            if 'Height_Ave_cm' in upsampled.columns:
-                height_std = upsampled['Height_Ave_cm'].std()
-                if np.isnan(height_std) or height_std == 0: height_std = upsampled['Height_Ave_cm'].mean()
-                height_noise_std = height_std * 0.03  # 3% relative noise for height
-                height_noise = np.random.normal(0, height_noise_std, size=len(upsampled))
-                upsampled['Height_Ave_cm'] = np.maximum(0.1, upsampled['Height_Ave_cm'] + height_noise)  # Minimum 0.1 cm
-            
-            # Mark samples and combine
-            upsampled['is_synthetic'] = True
-            key_df['is_synthetic'] = False
-            
-            groups.append(pd.concat([key_df, upsampled], ignore_index=True))
-    
-    result_df = pd.concat(groups, ignore_index=True)
-    result_df = result_df.sample(frac=1, random_state=313).reset_index(drop=True)  # Shuffle
-    result_df = result_df.sort_values(by=['Sampling_Date']).reset_index(drop=True)
-    
-    synthetic_count = len(result_df[result_df.get('is_synthetic', False)])
-    total_count = len(result_df)
-    upsampling_ratio = synthetic_count / total_count if total_count > 0 else 0
-    
-    logger.info(f"Upsampling summary:")
-    logger.info(f"  Original: {original_count:,} samples")
-    logger.info(f"  Final: {total_count:,} samples")
-    logger.info(f"  Synthetic: {synthetic_count:,} samples ({upsampling_ratio:.1%})")
-    logger.info(f"  Groups processed: {groups_processed}")
-    logger.info(f"  Total synthetic added: {total_synthetic_added:,}")
-    
-    return result_df
-
-
-def assign_functional_groups(df):
-    """
-    Classifies samples into biological categories for model learning.
-    Note: This is NOT used for stratification anymore (we use State+Species).
-    """
-    col_legumes = [f'Species_{x}' for x in GROUP_DEFINITIONS['legume'] if f'Species_{x}' in df.columns]
-    col_grasses = [f'Species_{x}' for x in GROUP_DEFINITIONS['grass']  if f'Species_{x}' in df.columns]
-    col_weeds   = [f'Species_{x}' for x in GROUP_DEFINITIONS['weed']   if f'Species_{x}' in df.columns]
-
-    s_legume = df[col_legumes].sum(axis=1)
-    s_grass  = df[col_grasses].sum(axis=1)
-    s_weed   = df[col_weeds].sum(axis=1)
-
-    groups = []
-    for l, g, w in zip(s_legume, s_grass, s_weed):
-        # Hierarchy: Weed > Legume > Grass (Prioritize rare groups in ties/mixes)
-        if w > 0 and w >= g and w >= l:
-            groups.append('weed')
-        elif l >= g: 
-            groups.append('legume')
-        else: 
-            groups.append('grass')
-
-    df['FunctionalGroup'] = groups
-    return df
-
-
-def calculate_competition_r2(y_true, y_pred, weights):
-    """
-    Competition Metric: Weighted Sum of Individual Log-Space R2 scores.
-    Formula: FinalScore = sum(w_i * R2_i) where R2_i is computed on log(1+y).
-    
-    Args:
-        y_true: Linear ground truth grams [N, 5] or [N*5] flattened.
-        y_pred: Linear predicted grams [N, 5] or [N*5] flattened.
-        weights: Official weights [0.1, 0.1, 0.1, 0.2, 0.5]
-    """
-    # Ensure numpy and correct shape [N, 5]
     y_true = np.array(y_true, dtype=float)
     y_pred = np.array(y_pred, dtype=float)
-    weights = np.array(weights, dtype=float)
+    w = np.array(weights, dtype=float)
     
     if y_true.ndim == 1:
         y_true = y_true.reshape(-1, 5)
     if y_pred.ndim == 1:
         y_pred = y_pred.reshape(-1, 5)
         
-    # 1. Log-Stabilizing Transformation: log(1+y)
-    # Note: We take linear inputs and transform them here for absolute clarity.
     yt = np.log1p(np.maximum(0, y_true))
     yp = np.log1p(np.maximum(0, y_pred))
     
-    # 2. Calculate R2 for each of the 5 targets independently
     r2_scores = []
     for i in range(5):
         target_true = yt[:, i]
         target_pred = yp[:, i]
         
-        ss_res = np.sum((target_true - target_pred)**2)
-        ss_tot = np.sum((target_true - np.mean(target_true))**2)
+        ss_res = np.sum((target_true - target_pred) ** 2)
+        ss_tot = np.sum((target_true - np.mean(target_true)) ** 2)
         
         if ss_tot == 0:
-            # If all ground truth values are the same, R2 is undefined.
-            # Competition usually treats this as 0.0 unless predictions also match exactly.
             score = 1.0 if ss_res == 0 else 0.0
         else:
-            score = 1 - (ss_res / ss_tot)
-        
+            score = 1.0 - (ss_res / ss_tot)
         r2_scores.append(score)
         
-    # 3. Final weighted sum
-    final_score = np.sum(np.array(r2_scores) * weights)
-    return final_score
+    return float(np.sum(w * np.array(r2_scores)))
 
-def set_seed(seed: Optional[int] = 42, logger=None) -> None:
-    if seed is not None:
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        if logger: logger.info(f"Seed set to {seed}")
 
-def save_batch_images(images, fold, batch_idx, session_dir, max_batches_to_save=5):
+# ==============================================================================
+# Soft Physical Post-Processing & Calibration
+# ==============================================================================
+def soft_physics_postprocess(preds_np):
     """
-    Save a batch of images as a grid to disk.
+    Decoupled Post-Processing Soft Blending:
+    Aligns raw predictions with physical identities without imposing rigid
+    constraints during backpropagation.
     """
-    if batch_idx >= max_batches_to_save:
-        return
+    preds = np.maximum(preds_np.copy(), 0.0)
     
-    images_dir = os.path.join(session_dir, 'images', f'fold{fold}')
-    os.makedirs(images_dir, exist_ok=True)
+    green = preds[:, 0]
+    dead = preds[:, 1]
+    clover = preds[:, 2] * 0.8  # Correction for clover overestimation
+    gdm = preds[:, 3]
+    total = preds[:, 4]
     
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(images.device)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(images.device)
-    images_denorm = images * std + mean
-    images_denorm = torch.clamp(images_denorm, 0, 1)
+    # Dead biomass piecewise calibration
+    dead = np.where(dead > 20.0, dead * 1.1, np.where(dead < 10.0, dead * 0.9, dead))
     
-    save_path = os.path.join(images_dir, f'batch_{batch_idx:03d}.png')
-    save_image(images_denorm, save_path, nrow=4, padding=2)
-
-def get_hsv_green_mask(image_numpy):
-    """
-    Calculates green mask using HSV color space logic.
-    Input: RGB Image as numpy array (H, W, 3)
-    Returns: binary_mask, hsv_score
+    # Soft Blending of composite quantities
+    derived_gdm = green + clover
+    gdm_blended = 0.5 * gdm + 0.5 * derived_gdm
     
-    DEPRECATED: Use get_hsv_biomass_scores for comprehensive analysis
-    """
-    # Convert to BGR for OpenCV
-    img_bgr = cv2.cvtColor(image_numpy, cv2.COLOR_RGB2BGR)
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    derived_total = green + clover + dead
+    total_blended = 0.5 * total + 0.5 * derived_total
     
-    # Define green range (Hue: 35-85, Sat/Val > 50)
-    lower_green = np.array([35, 50, 50])
-    upper_green = np.array([85, 255, 255])
-    
-    mask = cv2.inRange(hsv, lower_green, upper_green)
-    
-    # Calculate score
-    green_count = cv2.countNonZero(mask)
-    total_pixels = mask.shape[0] * mask.shape[1]
-    hsv_score = green_count / (total_pixels + 1e-9)
-    
-    return mask, hsv_score
-
-
-def get_hsv_biomass_scores(image_numpy):
-    """
-    Enhanced HSV processing to detect multiple biomass matter types:
-    1. Greenness (Healthy green vegetation)
-    2. Dry Greenness (Yellow-green, stressed vegetation)
-    3. Clover (Green legumes) 
-    4. Dirt/Soil (Brown to grey background)
-    5. Dead grass/plants (Yellow-brown, senescent)
-    
-    Input: RGB Image as numpy array (H, W, 3)
-    Returns: dict with scores for each matter type
-    """
-    # Convert to BGR for OpenCV
-    img_bgr = cv2.cvtColor(image_numpy, cv2.COLOR_RGB2BGR)
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    
-    total_pixels = hsv.shape[0] * hsv.shape[1]
-    
-    # 1. Greenness (Healthy grass)
-    # Hue: 40-80 (solid green), high saturation
-    green_lower = np.array([40, 70, 50])
-    green_upper = np.array([80, 255, 255])
-    green_mask = cv2.inRange(hsv, green_lower, green_upper)
-    green_score = cv2.countNonZero(green_mask) / total_pixels
-    
-    # 2. Dry Greenness (Stressed/Yellow-green)
-    # Hue: 25-40, moderate saturation
-    dry_green_lower = np.array([25, 40, 40])
-    dry_green_upper = np.array([40, 255, 255])
-    dry_green_mask = cv2.inRange(hsv, dry_green_lower, dry_green_upper)
-    # Remove overlap with healthy green
-    dry_green_mask = cv2.bitwise_and(dry_green_mask, cv2.bitwise_not(green_mask))
-    dry_green_score = cv2.countNonZero(dry_green_mask) / total_pixels
-    
-    # 3. Clover (Typically deeper green or specific hue)
-    # Hue: 35-50, very high saturation
-    clover_lower = np.array([35, 120, 40])
-    clover_upper = np.array([55, 255, 255])
-    clover_mask = cv2.inRange(hsv, clover_lower, clover_upper)
-    # Prioritize clover over regular green if saturation is very high
-    green_mask = cv2.bitwise_and(green_mask, cv2.bitwise_not(clover_mask))
-    green_score = cv2.countNonZero(green_mask) / total_pixels
-    clover_score = cv2.countNonZero(clover_mask) / total_pixels
-    
-    # 4. Dead grass/plants (Yellow-brown + Pale/White)
-    # Range 1: Classic yellow-brown senescent material (Hue 10-30)
-    dead_lower_1 = np.array([10, 40, 40])
-    dead_upper_1 = np.array([30, 200, 255])
-    dead_mask_1 = cv2.inRange(hsv, dead_lower_1, dead_upper_1)
-    
-    # Range 2: Pale/bleached dead material (Low saturation, high value)
-    dead_lower_2 = np.array([0, 0, 160])
-    dead_upper_2 = np.array([180, 40, 255])
-    dead_mask_2 = cv2.inRange(hsv, dead_lower_2, dead_upper_2)
-    
-    # Combine masks
-    dead_mask = cv2.bitwise_or(dead_mask_1, dead_mask_2)
-    
-    # Remove overlap with vegetation (prioritize live green/clover)
-    veg_live_mask = cv2.bitwise_or(green_mask, clover_mask)
-    dead_mask = cv2.bitwise_and(dead_mask, cv2.bitwise_not(veg_live_mask))
-    
-    dead_score = cv2.countNonZero(dead_mask) / total_pixels
-    
-    # 5. Dirt/Soil (Brown to grey)
-    # Very low saturation across hue range
-    soil_lower = np.array([0, 0, 20])
-    soil_upper = np.array([180, 50, 150])
-    soil_mask = cv2.inRange(hsv, soil_lower, soil_upper)
-    
-    # Hierarchy: remove all vegetation from soil mask
-    veg_mask = cv2.bitwise_or(cv2.bitwise_or(green_mask, dry_green_mask), 
-                               cv2.bitwise_or(clover_mask, dead_mask))
-    soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(veg_mask))
-    soil_score = cv2.countNonZero(soil_mask) / total_pixels
-    
-    return {
-        'green_score': green_score,
-        'dry_green_score': dry_green_score,
-        'clover_score': clover_score,
-        'dead_score': dead_score,
-        'soil_score': soil_score,
-        'masks': {
-            'green': green_mask,
-            'dry_green': dry_green_mask,
-            'clover': clover_mask,
-            'dead': dead_mask,
-            'soil': soil_mask
-        }
-    }
-
-def save_hsv_mask_batch(images, fold, batch_idx, session_dir, max_batches_to_save=5):
-    """
-    Save a batch of images alongside their HSV masks as a grid.
-    Shows all 5 matter types.
-    """
-    if batch_idx >= max_batches_to_save:
-        return
-    
-    save_dir = os.path.join(session_dir, 'hsv_masks', f'fold{fold}')
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Denormalize batches
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(images.device)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(images.device)
-    images_torch = torch.clamp(images * std + mean, 0, 1)
-    
-    # Move to CPU and numpy
-    imgs_np = (images_torch.permute(0, 2, 3, 1).cpu().numpy() * 255).astype(np.uint8)
-    
-    rows = []
-    for i in range(min(len(imgs_np), 4)):
-        img = imgs_np[i]
-        scores = get_hsv_biomass_scores(img)
-        
-        # Original Image
-        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        
-        # Masks
-        m_green = cv2.cvtColor(scores['masks']['green'], cv2.COLOR_GRAY2BGR)
-        m_dry_green = cv2.cvtColor(scores['masks']['dry_green'], cv2.COLOR_GRAY2BGR)
-        m_clover = cv2.cvtColor(scores['masks']['clover'], cv2.COLOR_GRAY2BGR)
-        m_dead = cv2.cvtColor(scores['masks']['dead'], cv2.COLOR_GRAY2BGR)
-        m_soil = cv2.cvtColor(scores['masks']['soil'], cv2.COLOR_GRAY2BGR)
-        
-        # Add labels to masks
-        cv2.putText(m_green, "Green", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(m_dry_green, "Dry Green", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.putText(m_clover, "Clover", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
-        cv2.putText(m_dead, "Dead", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        cv2.putText(m_soil, "Soil", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-        
-        # Horizontal stack for one sample
-        row = np.hstack([bgr, m_green, m_dry_green, m_clover, m_dead, m_soil])
-        rows.append(row)
-        
-    if rows:
-        combined = np.vstack(rows)
-        save_path = os.path.join(save_dir, f'batch_{batch_idx:03d}_hsv.jpg')
-        cv2.imwrite(save_path, combined)
-
-
-def save_tta_images(images, view_name, batch_idx, fold, epoch, session_dir):
-    """Save TTA-augmented images for visualization."""
-    if fold != 0 or epoch != 0 or batch_idx > 0:
-        return
-        
-    save_dir = os.path.join(session_dir, 'tta_analysis', f'fold{fold+1}_ep{epoch}')
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Denormalize
-    mean = torch.tensor(IMAGENET_DEFAULT_MEAN).view(1, 3, 1, 1).to(images.device)
-    std = torch.tensor(IMAGENET_DEFAULT_STD).view(1, 3, 1, 1).to(images.device)
-    images_denorm = images * std + mean
-    images_denorm = torch.clamp(images_denorm, 0, 1)
-    
-    save_path = os.path.join(save_dir, f'batch{batch_idx}_{view_name}.png')
-    save_image(images_denorm, save_path, nrow=4, padding=2)
-
-def build_weighted_sampler_from_df(df, key='State_Species', cap_quantile=0.95):
-    if key not in df.columns or len(df) == 0:
-        return None
-    counts = df[key].value_counts()
-    if counts.empty:
-        return None
-    w_map = (1.0 / counts).to_dict()
-    weights = df[key].map(w_map).astype(float).values
-    cap = np.quantile(weights, cap_quantile) if len(weights) > 4 else None
-    if cap is not None and np.isfinite(cap):
-        weights = np.minimum(weights, cap)
-    w_tensor = torch.as_tensor(weights, dtype=torch.double)
-    sampler = torch.utils.data.WeightedRandomSampler(w_tensor, num_samples=len(df), replacement=True)
-    return sampler
-
-def calculate_scheduler_score(
-    train_r2,
-    val_r2,
-    holdout_r2,
-    ema_score_prev=None,
-    ema_decay=0.9,
-):
-    """
-    Revised Score Calculation for R^2 Maximization.
-    Removes gap penalties that prematurely kill learning rates.
-    """
-    
-    # Smooth it with Holdout to prevent overfitting to the specific validation fold.
-    score_mix = (0.4 * val_r2) + (0.6* holdout_r2)
-    
-    # Proportional Overfit Penalty
-    # We allow a gap of up to 0.15 before penalizing excess.
-    gap = train_r2 - val_r2
-    threshold = 0.07
-    if gap > threshold:
-        penalty = (gap - threshold) * 0.3
-        score_mix -= penalty
-        
-    current_score = score_mix
-    
-    # Calculate gap just for logging, NOT for the score
-    score_gap = abs(train_r2 - val_r2)
-
-    # Apply EMA smoothing (Keep this, it is good for stability)
-    if ema_score_prev is None:
-        ema_score = current_score
-    else:
-        ema_score = ema_decay * ema_score_prev + (1.0 - ema_decay) * current_score
-    
-    return ema_score, score_gap, current_score
+    blended = np.column_stack([green, dead, clover, gdm_blended, total_blended])
+    return np.maximum(blended, 0.0)

@@ -1,180 +1,42 @@
-# Configuration for Image2Biomass competition
+# Configuration for Dual-Stream DINO Image2Biomass Prediction Pipeline
 
 preprocessing:
-  imagenet_mean: [0.485, 0.456, 0.406]
-  imagenet_std: [0.229, 0.224, 0.225]
-  image_height: 224
-  image_width: 224
+  image_height: 512
+  image_width: 512
+  dual_stream: true
 
 hyperparameters:
-  batch_size: 32
-  learning_rate: 0.0009 # Restored - frozen backbone is stable
+  batch_size: 8
+  learning_rate: 0.0003
   n_folds: 5
-  epochs: 40
-  weight_decay: 0.2 # Increased from 0.1 to mitigate overfitting
-  early_stop_patience: 6 # Balanced for CV stability
-  backbone: timm/vit_base_patch16_dinov3_qkvb.lvd1689m
-  min_train_samples: 50
-  backbone_freeze_threshold: 500
+  epochs: 35
+  weight_decay: 0.05
+  early_stop_patience: 8
+  backbone: vit_base_patch16_dinov3_qkvb
   max_grad_norm: 1.0
-  backbone_lr_factor: 0.05 # Not used when frozen, but kept for consistency
-  random_seed: 121 # Change this for multi-seed ensemble (try 42, 123, 456)
+  random_seed: 42
 
 training:
-  freeze_backbone: true
-  backbone_freeze_fraction: 0.75 # Only used if freeze_backbone=true
+  stage1_epochs: 8
+  stage2_epochs: 27
+  stage2_backbone_lr_factor: 0.1
+  fusion_dim: 384
+  dropout: 0.3
   use_tta: true
-  fusion_dim: 256 # Optimized for small DINO backbone
-  biomass_feat_weight: 10.0 # Reduced - let other tasks help
-  hsv_feat_weight: 2.0 # Reduced significantly (was 30.0)
-  aux_feat_weight: 1.0 # Increased - NDVI/height are reliable
-  species_feat_weight: 0.5 # Kept at 0.5 for regularization consistency
-  consistency_weight: 5.0 # Reduced - physics constraints already in architecture
-  hsv_constraint_weight: 2.0 # Adjusted for visibility blending
-  dead_hsv_min_k: 5.0 # Fine-tuned for dead material baseline
-  # Exponential moving average decay for smoothing scheduler score (0..1)
-  # Higher values -> smoother (less responsive). Default: 0.9
-  ema_decay: 0.9
-  # Use Huber loss for Dead biomass (robust to label noise)
-  use_huber_loss_for_dead: false # Set to false - use same loss as other targets
-  huber_delta: 1.0 # Threshold for switching from quadratic to linear
-  warmup_percentage_epochs: 0.25 # Down from 0.75 - 10 epochs warmup
-  unfreeze_epoch: 12 # Delayed to allow heads to stabilize
-  unfreeze_lr_factor: 0.005 # Reduced from 0.01 for gentler fine-tuning
-  unfreeze_layers: 6 # Only unfreeze last 6 transformer blocks
 
 augmentation:
-  tile_prob: 0.02 # Reduced from 0.05
-  mixup_prob: 0.5 # Increased from 0.3 to force better generalization
-  mixup_alpha: 1.0
-  use_cutmix: true # Add this - cuts patches instead of blending
-
-features:
-  use_bin_features: false
-  bin_encoding: "ordinal"
-  use_species_count_feature: false # Re-enabled - noise might help as regularization
-  biomass_composite_bins: 3
-  # Enhanced HSV feature configuration
-  hsv_biomass_scores:
-    enabled: true
-    # HSV range tuning for different matter types
-    green_vegetation:
-      hue_range: [40, 80]
-      saturation_min: 70
-      value_min: 50
-    dry_green_vegetation:
-      hue_range: [25, 40]
-      saturation_range: [40, 255]
-    clover:
-      hue_range: [35, 55]
-      saturation_min: 120
-    dead_matter:
-      hue_range: [10, 30]
-      saturation_range: [40, 200]
-    soil:
-      saturation_max: 50
-      value_range: [20, 150]
-    # Intelligent tiling configuration
-    intelligent_tiling:
-      enabled: true
-      hsv_blend_factor: 0.7 # How much to trust HSV vs uniform scaling (0.0-1.0)
-      min_tile_weight: 0.05 # Minimum weight per tile (prevents extreme values)
-      max_tile_weight: 0.8 # Maximum weight per tile
+  camera_scaling_prob: 0.2
 
 loss:
-  use_standardized_loss: true
-  use_weighted_regression_loss: true
-  reg_loss_type: "smoothl1" # options: smoothl1, mse
+  reg_loss_type: "smoothl1"
+  num_intervals: 7
+  cls_weight: 0.3
 
 targets:
   cols: ["Dry_Green_g", "Dry_Dead_g", "Dry_Clover_g", "GDM_g", "Dry_Total_g"]
   official_weights: [0.1, 0.1, 0.1, 0.2, 0.5]
-  biomass_clamp: 2500.0 # grams - max realistic biomass for dense pasture
-
-species_taxonomy:
-  core_species:
-    [
-      "clover",
-      "whiteclover",
-      "subcloverdalkeith",
-      "subcloverlosa",
-      "ryegrass",
-      "phalaris",
-      "fescue",
-      "lucerne",
-      "barleygrass",
-      "silvergrass",
-      "speargrass",
-      "bromegrass",
-      "capeweed",
-      "crumbweed",
-    ]
-  groups:
-    legume:
-      ["clover", "whiteclover", "subcloverdalkeith", "subcloverlosa", "lucerne"]
-    grass:
-      [
-        "ryegrass",
-        "phalaris",
-        "fescue",
-        "barleygrass",
-        "silvergrass",
-        "speargrass",
-        "bromegrass",
-      ]
-    weed: ["capeweed", "crumbweed"]
-
-upsample:
-  enabled: true
-  target_min_samples: 10 # Reduced from 20
-  method: "smart"
-  noise_scale: 0.02 # Increased noise from 0.015
-  seasonal_drift: true
-  day_shift_prob: 0.7
-  drift_strength: 0.2
 
 split:
-  holdout_pct: 0.15 # Increased from 0.1
-  stratification_key: "State_Species" # Simplified stratification for better performance
-  min_train_per_combo: 2 # Reduced from 3
-  # Coverage enforcement - simplified
-  ensure_species_train_coverage: true
-  species_col: "Species"
-  min_train_per_species: 3
-  ensure_combo_train_coverage: true # Disabled for simplicity
-  combo_col: "Season_State_Species"
-  min_train_per_combo_key: 3
-  group_stratification_col: "Season" # Reverted - showed better performance
-  group_col: "SessionID"
-
-seasons:
-  month_map:
-    1: "summer"
-    2: "summer"
-    12: "summer"
-    3: "autumn"
-    4: "autumn"
-    5: "autumn"
-    6: "winter"
-    7: "winter"
-    8: "winter"
-    9: "spring"
-    10: "spring"
-    11: "spring"
-  drift:
-    spring:
-      Dry_Green_g: 1.0
-      Dry_Dead_g: -0.4
-      Dry_Clover_g: 0.4
-    summer:
-      Dry_Green_g: 0.6
-      Dry_Dead_g: -0.3
-      Dry_Clover_g: 0.3
-    autumn:
-      Dry_Green_g: -0.2
-      Dry_Dead_g: 0.2
-      Dry_Clover_g: -0.2
-    winter:
-      Dry_Green_g: -0.2
-      Dry_Dead_g: 1.0
-      Dry_Clover_g: -0.2
+  n_splits: 5
+  group_col: "State_Sampling_Date"
+  group_stratification_col: "State_Species"

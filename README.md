@@ -114,7 +114,8 @@ Random downscaling ($0.85 - 1.0$) embedded into a black background simulates var
 │   │   ├── local_inference.py   # Multi-fold ensembling with TTA and submission generation
 │   │   └── test_time_pseudolabel.py # Online pseudo-labeling with Stochastic Weight Averaging
 │   └── notebooks/
-│       └── biomass-lastbatchnorm-ensemble.ipynb  # Self-contained Kaggle GPU notebook
+│       ├── biomass-lastbatchnorm-ensemble.ipynb  # Self-contained Kaggle GPU training + inference
+│       └── biomass-inference-submission.ipynb    # Fast Kaggle inference using uploaded .pt models
 ├── train/                       # Raw training pasture images (2000x1000)
 ├── test/                        # Raw test pasture images
 ├── wide.csv                     # Pivoted sample metadata and target records
@@ -133,7 +134,7 @@ Launch training from VS Code via **Run & Debug (`F5`)** $\to$ `Train Unified (Du
 & "C:\Users\Precision\anaconda3\envs\audio_signal_processing\python.exe" src/training/train_unified.py
 ```
 
-### 2. Generating Submissions
+### 2. Generating Submissions Locally
 
 Run inference across all trained fold checkpoints with horizontal flip TTA and soft post-processing:
 
@@ -151,4 +152,11 @@ Generate test pseudo-labels and fine-tune an online model with Stochastic Weight
 
 ### 4. Running on Kaggle
 
-Upload [`src/notebooks/biomass-lastbatchnorm-ensemble.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-lastbatchnorm-ensemble.ipynb) to Kaggle and run with a GPU accelerator (T4 $\times 2$ or P100). The notebook automatically detects `/kaggle/input/csiro-biomass` and outputs `/kaggle/working/submission.csv`.
+Two notebooks are provided in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
+
+1. **Full Training + Inference**: [`biomass-lastbatchnorm-ensemble.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-lastbatchnorm-ensemble.ipynb)
+   - Runs 5-fold training and generates `submission.csv` directly in the Kaggle GPU kernel.
+2. **Fast Dedicated Inference (Uploaded Weights)**: [`biomass-inference-submission.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-submission.ipynb)
+   - Upload your local `best_model_fold*.pt` files as a Kaggle Dataset.
+   - Attach the dataset to this notebook (`+ Add Input`).
+   - Automatically discovers all uploaded model checkpoints, runs dual-stream TTA inference with soft physics post-processing, and generates `submission.csv`.

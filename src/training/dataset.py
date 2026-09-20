@@ -37,6 +37,20 @@ def apply_camera_scale_simulation(image_np, prob=0.2):
     return image_np
 
 
+def permute_vertical_strips(image_np, n_strips=4, prob=0.5):
+    """
+    Randomly permutes N vertical strips of the pasture quadrat sub-image.
+    Because biomass is purely additive mass, shuffling vertical slices
+    conserves total grams in the frame while preventing spatial overfitting.
+    From 3rd Place Solution (+0.02 gain).
+    """
+    if random.random() < prob:
+        strips = np.array_split(image_np, n_strips, axis=1)
+        random.shuffle(strips)
+        return np.concatenate(strips, axis=1)
+    return image_np
+
+
 def get_dual_stream_transforms(img_size=512, is_training=True, camera_scaling_prob=0.2):
     """
     Transforms applied independently to each sub-image (view).
@@ -47,6 +61,7 @@ def get_dual_stream_transforms(img_size=512, is_training=True, camera_scaling_pr
             transforms.Resize((img_size, img_size)),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomVerticalFlip(p=0.5),
+            transforms.RandomGrayscale(p=0.2),  # 3rd place: learns leaf morphology over color
             transforms.RandomApply([transforms.RandomRotation((90, 90))], p=0.5),
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
             transforms.ToTensor(),
@@ -72,12 +87,16 @@ class DualStreamBiomassDataset(Dataset):
                  img_size=512,
                  is_training=True,
                  camera_scaling_prob=0.2,
+                 strip_shuffle_prob=0.5,
+                 view_swap_prob=0.5,
                  target_cols=TARGET_ORDER):
         self.df = df.reset_index(drop=True)
         self.img_dir = img_dir
         self.img_size = img_size
         self.is_training = is_training
         self.camera_scaling_prob = camera_scaling_prob
+        self.strip_shuffle_prob = strip_shuffle_prob
+        self.view_swap_prob = view_swap_prob
         self.target_cols = target_cols
         
         self.transform = get_dual_stream_transforms(
@@ -131,10 +150,21 @@ class DualStreamBiomassDataset(Dataset):
         left_np = raw_rgb[:, :mid_w].copy()
         right_np = raw_rgb[:, mid_w:].copy()
         
-        # Apply camera focal/scaling simulation during training
-        if self.is_training and self.camera_scaling_prob > 0:
-            left_np = apply_camera_scale_simulation(left_np, prob=self.camera_scaling_prob)
-            right_np = apply_camera_scale_simulation(right_np, prob=self.camera_scaling_prob)
+        # 3rd-Place Augmentations during training
+        if self.is_training:
+            # 1. Left/Right view swap (50% probability)
+            if self.view_swap_prob > 0 and random.random() < self.view_swap_prob:
+                left_np, right_np = right_np, left_np
+
+            # 2. Camera focal/scaling simulation
+            if self.camera_scaling_prob > 0:
+                left_np = apply_camera_scale_simulation(left_np, prob=self.camera_scaling_prob)
+                right_np = apply_camera_scale_simulation(right_np, prob=self.camera_scaling_prob)
+
+            # 3. Vertical 4-strip permutation (conserves total biomass while breaking spatial artifacts)
+            if self.strip_shuffle_prob > 0:
+                left_np = permute_vertical_strips(left_np, n_strips=4, prob=self.strip_shuffle_prob)
+                right_np = permute_vertical_strips(right_np, n_strips=4, prob=self.strip_shuffle_prob)
             
         left_pil = Image.fromarray(left_np)
         right_pil = Image.fromarray(right_np)

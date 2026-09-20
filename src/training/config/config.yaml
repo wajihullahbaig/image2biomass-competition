@@ -26,6 +26,8 @@ training:
 
 augmentation:
   camera_scaling_prob: 0.2
+  strip_shuffle_prob: 0.5
+  view_swap_prob: 0.5
 
 loss:
   reg_loss_type: "smoothl1"

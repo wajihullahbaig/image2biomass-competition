@@ -136,29 +136,40 @@ def calculate_competition_r2(y_true, y_pred, weights=OFFICIAL_WEIGHTS):
 # ==============================================================================
 # Soft Physical Post-Processing & Calibration
 # ==============================================================================
-def soft_physics_postprocess(preds_np):
+def soft_physics_postprocess(preds_np, 
+                             clover_scale=0.8, 
+                             dead_upper_thresh=20.0, 
+                             dead_upper_scale=1.1, 
+                             dead_lower_thresh=10.0, 
+                             dead_lower_scale=0.9,
+                             gdm_weight=0.5,
+                             total_weight=0.5):
     """
-    Decoupled Post-Processing Soft Blending:
-    Aligns raw predictions with physical identities without imposing rigid
-    constraints during backpropagation.
+    Decoupled Post-Processing Soft Blending & Fringe Expansion:
+    1. Aligns raw predictions with physical identities without imposing rigid
+       equality constraints during backpropagation.
+    2. Corrects systematic clover overestimation via scalar dampening (clover_scale).
+    3. Fringe expansion on dead thatch to counteract regression mean compression.
+    4. Softly reconciles GDM and Total composite quantities.
     """
     preds = np.maximum(preds_np.copy(), 0.0)
     
     green = preds[:, 0]
     dead = preds[:, 1]
-    clover = preds[:, 2] * 0.8  # Correction for clover overestimation
+    clover = preds[:, 2] * clover_scale
     gdm = preds[:, 3]
     total = preds[:, 4]
     
-    # Dead biomass piecewise calibration
-    dead = np.where(dead > 20.0, dead * 1.1, np.where(dead < 10.0, dead * 0.9, dead))
+    # Dead biomass fringe expansion
+    dead = np.where(dead > dead_upper_thresh, dead * dead_upper_scale,
+           np.where(dead < dead_lower_thresh, dead * dead_lower_scale, dead))
     
-    # Soft Blending of composite quantities
+    # Soft blending of composite quantities
     derived_gdm = green + clover
-    gdm_blended = 0.5 * gdm + 0.5 * derived_gdm
+    gdm_blended = gdm_weight * gdm + (1.0 - gdm_weight) * derived_gdm
     
     derived_total = green + clover + dead
-    total_blended = 0.5 * total + 0.5 * derived_total
+    total_blended = total_weight * total + (1.0 - total_weight) * derived_total
     
     blended = np.column_stack([green, dead, clover, gdm_blended, total_blended])
     return np.maximum(blended, 0.0)

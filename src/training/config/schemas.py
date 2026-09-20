@@ -32,6 +32,8 @@ class TrainingConfig:
 @dataclass
 class AugmentationConfig:
     camera_scaling_prob: float = 0.2
+    strip_shuffle_prob: float = 0.5
+    view_swap_prob: float = 0.5
 
 @dataclass
 class LossConfig:

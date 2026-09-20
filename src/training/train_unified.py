@@ -220,7 +220,9 @@ def run_training():
             train_df, 
             img_size=img_size, 
             is_training=True, 
-            camera_scaling_prob=cfg.augmentation.camera_scaling_prob
+            camera_scaling_prob=getattr(cfg.augmentation, 'camera_scaling_prob', 0.2),
+            strip_shuffle_prob=getattr(cfg.augmentation, 'strip_shuffle_prob', 0.5),
+            view_swap_prob=getattr(cfg.augmentation, 'view_swap_prob', 0.5)
         )
         val_ds = DualStreamBiomassDataset(
             val_df, 

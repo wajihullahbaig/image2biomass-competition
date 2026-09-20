@@ -78,12 +78,12 @@ def run_inference(
 
     # 2. Find Models
     if model_checkpoint_dir is None:
-        # Search in standard logs directory
-        candidate_logs = sorted(glob.glob("logs/dual_stream_*"), reverse=True)
+        # Search in standard logs directory or user-named log folders (e.g. logs_kaggle_0.62)
+        candidate_logs = sorted(glob.glob("logs/dual_stream_*") + glob.glob("logs_*/dual_stream_*"), reverse=True)
         if candidate_logs:
             model_checkpoint_dir = candidate_logs[0]
         else:
-            raise FileNotFoundError("No trained dual_stream checkpoints found in logs/!")
+            raise FileNotFoundError("No trained dual_stream checkpoints found in logs/ or logs_*/!")
             
     model_paths = sorted(glob.glob(os.path.join(model_checkpoint_dir, "best_model_fold*.pt")))
     if not model_paths:
@@ -140,7 +140,7 @@ def run_inference(
     avg_preds_post = soft_physics_postprocess(avg_preds_raw)
 
     # 7. Build Kaggle Submission
-    clean_ids = [s['sample_id'] for s in test_dataset]
+    clean_ids = unique_samples['clean_id'].tolist() if 'clean_id' in unique_samples.columns else unique_samples['sample_id'].tolist()
     pred_dict = {
         clean_ids[i]: {col: avg_preds_post[i, c_idx] for c_idx, col in enumerate(TARGET_ORDER)}
         for i in range(len(clean_ids))
@@ -166,7 +166,7 @@ def run_inference(
         final_submission = pd.DataFrame(records)
 
     final_submission.to_csv(output_submission_path, index=False)
-    print(f"\n✓ Submission successfully saved to: {output_submission_path}")
+    print(f"\n[OK] Submission successfully saved to: {output_submission_path}")
     print(f"Sample preview:\n{final_submission.head(10)}")
     return final_submission
 

@@ -26,7 +26,6 @@ env/
 .ipynb_checkpoints/
 
 # IDEs
-.vscode/
 .idea/
 
 # Logs and misc
@@ -35,3 +34,13 @@ env/
 Thumbs.db
 
 logs/
+pinn_models/
+plots/
+
+old_src/
+
+analysis_results/
+inference_images/
+inference_images_routed/
+tiling_visualizations/
+archive/

@@ -1,0 +1,42 @@
+# Configuration for Dual-Stream DINO Image2Biomass Prediction Pipeline
+
+preprocessing:
+  image_height: 512
+  image_width: 512
+  dual_stream: true
+
+hyperparameters:
+  batch_size: 8
+  learning_rate: 0.0003
+  n_folds: 5
+  epochs: 35
+  weight_decay: 0.05
+  early_stop_patience: 8
+  backbone: vit_base_patch16_dinov3_qkvb
+  max_grad_norm: 1.0
+  random_seed: 42
+
+training:
+  stage1_epochs: 8
+  stage2_epochs: 27
+  stage2_backbone_lr_factor: 0.1
+  fusion_dim: 384
+  dropout: 0.3
+  use_tta: true
+
+augmentation:
+  camera_scaling_prob: 0.2
+
+loss:
+  reg_loss_type: "smoothl1"
+  num_intervals: 7
+  cls_weight: 0.3
+
+targets:
+  cols: ["Dry_Green_g", "Dry_Dead_g", "Dry_Clover_g", "GDM_g", "Dry_Total_g"]
+  official_weights: [0.1, 0.1, 0.1, 0.2, 0.5]
+
+split:
+  n_splits: 5
+  group_col: "State_Sampling_Date"
+  group_stratification_col: "State_Species"

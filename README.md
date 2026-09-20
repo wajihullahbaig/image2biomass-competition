@@ -114,8 +114,9 @@ Random downscaling ($0.85 - 1.0$) embedded into a black background simulates var
 │   │   ├── local_inference.py   # Multi-fold ensembling with TTA and submission generation
 │   │   └── test_time_pseudolabel.py # Online pseudo-labeling with Stochastic Weight Averaging
 │   └── notebooks/
-│       ├── biomass-lastbatchnorm-ensemble.ipynb  # Self-contained Kaggle GPU training + inference
-│       └── biomass-inference-submission.ipynb    # Fast Kaggle inference using uploaded .pt models
+│       ├── biomass-lastbatchnorm-ensemble.ipynb      # Self-contained Kaggle GPU training + inference
+│       ├── biomass-inference-submission.ipynb        # Fast Kaggle inference using uploaded .pt models
+│       └── biomass-inference-pseudo-labeling.ipynb   # Test-time pseudo-labeling & online adaptation
 ├── train/                       # Raw training pasture images (2000x1000)
 ├── test/                        # Raw test pasture images
 ├── wide.csv                     # Pivoted sample metadata and target records
@@ -152,11 +153,17 @@ Generate test pseudo-labels and fine-tune an online model with Stochastic Weight
 
 ### 4. Running on Kaggle
 
-Two notebooks are provided in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
+Three dedicated, standalone notebooks are provided in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
 
 1. **Full Training + Inference**: [`biomass-lastbatchnorm-ensemble.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-lastbatchnorm-ensemble.ipynb)
    - Runs 5-fold training and generates `submission.csv` directly in the Kaggle GPU kernel.
 2. **Fast Dedicated Inference (Uploaded Weights)**: [`biomass-inference-submission.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-submission.ipynb)
    - Upload your local `best_model_fold*.pt` files as a Kaggle Dataset.
    - Attach the dataset to this notebook (`+ Add Input`).
-   - Automatically discovers all uploaded model checkpoints, runs dual-stream TTA inference with soft physics post-processing, and generates `submission.csv`.
+   - Automatically discovers all uploaded model checkpoints, runs dual-stream TTA inference with soft physics post-processing, and generates `submission.csv` in ~30 seconds on GPU.
+3. **Test-Time Pseudo-Labeling & Online Adaptation**: [`biomass-inference-pseudo-labeling.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-pseudo-labeling.ipynb)
+   - Implements the 1st-place solution test-time adaptation technique.
+   - Runs initial 5-fold ensemble with TTA on the test set.
+   - Generates calibrated pseudo-labels for test images.
+   - Performs 4 epochs of fast online fine-tuning on `train + pseudo_test` with low LR (`3e-5`).
+   - Blends adapted predictions (25%) with the 5-fold ensemble (75%) and writes `submission.csv`.

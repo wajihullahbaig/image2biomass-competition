@@ -93,6 +93,59 @@ Random downscaling ($0.85 - 1.0$) embedded into a black background simulates var
 
 ---
 
+## 1st-Place Solution Heritage vs. Codebase Enhancements
+
+This codebase is directly influenced by the core architectural innovations and empirical findings of the **1st-Place Solution** in the CSIRO Image2Biomass competition. Below is a structured breakdown detailing what principles were adopted, why they work, and how this repository enhances and structures them for production and competition reuse.
+
+### Summary Comparison Table
+
+| Dimension | 1st-Place Solution | This Codebase | Rationale / Benefit |
+| :--- | :--- | :--- | :--- |
+| **Image Tiling** | Centerline vertical split ($1000 \times 1000 \times 2$) | Centerline vertical split ($1000 \times 1000 \times 2$) | Preserves 1:1 aspect ratio without squashing plant geometry |
+| **Backbone Architecture** | DINO ViT Base (`vit_base_patch16_dinov3_qkvb`) | Shared DINO ViT Base with Multi-Head Self-Attention | Captures lighting-invariant token embeddings across the quadrat seam |
+| **Multi-Task Objective** | SmoothL1 regression + 7-bin classification | SmoothL1 regression + 7-bin UEPNet classification | Discrete interval logits stabilize gradients and handle 38% zero-inflation |
+| **Physical Constraints** | Decoupled training + soft post-processing | Decoupled continuous heads + soft post-processing | Avoids gradient conflicts caused by human drying/weighing measurement noise |
+| **Clover Calibration** | Soft scalar dampening ($\times 0.8$) | Soft scalar dampening ($\times 0.8$) | Corrects systematic visual overestimation of dense canopy clover leaves |
+| **Code Structure** | Monolithic competition notebook | Modular package (`src/training`, `src/inference`, `src/scripts`, `src/notebooks`) | Enables local debugging, modular testing, and reproducible experiments |
+| **Kaggle Execution** | Single heavy all-in-one script | 3 distinct standalone notebooks (Train, Fast Inference, Pseudo-Labeling) | Decouples ~30s inference from 2-hour training; isolates online adaptation |
+| **Cross-Validation** | Standard K-Fold / Random splitting | 5-fold Stratified Group K-Fold (by `State`) | Prevents same-farm geographic/temporal leakage between train and val |
+| **Python 3.12 Safety** | Unhandled multiprocessing errors | Enforced `num_workers=0` + AMP dual-device fallback | Eliminates Kaggle Python 3.12 semaphore deadlocks and worker crashes |
+| **EDA & Diagnostics** | Scattered ad-hoc tabular exploration | Unified `src/scripts/eda_insights.py` with `logs/eda/` | Discards useless test-absent tabular interactions; highlights vision realities |
+
+---
+
+### Key Principles Adopted from the 1st-Place Solution
+
+1. **Centerline Vertical 1:1 Tiling**:
+   - Standard resizing of panoramic $2000 \times 1000$ images down to $224 \times 224$ discards up to 97% of native pixels and squashes pasture textures. Slicing vertically down the centerline creates two square $1000 \times 1000$ sub-images, preserving native leaf geometry and resolution.
+2. **Cross-View Self-Attention Interaction**:
+   - Instead of treating the two halves independently or naively concatenating features, a `MultiheadAttention` layer models spatial continuity across the left and right plot seam before passing to the fusion MLP.
+3. **Auxiliary Interval Classification (UEPNet CVPR 2021)**:
+   - Biomass estimation without segmentation maps resembles crowd counting. Discretizing continuous target grams into 7 non-uniform density intervals provides discrete classification logits that anchor regression gradients against extreme zero-inflation (37.8% zero clover, 11.2% zero dead).
+4. **Decoupled Training with Soft Post-Processing**:
+   - Field measurements have empirical noise ($\pm 5–15\%$ slack from drying and sorting loss). Imposing hard mathematical equality ($Total = Green + Dead + Clover$) during backpropagation creates conflicting gradients. Decoupled training with soft blending ($0.5 \times \text{Prediction} + 0.5 \times \text{Components}$) achieves the highest $R^2$.
+5. **Test-Time Adaptation (Online Pseudo-Labeling)**:
+   - Generating soft-calibrated pseudo-labels on unlabelled test images followed by 4 rapid epochs of fine-tuning at low learning rate (`3e-5`) adapts the attention heads to the exact soil and lighting distribution of the test set.
+
+---
+
+### Key Differences & Engineering Enhancements in This Codebase
+
+1. **Modular Architecture & VS Code Integration**:
+   - Rather than relying on a fragile monolithic notebook, logic is partitioned into dedicated modules (`dataset.py`, `models.py`, `common.py`, `train_unified.py`, `local_inference.py`, `eda_insights.py`) supported by `.vscode/launch.json` debug profiles.
+2. **Dedicated, Offline-Capable Kaggle Notebooks**:
+   - **`biomass-inference-submission.ipynb`**: Pure inference running in ~30 seconds on GPU with `pretrained=False` (offline weight loading).
+   - **`biomass-inference-pseudo-labeling.ipynb`**: Online adaptation notebook blending 5-fold ensemble with adapted predictions.
+   - **`biomass-lastbatchnorm-ensemble.ipynb`**: Full 5-fold training pipeline from scratch.
+3. **Leakage-Free Stratified Group Validation**:
+   - Groups samples by `State` and continuous target bins to ensure train and validation folds never share pasture plots from the same farm or sampling date.
+4. **Container & Worker Stability**:
+   - Kaggle's migration to Python 3.12 introduced multi-process semaphore errors (`can only test a child process`). All notebook data loaders enforce safe worker pooling (`num_workers=0`) and adaptive AMP autocast handling for both CUDA and CPU.
+5. **Streamlined EDA**:
+   - Removed ~2,200 lines of obsolete tabular feature interactions (NDVI/Height features absent from test set) and replaced them with a consolidated, logging-driven EDA tool that saves structured summaries to `logs/eda/`.
+
+---
+
 ## Repository Structure
 
 ```

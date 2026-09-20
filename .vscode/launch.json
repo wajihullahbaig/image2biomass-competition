@@ -39,6 +39,19 @@
                 "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/training;${workspaceFolder}/src/inference"
             },
             "justMyCode": false
+        },
+        {
+            "name": "Run EDA Insights",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/scripts/eda_insights.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/scripts"
+            },
+            "justMyCode": true
         }
     ]
 }

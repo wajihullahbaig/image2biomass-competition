@@ -125,9 +125,15 @@ Random downscaling ($0.85 - 1.0$) embedded into a black background simulates var
 
 ---
 
-## Getting Started
+### 1. Exploratory Data Analysis (EDA)
 
-### 1. Training Locally
+Run the unified EDA pipeline from VS Code via **Run & Debug (`F5`)** $\to$ `Run EDA Insights` or execute:
+
+```powershell
+& "C:\Users\Precision\anaconda3\envs\audio_signal_processing\python.exe" src/scripts/eda_insights.py
+```
+
+### 2. Training Locally
 
 Launch training from VS Code via **Run & Debug (`F5`)** $\to$ `Train Unified (Dual-Stream DINO)` or execute:
 
@@ -135,7 +141,7 @@ Launch training from VS Code via **Run & Debug (`F5`)** $\to$ `Train Unified (Du
 & "C:\Users\Precision\anaconda3\envs\audio_signal_processing\python.exe" src/training/train_unified.py
 ```
 
-### 2. Generating Submissions Locally
+### 3. Generating Submissions Locally
 
 Run inference across all trained fold checkpoints with horizontal flip TTA and soft post-processing:
 

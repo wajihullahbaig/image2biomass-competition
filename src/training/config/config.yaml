@@ -14,7 +14,7 @@ hyperparameters:
   early_stop_patience: 8
   backbone: vit_base_patch16_dinov3_qkvb
   max_grad_norm: 1.0
-  random_seed: 42
+  random_seed: 223  # Monte Carlo optimized seed for balanced 5-fold splits
 
 training:
   stage1_epochs: 8
@@ -40,5 +40,5 @@ targets:
 
 split:
   n_splits: 5
-  group_col: "State_Sampling_Date"
-  group_stratification_col: "State_Species"
+  group_col: "Sampling_Date"         # Host-confirmed: prevents temporal leakage across dates
+  group_stratification_col: "State"  # Guaranteed state balance (NSW, WA, Tas, Vic)

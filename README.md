@@ -75,6 +75,20 @@ The Dual-Stream DINO ViT-Base architecture was evaluated systematically across l
 | **Single 5-Fold OOF** | **`0.7251`** | `0.7058` | — |
 | **10-Model Blend (70% Baseline + 30% Kitchen Sink)** | — | — | **`0.8151` (+0.0044 lift over baseline)** 🏆 |
 
+### 3. Cross-Validation Alignment & Anti-Leakage Strategy
+
+To prevent overfitting and eliminate the CV–LB discrepancy (frequently observed on Kaggle where naive splits gave inflated CV $0.77 \to$ LB $0.60$ drops):
+1. **Group by `Sampling_Date` (Zero Temporal Leakage)**:
+   The competition host confirmed that test set images are captured on distinct sampling dates. Holding out entire dates prevents the network from simply memorizing that day's specific solar angle, soil moisture, and pasture growth stage.
+2. **Stratify by `State` (Preserving Regional Phenology)**:
+   Extreme regional divergence exists across Australia:
+   - **Western Australia (WA)**: Has $0.0\text{g}$ dead thatch across all plots, but high clover ($22.1\text{g}$).
+   - **New South Wales (NSW)**: Has virtually $0.0\text{g}$ clover ($0.13\text{g}$), but high dry green ($56.6\text{g}$).
+   - **Tasmania**: Densest dead thatch ($15.2\text{g}$).
+   Stratifying by `State` guarantees every validation fold has an identical, realistic national distribution.
+3. **Monte Carlo Seed Search (`seed=223`)**:
+   Standard seeds with `StratifiedGroupKFold` produce lopsided fold sizes due to lumpy date clusters (e.g., Fold 3 had 50 images while Fold 4 had 120 images). A 1,000-seed search identified **`seed=223`**, balancing validation fold counts to an even **`[95, 80, 89, 86, 89]`** ($\text{Std} = 4.87$ vs $13.17$ originally).
+
 ---
 
 ## Key Pillars of the Pipeline

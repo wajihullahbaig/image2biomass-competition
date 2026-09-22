@@ -7,6 +7,7 @@ IMAGE_WIDTH = cfg.preprocessing.image_width
 DUAL_STREAM = cfg.preprocessing.dual_stream
 
 BATCH_SIZE = cfg.hyperparameters.batch_size
+GRADIENT_ACCUMULATION_STEPS = getattr(cfg.hyperparameters, 'gradient_accumulation_steps', 1)
 LEARNING_RATE = cfg.hyperparameters.learning_rate
 N_FOLDS = cfg.hyperparameters.n_folds
 EPOCHS = cfg.hyperparameters.epochs
@@ -38,7 +39,7 @@ def config_str():
         f"DEVICE: {DEVICE}\n"
         f"IMAGE_SIZE: {IMAGE_HEIGHT}x{IMAGE_WIDTH} (Dual-Stream={DUAL_STREAM})\n"
         f"BACKBONE: {BACKBONE}\n"
-        f"BATCH_SIZE: {BATCH_SIZE} | LR: {LEARNING_RATE} | WEIGHT_DECAY: {WEIGHT_DECAY}\n"
+        f"BATCH_SIZE: {BATCH_SIZE} (Grad Accum: {GRADIENT_ACCUMULATION_STEPS}) | LR: {LEARNING_RATE} | WEIGHT_DECAY: {WEIGHT_DECAY}\n"
         f"STAGE 1: {STAGE1_EPOCHS} epochs (heads only) | STAGE 2: {STAGE2_EPOCHS} epochs (backbone lr factor: {STAGE2_BACKBONE_LR_FACTOR})\n"
         f"FUSION_DIM: {FUSION_DIM} | DROPOUT: {DROPOUT} | USE_TTA: {USE_TTA}\n"
         f"INTERVALS: {NUM_INTERVALS} bins | CLS_WEIGHT: {CLS_WEIGHT}\n"

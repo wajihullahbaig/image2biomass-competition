@@ -11,6 +11,7 @@ class PreprocessingConfig:
 @dataclass
 class HyperparametersConfig:
     batch_size: int = 8
+    gradient_accumulation_steps: int = 1
     learning_rate: float = 0.0003
     n_folds: int = 5
     epochs: int = 35

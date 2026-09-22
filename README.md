@@ -61,19 +61,20 @@ The Dual-Stream DINO ViT-Base architecture was evaluated systematically across l
 | **3-Fold Ensemble** | $0.61058$ | $0.54996$ | Initial Dual-Stream DINOv3 + UEPNet interval heads |
 | **5-Fold Ensemble** | **$0.62868$** | $0.56703$ | Full 5-fold ensemble with horizontal-flip TTA (+0.0181 Public / +0.0171 Private) |
 | **5-Fold + Test-Time Adaptation (Pseudo-Labeling)** | $0.62598$ | $0.57239$ | Initial online adaptation run |
-| **5-Fold + Kitchen Sink Augs & Calibration** | $0.62446$ | **`0.59253`** 🏆 | **New Peak Private Score (+0.0925 lift from baseline; anti-shakeup generalization)** |
+| **5-Fold + Kitchen Sink Augs (Seed 42)** | $0.62446$ | $0.59253$ | 4-strip perm + grayscale + view swap |
+| **5-Fold + Anti-Leakage Split (`seed=223`)** | $0.62446$ | **`0.59825`** 🏆 | **New Peak Private Score (+0.09825 lift from baseline; just 0.0017 from 0.60!)** |
 
 ### 2. Local 5-Fold Stratified Group Cross-Validation (OOF)
 
-| Fold | Baseline $R^2$ (Standard Augs) | Kitchen Sink $R^2$ (4-Strip Perm + Grayscale + Swap) | Delta |
+| Fold | Baseline (Standard Augs, Seed 42) | Kitchen Sink (Seed 42) | Anti-Leakage Split (Seed 223) |
 | :---: | :---: | :---: | :---: |
-| **Fold 1** | $0.6097$ | **$0.6204$** | **+0.0107 (+1.07%)** 🚀 |
-| **Fold 2** | **$0.6161$** | $0.5528$ | -0.0633 (Destabilized Ep 14) |
-| **Fold 3** | $0.7882$ | **$0.7915$** | **+0.0033 (+0.33%)** 🚀 |
-| **Fold 4** | **$0.8020$** | $0.7759$ | -0.0261 |
-| **Fold 5** | **$0.6638$** | $0.6392$ | -0.0246 |
-| **Single 5-Fold OOF** | **`0.7251`** | `0.7058` | — |
-| **10-Model Blend (70% Baseline + 30% Kitchen Sink)** | — | — | **`0.8151` (+0.0044 lift over baseline)** 🏆 |
+| **Fold 1** | $0.6097$ | **$0.6204$** | $0.3964$ (Zero WA clover artifact) |
+| **Fold 2** | $0.6161$ | $0.5528$ | **$0.7350$ (+0.1189 lift!)** 🚀 |
+| **Fold 3** | **$0.7882$** | $0.7915$ | $0.6573$ |
+| **Fold 4** | **$0.8020$** | $0.7759$ | $0.7746$ |
+| **Fold 5** | $0.6638$ | $0.6392$ | **$0.7652$ (+0.1014 lift!)** 🚀 |
+| **Overall 5-Fold OOF** | `0.7251` | `0.7058` | **`0.7266` (Highest Single-Model OOF)** 🏆 |
+| **10-Model Blend (Baseline + New Run)** | — | — | **`0.8215` (+0.0108 lift over baseline)** 🏆 |
 
 ### 3. Cross-Validation Alignment & Anti-Leakage Strategy
 

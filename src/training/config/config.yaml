@@ -7,12 +7,13 @@ preprocessing:
 
 hyperparameters:
   batch_size: 8
+  gradient_accumulation_steps: 1  # Set to 2 if training convnextv2_large with batch_size 4
   learning_rate: 0.0003
   n_folds: 5
   epochs: 35
   weight_decay: 0.05
   early_stop_patience: 8
-  backbone: vit_base_patch16_dinov3_qkvb
+  backbone: vit_base_patch16_dinov3_qkvb  # Options: vit_base_patch16_dinov3_qkvb, convnextv2_large
   max_grad_norm: 1.0
   random_seed: 223  # Monte Carlo optimized seed for balanced 5-fold splits
 

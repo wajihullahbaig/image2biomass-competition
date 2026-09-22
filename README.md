@@ -198,20 +198,21 @@ This codebase is directly influenced by the core architectural innovations and e
 ├── src/
 │   ├── training/
 │   │   ├── config/
-│   │   │   ├── config.yaml      # Central pipeline hyperparameter configuration
+│   │   │   ├── config.yaml      # Central pipeline hyperparameter configuration (ViT & ConvNeXt)
 │   │   │   ├── loader.py        # Config loader
 │   │   │   └── schemas.py       # Dataclass schemas
 │   │   ├── common.py            # Loss functions, UEPNet borders, metric & post-processing
 │   │   ├── configs.py           # Configuration exporter
 │   │   ├── dataset.py           # DualStreamBiomassDataset with centerline split & focal scaling
-│   │   ├── models.py            # DualStreamBiomassModel (DINO + Attention + 10 Heads)
-│   │   └── train_unified.py     # Two-stage StratifiedGroupKFold training pipeline
+│   │   ├── models.py            # DualStreamBiomassModel (DINO ViT / ConvNeXt-V2 + Cross-View Attention + 10 Heads)
+│   │   └── train_unified.py     # Two-stage StratifiedGroupKFold training pipeline (with grad accum)
 │   ├── inference/
 │   │   ├── local_inference.py   # Multi-fold ensembling with TTA and submission generation
 │   │   └── test_time_pseudolabel.py # Online pseudo-labeling with Stochastic Weight Averaging
 │   └── notebooks/
-│       ├── biomass-lastbatchnorm-ensemble.ipynb      # Self-contained Kaggle GPU training + inference
-│       ├── biomass-inference-submission.ipynb        # Fast Kaggle inference using uploaded .pt models
+│       ├── biomass-lastbatchnorm-ensemble.ipynb      # DINOv3 ViT-Base 5-Fold Training + Inference (0.59825 Private)
+│       ├── biomass-convnextv2-ensemble.ipynb         # ConvNeXt-V2 Large 5-Fold Training + Inference (3rd-Place Innovation)
+│       ├── biomass-inference-submission.ipynb        # Multi-Backbone Super-Ensemble (DINO ViT + ConvNeXt-V2 Blend)
 │       └── biomass-inference-pseudo-labeling.ipynb   # Test-time pseudo-labeling & online adaptation
 ├── train/                       # Raw training pasture images (2000x1000)
 ├── test/                        # Raw test pasture images
@@ -245,27 +246,26 @@ Run inference across all trained fold checkpoints with horizontal flip TTA and s
 & "C:\Users\Precision\anaconda3\envs\audio_signal_processing\python.exe" src/inference/local_inference.py
 ```
 
-### 3. Test-Time Online Training (Optional)
-
-Generate test pseudo-labels and fine-tune an online model with Stochastic Weight Averaging (SWA):
-
-```powershell
-& "C:\Users\Precision\anaconda3\envs\audio_signal_processing\python.exe" src/inference/test_time_pseudolabel.py
-```
-
 ### 4. Running on Kaggle
 
-Three dedicated, standalone notebooks are provided in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
+Four dedicated, standalone notebooks are provided in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
 
-1. **Full Training + Inference**: [`biomass-lastbatchnorm-ensemble.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-lastbatchnorm-ensemble.ipynb)
-   - Runs 5-fold training and generates `submission.csv` directly in the Kaggle GPU kernel.
-2. **Fast Dedicated Inference (Uploaded Weights)**: [`biomass-inference-submission.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-submission.ipynb)
-   - Upload your local `best_model_fold*.pt` files as a Kaggle Dataset.
-   - Attach the dataset to this notebook (`+ Add Input`).
-   - Automatically discovers all uploaded model checkpoints, runs dual-stream TTA inference with soft physics post-processing, and generates `submission.csv` in ~30 seconds on GPU.
-3. **Test-Time Pseudo-Labeling & Online Adaptation**: [`biomass-inference-pseudo-labeling.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-pseudo-labeling.ipynb)
+1. **DINOv3 ViT-Base 5-Fold Training**: [`biomass-lastbatchnorm-ensemble.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-lastbatchnorm-ensemble.ipynb)
+   - Runs 5-fold training with the anti-leakage split (`seed=223`, `Sampling_Date` grouping, `State` stratification) and 3rd-place kitchen sink augmentations.
+   - Achieved peak **`0.59825` Private LB** (just 0.0017 from 0.60!).
+   - Saves `best_model_fold1.pt` ... `best_model_fold5.pt` and produces standalone `submission.csv`.
+
+2. **ConvNeXt-V2 Large 5-Fold Training**: [`biomass-convnextv2-ensemble.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-convnextv2-ensemble.ipynb)
+   - Implements the 3rd-place team's primary backbone innovation: `convnextv2_large` (198M params, 1536 feature dim).
+   - Uses `batch_size=4` with `grad_accum_steps=2` (effective batch size 8) for rock-solid stability on Kaggle 16GB GPUs (T4 / P100).
+   - Saves `best_model_convnextv2_fold1.pt` ... `best_model_convnextv2_fold5.pt` and produces standalone `submission.csv`.
+
+3. **Multi-Backbone Super-Ensemble Inference**: [`biomass-inference-submission.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-submission.ipynb)
+   - Blends predictions from **DINOv3 ViT** and **ConvNeXt-V2 Large** to capture both attention-based and convolutional inductive biases.
+   - **Automatic Architecture Detection**: Checks checkpoint shapes (768 vs 1536 channels) and instantiates the correct backbone dynamically.
+   - Upload both DINO and ConvNeXt models to a Kaggle dataset, attach via `+ Add Input`, and click **Run All**.
+   - Generates the blended `submission.csv` (50% ViT + 50% ConvNeXt) along with auxiliary `submission_vit.csv` and `submission_convnextv2.csv`.
+
+4. **Test-Time Pseudo-Labeling & Online Adaptation**: [`biomass-inference-pseudo-labeling.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-pseudo-labeling.ipynb)
    - Implements the 1st-place solution test-time adaptation technique.
-   - Runs initial 5-fold ensemble with TTA on the test set.
-   - Generates calibrated pseudo-labels for test images.
-   - Performs 4 epochs of fast online fine-tuning on `train + pseudo_test` with low LR (`3e-5`).
-   - Blends adapted predictions (25%) with the 5-fold ensemble (75%) and writes `submission.csv`.
+   - Runs initial ensemble with TTA on the test set, generates calibrated pseudo-labels, and performs 4 epochs of online fine-tuning on `train + pseudo_test`.

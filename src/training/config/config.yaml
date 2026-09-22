@@ -7,14 +7,15 @@ preprocessing:
 
 hyperparameters:
   batch_size: 8
+  gradient_accumulation_steps: 1  # Set to 2 if training convnextv2_large with batch_size 4
   learning_rate: 0.0003
   n_folds: 5
   epochs: 35
   weight_decay: 0.05
   early_stop_patience: 8
-  backbone: vit_base_patch16_dinov3_qkvb
+  backbone: vit_base_patch16_dinov3_qkvb  # Options: vit_base_patch16_dinov3_qkvb, convnextv2_large
   max_grad_norm: 1.0
-  random_seed: 42
+  random_seed: 223  # Monte Carlo optimized seed for balanced 5-fold splits
 
 training:
   stage1_epochs: 8
@@ -26,6 +27,8 @@ training:
 
 augmentation:
   camera_scaling_prob: 0.2
+  strip_shuffle_prob: 0.5
+  view_swap_prob: 0.5
 
 loss:
   reg_loss_type: "smoothl1"
@@ -38,5 +41,5 @@ targets:
 
 split:
   n_splits: 5
-  group_col: "State_Sampling_Date"
-  group_stratification_col: "State_Species"
+  group_col: "Sampling_Date"         # Host-confirmed: prevents temporal leakage across dates
+  group_stratification_col: "State"  # Guaranteed state balance (NSW, WA, Tas, Vic)

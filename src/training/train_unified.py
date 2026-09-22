@@ -43,19 +43,22 @@ def train_one_epoch(model, loader, optimizer, criterion, scaler, cfg, epoch, sta
     cls_loss_sum = 0.0
     total_samples = 0
 
-    pbar = tqdm(loader, desc=f"Stage {stage} Ep {epoch:02d}", leave=False)
-    for batch in pbar:
+    grad_accum_steps = getattr(cfg.hyperparameters, 'gradient_accumulation_steps', 1)
+    optimizer.zero_grad()
+
+    pbar = tqdm(enumerate(loader), total=len(loader), desc=f"Stage {stage} Ep {epoch:02d}", leave=False)
+    for step, batch in pbar:
         img_l = batch['image_left'].to(cfg.device)
         img_r = batch['image_right'].to(cfg.device)
         targets_reg = batch['targets'].to(cfg.device)
         targets_cls = batch['targets_cls'].to(cfg.device)
 
         batch_size = img_l.size(0)
-        optimizer.zero_grad()
 
         with torch.amp.autocast('cuda'):
             reg_preds, cls_preds = model(img_l, img_r)
             loss, loss_reg, loss_cls = criterion(reg_preds, cls_preds, targets_reg, targets_cls)
+            loss = loss / grad_accum_steps
 
         if torch.isnan(loss):
             if logger:
@@ -63,18 +66,21 @@ def train_one_epoch(model, loader, optimizer, criterion, scaler, cfg, epoch, sta
             continue
 
         scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.hyperparameters.max_grad_norm)
-        scaler.step(optimizer)
-        scaler.update()
 
-        total_loss_sum += loss.item() * batch_size
+        if (step + 1) % grad_accum_steps == 0 or (step + 1) == len(loader):
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.hyperparameters.max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+
+        total_loss_sum += loss.item() * grad_accum_steps * batch_size
         reg_loss_sum += loss_reg.item() * batch_size
         cls_loss_sum += loss_cls.item() * batch_size
         total_samples += batch_size
 
         pbar.set_postfix({
-            'loss': f"{loss.item():.4f}",
+            'loss': f"{loss.item() * grad_accum_steps:.4f}",
             'reg': f"{loss_reg.item():.4f}",
             'cls': f"{loss_cls.item():.4f}"
         })
@@ -220,7 +226,9 @@ def run_training():
             train_df, 
             img_size=img_size, 
             is_training=True, 
-            camera_scaling_prob=cfg.augmentation.camera_scaling_prob
+            camera_scaling_prob=getattr(cfg.augmentation, 'camera_scaling_prob', 0.2),
+            strip_shuffle_prob=getattr(cfg.augmentation, 'strip_shuffle_prob', 0.5),
+            view_swap_prob=getattr(cfg.augmentation, 'view_swap_prob', 0.5)
         )
         val_ds = DualStreamBiomassDataset(
             val_df, 

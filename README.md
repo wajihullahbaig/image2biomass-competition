@@ -210,10 +210,8 @@ This codebase is directly influenced by the core architectural innovations and e
 │   │   ├── local_inference.py   # Multi-fold ensembling with TTA and submission generation
 │   │   └── test_time_pseudolabel.py # Online pseudo-labeling with Stochastic Weight Averaging
 │   └── notebooks/
-│       ├── biomass-lastbatchnorm-ensemble.ipynb      # DINOv3 ViT-Base 5-Fold Training + Inference (0.59825 Private)
-│       ├── biomass-convnextv2-ensemble.ipynb         # ConvNeXt-V2 Large 5-Fold Training + Inference (3rd-Place Innovation)
-│       ├── biomass-inference-submission.ipynb        # Multi-Backbone Super-Ensemble (DINO ViT + ConvNeXt-V2 Blend)
-│       └── biomass-inference-pseudo-labeling.ipynb   # Test-time pseudo-labeling & online adaptation
+│       ├── training.ipynb       # Self-contained 5-fold training pipeline with anti-leakage split (0.59825 Private LB)
+│       └── inference.ipynb      # Universal TTA inference & ensembling (auto-detects ViT & ConvNeXt models)
 ├── train/                       # Raw training pasture images (2000x1000)
 ├── test/                        # Raw test pasture images
 ├── wide.csv                     # Pivoted sample metadata and target records
@@ -248,24 +246,16 @@ Run inference across all trained fold checkpoints with horizontal flip TTA and s
 
 ### 4. Running on Kaggle
 
-Four dedicated, standalone notebooks are provided in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
+Two standalone notebooks are provided in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
 
-1. **DINOv3 ViT-Base 5-Fold Training**: [`biomass-lastbatchnorm-ensemble.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-lastbatchnorm-ensemble.ipynb)
-   - Runs 5-fold training with the anti-leakage split (`seed=223`, `Sampling_Date` grouping, `State` stratification) and 3rd-place kitchen sink augmentations.
-   - Achieved peak **`0.59825` Private LB** (just 0.0017 from 0.60!).
+1. **Training Notebook**: [`src/notebooks/training.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/training.ipynb)
+   - Runs full 5-fold cross-validation with the anti-leakage split (`seed=223`, `Sampling_Date` grouping, `State` stratification) and 3rd-place kitchen sink augmentations.
+   - Dual-Stream 1:1 square tiling + cross-view attention + UEPNet 7-bin interval classification.
+   - Achieved our project-peak **`0.59825` Private LB**.
    - Saves `best_model_fold1.pt` ... `best_model_fold5.pt` and produces standalone `submission.csv`.
 
-2. **ConvNeXt-V2 Large 5-Fold Training**: [`biomass-convnextv2-ensemble.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-convnextv2-ensemble.ipynb)
-   - Implements the 3rd-place team's primary backbone innovation: `convnextv2_large` (198M params, 1536 feature dim).
-   - Uses `batch_size=4` with `grad_accum_steps=2` (effective batch size 8) for rock-solid stability on Kaggle 16GB GPUs (T4 / P100).
-   - Saves `best_model_convnextv2_fold1.pt` ... `best_model_convnextv2_fold5.pt` and produces standalone `submission.csv`.
-
-3. **Multi-Backbone Super-Ensemble Inference**: [`biomass-inference-submission.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-submission.ipynb)
-   - Blends predictions from **DINOv3 ViT** and **ConvNeXt-V2 Large** to capture both attention-based and convolutional inductive biases.
-   - **Automatic Architecture Detection**: Checks checkpoint shapes (768 vs 1536 channels) and instantiates the correct backbone dynamically.
-   - Upload both DINO and ConvNeXt models to a Kaggle dataset, attach via `+ Add Input`, and click **Run All**.
-   - Generates the blended `submission.csv` (50% ViT + 50% ConvNeXt) along with auxiliary `submission_vit.csv` and `submission_convnextv2.csv`.
-
-4. **Test-Time Pseudo-Labeling & Online Adaptation**: [`biomass-inference-pseudo-labeling.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/biomass-inference-pseudo-labeling.ipynb)
-   - Implements the 1st-place solution test-time adaptation technique.
-   - Runs initial ensemble with TTA on the test set, generates calibrated pseudo-labels, and performs 4 epochs of online fine-tuning on `train + pseudo_test`.
+2. **Inference Notebook**: [`src/notebooks/inference.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/inference.ipynb)
+   - Fast, offline-capable inference and ensembling notebook.
+   - **Automatic Architecture Detection**: Automatically detects whether checkpoints are DINO ViT (768 channels) or ConvNeXt-V2 (1536 channels) and dynamically loads them.
+   - Upload your trained `.pt` files as a Kaggle Dataset, attach via `+ Add Input`, and click **Run All**.
+   - Runs dual-stream inference with horizontal-flip TTA, applies soft physics post-processing, and writes `submission.csv` in ~30 seconds on GPU.

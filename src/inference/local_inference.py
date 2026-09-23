@@ -17,6 +17,8 @@ if training_dir not in sys.path:
 from config.loader import cfg
 from common import (
     TARGET_ORDER,
+    derive_5_targets,
+    apply_2nd_place_postprocess,
     soft_physics_postprocess,
     set_seed
 )
@@ -112,15 +114,21 @@ def run_inference(
     
     for fold_idx, model_path in enumerate(model_paths):
         print(f"Loading Fold {fold_idx + 1}: {os.path.basename(model_path)}...")
+        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
+        
+        # Detect whether checkpoint has 3 or 5 regression heads
+        head_indices = [int(k.split('.')[1]) for k in state_dict.keys() if k.startswith('reg_heads.') and '.0.weight' in k]
+        ckpt_num_targets = max(head_indices) + 1 if head_indices else 5
+        print(f"  Detected {ckpt_num_targets} regression heads in checkpoint.")
+        
         model = DualStreamBiomassModel(
             backbone_name=cfg.hyperparameters.backbone,
-            num_targets=5,
+            num_targets=ckpt_num_targets,
             num_intervals=cfg.loss.num_intervals,
             fusion_dim=cfg.training.fusion_dim,
             pretrained=False
         ).to(DEVICE)
         
-        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
         model.load_state_dict(state_dict)
         model.eval()
 
@@ -131,13 +139,20 @@ def run_inference(
             preds_batch = predict_batch(model, img_l, img_r, use_tta=use_tta)
             fold_preds.append(preds_batch)
             
-        all_fold_preds.append(np.concatenate(fold_preds, axis=0))
+        fold_preds_np = np.concatenate(fold_preds, axis=0)
+        if ckpt_num_targets == 3:
+            fold_preds_np = derive_5_targets(fold_preds_np)
+        all_fold_preds.append(fold_preds_np)
 
     # 5. Average Predictions across Folds
     avg_preds_raw = np.mean(all_fold_preds, axis=0)
 
-    # 6. Apply Soft Physical Post-Processing & Calibration
-    avg_preds_post = soft_physics_postprocess(avg_preds_raw)
+    # 6. Apply Post-Processing & Calibration
+    states = unique_samples['State'].tolist() if 'State' in unique_samples.columns else None
+    if states is not None:
+        avg_preds_post = apply_2nd_place_postprocess(avg_preds_raw, states=states)
+    else:
+        avg_preds_post = soft_physics_postprocess(avg_preds_raw)
 
     # 7. Build Kaggle Submission
     clean_ids = unique_samples['clean_id'].tolist() if 'clean_id' in unique_samples.columns else unique_samples['sample_id'].tolist()

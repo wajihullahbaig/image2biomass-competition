@@ -284,21 +284,27 @@ The pipeline integrates the core findings from the **2nd-Place Solution** (Publi
 3. **Color Space Preprocessing**:
    - Gray World adaptive white balance normalizes sunlight and camera variations across states and dates.
    - HSV shadow correction boosts the $V$ channel in detected shadow regions ($V < \mu - 0.5\sigma$) to prevent shadowed living grass from being misclassified as dead material.
-4. **Fast 3-Fold State Stratification**:
-   - 357 clean real images split across 3 folds (`seed=42`), guaranteeing identical state distributions per fold.
+4. **Fast 5-Fold State Stratification**:
+   - 357 clean real images split across 5 stratified folds on `State` (`seed=42`), guaranteeing identical state distributions per fold:
+     - Fold 1: 72 samples (Tas: 28, Vic: 23, NSW: 15, WA: 6)
+     - Fold 2: 72 samples (Tas: 28, Vic: 23, NSW: 15, WA: 6)
+     - Fold 3: 71 samples (Tas: 28, Vic: 22, NSW: 15, WA: 6)
+     - Fold 4: 71 samples (Tas: 27, Vic: 22, NSW: 15, WA: 7)
+     - Fold 5: 71 samples (Tas: 27, Vic: 22, NSW: 15, WA: 7)
    - Backbone: `vit_small_patch14_dinov2` (21M params, native $518 \times 518$ patch14).
-   - Schedule: 6 epochs warm-up + 10 epochs fine-tuning with batch size 16.
-   - **Complete 3-fold cross-validation finishes in ~3–5 minutes on GPU**.
+   - Schedule: **9 epochs warm-up (Stage 1)** + **13 epochs fine-tuning (Stage 2)** (22 total epochs per fold) with batch size 16.
+   - Saves visual sample batches for each fold to inspect data entering the model.
+   - **Complete 5-fold cross-validation finishes in ~12–15 minutes on GPU**.
 
 ### 5. Running on Kaggle
 
 Two standalone, zero-dependency notebooks are maintained in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
 
 1. **Training Notebook**: [`src/notebooks/training.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/training.ipynb)
-   - Self-contained 3-fold DINOv2-Small training notebook with 2nd-place post-processing, Gray World white balance, and HSV shadow compensation.
-   - Predicts 3 base targets, derives 5 full targets, and saves `best_model_fold1.pt` ... `best_model_fold3.pt`.
+   - Self-contained 5-fold DINOv2-Small training notebook with 2nd-place post-processing, Gray World white balance, and HSV shadow compensation.
+   - Predicts 3 base targets, derives 5 full targets, displays sample batch grids, and saves `best_model_fold1.pt` ... `best_model_fold5.pt`.
 2. **Inference Notebook**: [`src/notebooks/inference.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/inference.ipynb)
-   - Universal multi-backbone inference and ensembling notebook.
+   - Universal multi-backbone inference and ensembling notebook across all 5 folds.
    - **Smart Architecture Detection**: Auto-detects whether uploaded checkpoints are DINOv2-Small (384-dim, 3 targets), DINOv3 ViT-Base (768-dim, 5 targets), or ConvNeXt-V2 Large (1536-dim).
    - Dynamically blends predictions, applies 2nd-place post-processing, and generates `submission.csv` in ~30 seconds on GPU.
 

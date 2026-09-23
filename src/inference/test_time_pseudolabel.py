@@ -19,6 +19,7 @@ if training_dir not in sys.path:
 from config.loader import cfg
 from common import (
     WeightedBiomassLoss,
+    derive_5_targets,
     soft_physics_postprocess,
     set_seed,
     TARGET_ORDER
@@ -49,14 +50,18 @@ def generate_pseudo_labels(model_checkpoint_dir, test_df, test_img_dir="test", i
 
     all_preds = []
     for model_path in model_paths:
+        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
+        head_indices = [int(k.split('.')[1]) for k in state_dict.keys() if k.startswith('reg_heads.') and '.0.weight' in k]
+        ckpt_num_targets = max(head_indices) + 1 if head_indices else 5
+
         model = DualStreamBiomassModel(
             backbone_name=cfg.hyperparameters.backbone,
-            num_targets=5,
+            num_targets=ckpt_num_targets,
             num_intervals=cfg.loss.num_intervals,
             fusion_dim=cfg.training.fusion_dim,
             pretrained=False
         ).to(DEVICE)
-        model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
+        model.load_state_dict(state_dict)
         model.eval()
 
         fold_preds = []
@@ -67,7 +72,10 @@ def generate_pseudo_labels(model_checkpoint_dir, test_df, test_img_dir="test", i
                 reg_preds, _ = model(img_l, img_r)
                 p = torch.cat(reg_preds, dim=1).cpu().numpy()
                 fold_preds.append(p)
-        all_preds.append(np.concatenate(fold_preds, axis=0))
+        fold_preds_np = np.concatenate(fold_preds, axis=0)
+        if ckpt_num_targets == 3:
+            fold_preds_np = derive_5_targets(fold_preds_np)
+        all_preds.append(fold_preds_np)
 
     avg_preds = np.mean(all_preds, axis=0)
     # Apply soft physical calibration to pseudo-labels

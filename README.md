@@ -292,9 +292,9 @@ The pipeline integrates the core findings from the **2nd-Place Solution** (Publi
      - Fold 4: 71 samples (Tas: 27, Vic: 22, NSW: 15, WA: 7)
      - Fold 5: 71 samples (Tas: 27, Vic: 22, NSW: 15, WA: 7)
    - Backbone: `vit_small_patch14_dinov2` (21M params, native $518 \times 518$ patch14).
-   - Schedule: **9 epochs warm-up (Stage 1)** + **13 epochs fine-tuning (Stage 2)** (22 total epochs per fold) with batch size 16.
+   - Schedule: **7 epochs warm-up (Stage 1)** + **23 epochs fine-tuning (Stage 2)** (30 total epochs per fold) with batch size 16.
    - Saves visual sample batches for each fold to inspect data entering the model.
-   - **Complete 5-fold cross-validation finishes in ~12–15 minutes on GPU**.
+   - **Complete 5-fold cross-validation finishes in ~30–35 minutes on GPU**.
 
 ### 5. Running on Kaggle
 

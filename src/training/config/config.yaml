@@ -10,16 +10,16 @@ hyperparameters:
   gradient_accumulation_steps: 1
   learning_rate: 0.0003
   n_folds: 5
-  epochs: 22
+  epochs: 30
   weight_decay: 0.05
-  early_stop_patience: 8
+  early_stop_patience: 12
   backbone: vit_small_patch14_dinov2  # Fast 21M foundation model with native 518x518 patch14
   max_grad_norm: 1.0
   random_seed: 42
 
 training:
-  stage1_epochs: 9                  # Warm-up for 3 regression & classification heads (backbone frozen)
-  stage2_epochs: 13                 # End-to-end pasture adaptation (backbone unfrozen, lr 3e-5)
+  stage1_epochs: 7                  # Warm-up for 3 regression & classification heads (backbone frozen)
+  stage2_epochs: 23                 # End-to-end pasture adaptation (backbone unfrozen, lr 3e-5)
   stage3_epochs: 0                  # 0 = skipped
   stage2_backbone_lr_factor: 0.1    # Differential LR for backbone (3e-5)
   stage3_lr_factor: 0.1

@@ -1,5 +1,19 @@
 # configs.py - Configuration Exporter
-from config.loader import cfg
+import os
+import sys
+
+# Ensure both workspace root, src, and src/training are on PYTHONPATH
+cur_dir = os.path.dirname(os.path.abspath(__file__))
+if cur_dir not in sys.path:
+    sys.path.insert(0, cur_dir)
+parent_dir = os.path.dirname(cur_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+try:
+    from config.loader import cfg
+except ImportError:
+    from src.training.config.loader import cfg
 
 DEVICE = cfg.device
 IMAGE_HEIGHT = cfg.preprocessing.image_height
@@ -21,7 +35,9 @@ OFFICIAL_WEIGHTS = cfg.targets.official_weights
 
 STAGE1_EPOCHS = cfg.training.stage1_epochs
 STAGE2_EPOCHS = cfg.training.stage2_epochs
+STAGE3_EPOCHS = getattr(cfg.training, 'stage3_epochs', 0)
 STAGE2_BACKBONE_LR_FACTOR = cfg.training.stage2_backbone_lr_factor
+STAGE3_LR_FACTOR = getattr(cfg.training, 'stage3_lr_factor', 0.1)
 FUSION_DIM = cfg.training.fusion_dim
 DROPOUT = cfg.training.dropout
 USE_TTA = cfg.training.use_tta
@@ -40,9 +56,10 @@ def config_str():
         f"IMAGE_SIZE: {IMAGE_HEIGHT}x{IMAGE_WIDTH} (Dual-Stream={DUAL_STREAM})\n"
         f"BACKBONE: {BACKBONE}\n"
         f"BATCH_SIZE: {BATCH_SIZE} (Grad Accum: {GRADIENT_ACCUMULATION_STEPS}) | LR: {LEARNING_RATE} | WEIGHT_DECAY: {WEIGHT_DECAY}\n"
-        f"STAGE 1: {STAGE1_EPOCHS} epochs (heads only) | STAGE 2: {STAGE2_EPOCHS} epochs (backbone lr factor: {STAGE2_BACKBONE_LR_FACTOR})\n"
+        f"2-STAGE SCHEDULE: S1={STAGE1_EPOCHS} eps (heads warm-up) | S2={STAGE2_EPOCHS} eps (full FT)\n"
+        f"TARGETS ({len(TARGET_COLS)} base): {TARGET_COLS}\n"
         f"FUSION_DIM: {FUSION_DIM} | DROPOUT: {DROPOUT} | USE_TTA: {USE_TTA}\n"
         f"INTERVALS: {NUM_INTERVALS} bins | CLS_WEIGHT: {CLS_WEIGHT}\n"
         f"CAMERA_SCALE_PROB: {CAMERA_SCALING_PROB}\n"
-        f"CROSS-VALIDATION: {N_FOLDS} folds grouped by '{GROUP_COL}', stratified by '{GROUP_STRAT_COL}'"
+        f"CROSS-VALIDATION: {N_FOLDS} folds stratified by '{GROUP_STRAT_COL}'"
     )

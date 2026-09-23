@@ -16,8 +16,8 @@ class DualStreamBiomassModel(nn.Module):
     5. 5 Auxiliary Interval Classification Heads (7 bins each from UEPNet formulation) providing stabilizing gradients.
     """
     def __init__(self, 
-                 backbone_name="vit_base_patch16_dinov3_qkvb",
-                 num_targets=5,
+                 backbone_name="vit_small_patch14_dinov2",
+                 num_targets=3,
                  num_intervals=7,
                  fusion_dim=384,
                  dropout=0.3,
@@ -30,6 +30,7 @@ class DualStreamBiomassModel(nn.Module):
             fusion_dim = getattr(config.training, 'fusion_dim', 384)
             dropout = getattr(config.training, 'dropout', 0.3)
             num_intervals = getattr(config.loss, 'num_intervals', 7)
+            num_targets = len(config.targets.cols)
             
         self.backbone_name = backbone_name
         self.num_targets = num_targets
@@ -37,10 +38,14 @@ class DualStreamBiomassModel(nn.Module):
         self.fusion_dim = fusion_dim
         
         # 1. Shared Vision Backbone
+        kwargs = {}
+        if 'dinov2' in self.backbone_name or 'patch14' in self.backbone_name:
+            kwargs['dynamic_img_size'] = True
         self.backbone = timm.create_model(
             self.backbone_name, 
             pretrained=pretrained, 
-            num_classes=0
+            num_classes=0,
+            **kwargs
         )
         self.backbone_dim = self.backbone.num_features
         

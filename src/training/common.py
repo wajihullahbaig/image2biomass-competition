@@ -62,22 +62,29 @@ class WeightedBiomassLoss(nn.Module):
     Dual-Objective Biomass Loss:
     1. SmoothL1 Loss for continuous regression on raw continuous biomass (grams)
     2. CrossEntropy Loss for auxiliary interval classification
-    3. Scaled according to official competition weights [0.1, 0.1, 0.1, 0.2, 0.5]
+    3. Supports both 3 base targets [Green, Dead, Clover] and full 5 targets.
     """
-    def __init__(self, loss_weights=None, cls_weight=0.3):
+    def __init__(self, loss_weights=None, cls_weight=0.2, num_targets=3):
         super().__init__()
         self.criterion_reg = nn.SmoothL1Loss()
         self.criterion_cls = nn.CrossEntropyLoss()
         self.cls_weight = cls_weight
-        self.weights = loss_weights if loss_weights is not None else OFFICIAL_WEIGHTS
+        self.num_targets = num_targets
+        self.weights = loss_weights
 
     def forward(self, predictions_reg, predictions_cls, targets_reg, targets_cls=None):
         device = targets_reg.device
-        w = torch.tensor(self.weights, device=device, dtype=torch.float32)
+        n_t = len(predictions_reg) if isinstance(predictions_reg, list) else predictions_reg.shape[1]
+        
+        if self.weights is not None and len(self.weights) >= n_t:
+            w = torch.tensor(self.weights[:n_t], device=device, dtype=torch.float32)
+            w = w / w.sum()  # normalize
+        else:
+            w = torch.ones(n_t, device=device, dtype=torch.float32) / n_t
         
         # 1. Continuous Regression Loss
         loss_reg_total = torch.tensor(0.0, device=device)
-        for i in range(5):
+        for i in range(n_t):
             pred_i = predictions_reg[i].squeeze(-1) if isinstance(predictions_reg, list) else predictions_reg[:, i]
             true_i = targets_reg[:, i]
             loss_i = self.criterion_reg(pred_i, true_i)
@@ -86,7 +93,7 @@ class WeightedBiomassLoss(nn.Module):
         # 2. Auxiliary Interval Classification Loss
         loss_cls_total = torch.tensor(0.0, device=device)
         if predictions_cls is not None and targets_cls is not None:
-            for i in range(5):
+            for i in range(n_t):
                 pred_cls_i = predictions_cls[i]
                 true_cls_i = targets_cls[:, i].long()
                 loss_cls_i = self.criterion_cls(pred_cls_i, true_cls_i)
@@ -94,6 +101,34 @@ class WeightedBiomassLoss(nn.Module):
 
         total_loss = loss_reg_total + (self.cls_weight * loss_cls_total)
         return total_loss, loss_reg_total, loss_cls_total
+
+
+# ==============================================================================
+# Target Derivation (3 Base -> 5 Full Competition Targets)
+# ==============================================================================
+def derive_5_targets(preds_3):
+    """
+    Derives GDM = Green + Clover and Total = Green + Dead + Clover from 3 base targets.
+    Input: [N, 3] corresponding to [Green, Dead, Clover].
+    Output: [N, 5] corresponding to [Green, Dead, Clover, GDM, Total].
+    """
+    if isinstance(preds_3, torch.Tensor):
+        green = preds_3[:, 0:1]
+        dead = preds_3[:, 1:2]
+        clover = preds_3[:, 2:3]
+        gdm = green + clover
+        total = green + dead + clover
+        return torch.cat([green, dead, clover, gdm, total], dim=-1)
+    else:
+        preds_np = np.asarray(preds_3, dtype=np.float32)
+        if preds_np.ndim == 1:
+            preds_np = preds_np.reshape(1, -1)
+        green = preds_np[:, 0:1]
+        dead = preds_np[:, 1:2]
+        clover = preds_np[:, 2:3]
+        gdm = green + clover
+        total = green + dead + clover
+        return np.concatenate([green, dead, clover, gdm, total], axis=-1)
 
 
 # ==============================================================================
@@ -134,7 +169,59 @@ def calculate_competition_r2(y_true, y_pred, weights=OFFICIAL_WEIGHTS):
 
 
 # ==============================================================================
-# Soft Physical Post-Processing & Calibration
+# Post-Processing (2nd Place Solution: WA Zero-Dead + State Multipliers + Clipping)
+# ==============================================================================
+def apply_2nd_place_postprocess(preds_5, states=None):
+    """
+    2nd Place Solution Post-Processing (+0.014 Private LB lift):
+    1. WA Dead Zeroing: Ground truth in WA has 0.0 dead biomass.
+    2. State Multiplier Scaling:
+       - NSW: Green *= 1.03
+       - Vic: Clover *= 0.85
+       - WA: Clover *= 0.80, Dead *= 0.80, Green *= 0.97
+    3. Target Range Clipping to Training Bounds:
+       - Clover in [0, 71.7865]
+       - Dead in [0, 83.8407]
+       - Green in [0, 157.9836]
+    4. Recompute Physical Identities:
+       - GDM = Green + Clover
+       - Total = Green + Dead + Clover
+    """
+    preds = np.maximum(np.asarray(preds_5, dtype=np.float32).copy(), 0.0)
+    if preds.ndim == 1:
+        preds = preds.reshape(1, -1)
+        
+    green = preds[:, 0].copy()
+    dead = preds[:, 1].copy()
+    clover = preds[:, 2].copy()
+
+    # 1. State-specific adjustments
+    if states is not None:
+        for idx, st in enumerate(states):
+            st_str = str(st).strip()
+            if st_str == 'WA':
+                dead[idx] = 0.0
+                clover[idx] *= 0.80
+                green[idx] *= 0.97
+            elif st_str == 'Vic':
+                clover[idx] *= 0.85
+            elif st_str == 'NSW':
+                green[idx] *= 1.03
+
+    # 2. Clipping to training set boundaries
+    clover = np.clip(clover, 0.0, 71.7865)
+    dead = np.clip(dead, 0.0, 83.8407)
+    green = np.clip(green, 0.0, 157.9836)
+
+    # 3. Recompute physical composite identities
+    gdm = green + clover
+    total = green + dead + clover
+
+    return np.column_stack([green, dead, clover, gdm, total])
+
+
+# ==============================================================================
+# Soft Physical Post-Processing & Calibration (1st Place Soft Blend)
 # ==============================================================================
 def soft_physics_postprocess(preds_np, 
                              clover_scale=0.8, 
@@ -144,27 +231,16 @@ def soft_physics_postprocess(preds_np,
                              dead_lower_scale=0.9,
                              gdm_weight=0.5,
                              total_weight=0.5):
-    """
-    Decoupled Post-Processing Soft Blending & Fringe Expansion:
-    1. Aligns raw predictions with physical identities without imposing rigid
-       equality constraints during backpropagation.
-    2. Corrects systematic clover overestimation via scalar dampening (clover_scale).
-    3. Fringe expansion on dead thatch to counteract regression mean compression.
-    4. Softly reconciles GDM and Total composite quantities.
-    """
     preds = np.maximum(preds_np.copy(), 0.0)
-    
     green = preds[:, 0]
     dead = preds[:, 1]
     clover = preds[:, 2] * clover_scale
     gdm = preds[:, 3]
     total = preds[:, 4]
     
-    # Dead biomass fringe expansion
     dead = np.where(dead > dead_upper_thresh, dead * dead_upper_scale,
            np.where(dead < dead_lower_thresh, dead * dead_lower_scale, dead))
     
-    # Soft blending of composite quantities
     derived_gdm = green + clover
     gdm_blended = gdm_weight * gdm + (1.0 - gdm_weight) * derived_gdm
     

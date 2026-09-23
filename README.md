@@ -59,22 +59,23 @@ The Dual-Stream DINO ViT-Base architecture was evaluated systematically across l
 | :--- | :---: | :---: | :--- |
 | **Initial Baseline** (prior to refactor) | $\approx 0.56000$ | $\approx 0.50000$ | Standard single-view ViT / tabular baseline |
 | **3-Fold Ensemble** | $0.61058$ | $0.54996$ | Initial Dual-Stream DINOv3 + UEPNet interval heads |
-| **5-Fold Ensemble** | **$0.62868$** | $0.56703$ | Full 5-fold ensemble with horizontal-flip TTA (+0.0181 Public / +0.0171 Private) |
+| **5-Fold Ensemble** | $0.62868$ | $0.56703$ | Full 5-fold ensemble with horizontal-flip TTA (+0.0181 Public / +0.0171 Private) |
 | **5-Fold + Test-Time Adaptation (Pseudo-Labeling)** | $0.62598$ | $0.57239$ | Initial online adaptation run |
 | **5-Fold + Kitchen Sink Augs (Seed 42)** | $0.62446$ | $0.59253$ | 4-strip perm + grayscale + view swap |
-| **5-Fold + Anti-Leakage Split (`seed=223`)** | $0.62446$ | **`0.59825`** 🏆 | **New Peak Private Score (+0.09825 lift from baseline; just 0.0017 from 0.60!)** |
+| **5-Fold + Anti-Leakage Split (`seed=223`, Run 1)** | $0.62446$ | **`0.59825`** 🏆 | **All-Time Peak Private Score (+0.09825 lift from baseline; within 0.0017 of 0.60!)** |
+| **5-Fold + Anti-Leakage Split (`seed=223`, Run 2)** | **`0.63104`** 🚀 | `0.59582` | **All-Time Peak Public Score (+0.07104 over baseline!)** |
 
 ### 2. Local 5-Fold Stratified Group Cross-Validation (OOF)
 
-| Fold | Baseline (Standard Augs, Seed 42) | Kitchen Sink (Seed 42) | Anti-Leakage Split (Seed 223) |
-| :---: | :---: | :---: | :---: |
-| **Fold 1** | $0.6097$ | **$0.6204$** | $0.3964$ (Zero WA clover artifact) |
-| **Fold 2** | $0.6161$ | $0.5528$ | **$0.7350$ (+0.1189 lift!)** 🚀 |
-| **Fold 3** | **$0.7882$** | $0.7915$ | $0.6573$ |
-| **Fold 4** | **$0.8020$** | $0.7759$ | $0.7746$ |
-| **Fold 5** | $0.6638$ | $0.6392$ | **$0.7652$ (+0.1014 lift!)** 🚀 |
-| **Overall 5-Fold OOF** | `0.7251` | `0.7058` | **`0.7266` (Highest Single-Model OOF)** 🏆 |
-| **10-Model Blend (Baseline + New Run)** | — | — | **`0.8215` (+0.0108 lift over baseline)** 🏆 |
+| Fold | Baseline (Seed 42) | Kitchen Sink (Seed 42) | Run 1 (`seed=223`) | Run 2 (`seed=223`) |
+| :---: | :---: | :---: | :---: | :---: |
+| **Fold 1** | $0.6097$ | **$0.6204$** | $0.3964$ (Zero WA clover artifact) | **`0.5023` (+0.1059 lift!)** 🚀 |
+| **Fold 2** | $0.6161$ | $0.5528$ | **$0.7350$** | **`0.7091`** |
+| **Fold 3** | **$0.7882$** | $0.7915$ | $0.6573$ | **`0.6174`** |
+| **Fold 4** | **$0.8020$** | $0.7759$ | $0.7746$ | **`0.7677`** |
+| **Fold 5** | $0.6638$ | $0.6392$ | $0.7652$ | **`0.7674`** |
+| **Overall 5-Fold OOF** | `0.7251` | `0.7058` | `0.7266` | **`0.7275` (New All-Time High Single-Model OOF)** 🏆 |
+| **Per-Target R² (Run 2)** | — | — | — | **Green: `0.7944` \| GDM: `0.7821` \| Total: `0.7066` \| Clover: `0.5481` \| Dead: `0.4270`** |
 
 ### 3. Cross-Validation Alignment & Anti-Leakage Strategy
 
@@ -125,14 +126,38 @@ Five classification heads predict the interval class for each target alongside c
   - $GDM \leftarrow 0.5 \times GDM + 0.5 \times (Green + Clover)$
   - $Total \leftarrow 0.5 \times Total + 0.5 \times (Green + Clover + Dead)$
 
-### 4. Camera Focal-Scaling Augmentation
+### 4. 3rd-Place Kitchen Sink Augmentations
 
-Random downscaling ($0.85 - 1.0$) embedded into a black background simulates varying camera sensor heights and focal lengths without altering local pixel density.
+- **Vertical 4-Strip Permutation ($p=0.5$)**: Slices sub-images into 4 vertical strips and permutes their order. Mass is strictly conserved while breaking spatial position bias.
+- **Random Grayscale ($p=0.2$)**: Forces representation learning on leaf geometry and canopy texture rather than purely color shortcuts.
+- **View Swap ($p=0.5$)**: Swaps Left and Right views into cross-view attention.
+- **Camera Scaling ($p=0.2$)**: Jitters scale with black padding.
 
-### 5. Two-Stage Training Schedule
+### 5. 3-Stage "Sandwich" Training Schedule (LP → FT → Re-Freeze)
 
-- **Stage 1 (Epochs 1–8)**: Freeze DINO backbone; train cross-view attention and MLP heads.
-- **Stage 2 (Epochs 9–35)**: Full end-to-end fine-tuning with differential learning rate (`backbone_lr = 0.1 * lr`).
+```
+Epoch 01 ──────────────────────── Epoch 14 ──────────────────────── Epoch 30 ────── Epoch 35
+  │                                      │                                 │           │
+  ▼                                      ▼                                 ▼           ▼
+┌──────────────────────────────────────┐┌────────────────────────────────┐┌───────────┐
+│     STAGE 1: Heads Warm-up           ││  STAGE 2: Full Fine-Tuning     ││ STAGE 3:   │
+│  • Backbone: FROZEN                  ││ • Backbone: UNFROZEN (3e-5 LR) ││ Calibration│
+│  • Heads & Attention: LR = 3e-4      ││ • Heads: LR = 3e-4 (Cosine LR) ││ • Backbone:│
+│  • Heads mature to R² ≈ 0.35-0.45    ││ • Adapts to pasture textures   ││   RE-FROZEN│
+│  • Zero risk to DINO representations ││ • End-to-end multi-task loss   ││ • LR: 3e-5 │
+└──────────────────────────────────────┘└────────────────────────────────┘└───────────┘
+```
+
+1. **Stage 1 (14 Epochs — Heads Warm-up / Linear Probing)**:
+   * **Backbone is FROZEN**. Trains only the cross-view multi-head attention, fusion MLP, and the 10 regression/interval heads with base LR (`3e-4`).
+   * *Benefit*: Completely eliminates early gradient shock. The heads reach full maturity ($R^2 \approx 0.35 - 0.45$) *before* the pre-trained DINOv3 backbone is touched.
+2. **Stage 2 (16 Epochs — Full Fine-Tuning / Pasture Adaptation)**:
+   * **Backbone is UNFROZEN**. Differential learning rate: `backbone_lr = 3e-5` ($0.1\times$), `heads_lr = 3e-4` with Cosine Annealing.
+   * *Benefit*: Deep end-to-end visual feature adaptation directly tailored to Australian pasture canopies.
+3. **Stage 3 (5 Epochs — Head Calibration / Re-Freeze)**:
+   * **Backbone is RE-FROZEN**. Starts from the best checkpoint saved during Stage 2.
+   * Fine-tunes only the attention, fusion, and heads at low learning rate (`3e-5` decaying to `1e-6`).
+   * *Benefit*: Eliminates backbone feature drift in the final epochs, allowing the regression heads and softplus boundaries to lock into optimal calibration against the learned pasture features.
 
 ---
 
@@ -244,18 +269,36 @@ Run inference across all trained fold checkpoints with horizontal flip TTA and s
 & "C:\Users\Precision\anaconda3\envs\audio_signal_processing\python.exe" src/inference/local_inference.py
 ```
 
-### 4. Running on Kaggle
+### 4. Fast 2-Stage DINOv2-Small Training (2nd-Place Solution Integration)
 
-Two standalone notebooks are provided in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
+The pipeline integrates the core findings from the **2nd-Place Solution** (Public **`0.77839`** / Private **`0.67558`**):
+1. **Predict 3 Base Targets Only (`Green`, `Dead`, `Clover`)**:
+   - Physical composite targets are derived mathematically:
+     $$\text{GDM} = \text{Green} + \text{Clover}$$
+     $$\text{Total} = \text{Green} + \text{Dead} + \text{Clover}$$
+   - Eliminates contradictory gradient backpropagation across composite quantities.
+2. **State-Level Post-Processing (+0.014 Private LB lift)**:
+   - **WA Dead Zeroing**: Forces `Dry_Dead_g = 0.0` for all Western Australia samples (matches ground-truth zero thatch).
+   - **State Multipliers**: Calibrates regional collection offsets: NSW ($\text{Green} \times 1.03$), Vic ($\text{Clover} \times 0.85$), WA ($\text{Clover} \times 0.80, \text{Dead} \times 0.80, \text{Green} \times 0.97$).
+   - **Training Bound Clipping**: Restricts predictions to physical pasture bounds ($\text{Clover} \le 71.79$, $\text{Dead} \le 83.84$, $\text{Green} \le 157.98$).
+3. **Color Space Preprocessing**:
+   - Gray World adaptive white balance normalizes sunlight and camera variations across states and dates.
+   - HSV shadow correction boosts the $V$ channel in detected shadow regions ($V < \mu - 0.5\sigma$) to prevent shadowed living grass from being misclassified as dead material.
+4. **Fast 3-Fold State Stratification**:
+   - 357 clean real images split across 3 folds (`seed=42`), guaranteeing identical state distributions per fold.
+   - Backbone: `vit_small_patch14_dinov2` (21M params, native $518 \times 518$ patch14).
+   - Schedule: 6 epochs warm-up + 10 epochs fine-tuning with batch size 16.
+   - **Complete 3-fold cross-validation finishes in ~3–5 minutes on GPU**.
+
+### 5. Running on Kaggle
+
+Two standalone, zero-dependency notebooks are maintained in [`src/notebooks/`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/):
 
 1. **Training Notebook**: [`src/notebooks/training.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/training.ipynb)
-   - Runs full 5-fold cross-validation with the anti-leakage split (`seed=223`, `Sampling_Date` grouping, `State` stratification) and 3rd-place kitchen sink augmentations.
-   - Dual-Stream 1:1 square tiling + cross-view attention + UEPNet 7-bin interval classification.
-   - Achieved our project-peak **`0.59825` Private LB**.
-   - Saves `best_model_fold1.pt` ... `best_model_fold5.pt` and produces standalone `submission.csv`.
-
+   - Self-contained 3-fold DINOv2-Small training notebook with 2nd-place post-processing, Gray World white balance, and HSV shadow compensation.
+   - Predicts 3 base targets, derives 5 full targets, and saves `best_model_fold1.pt` ... `best_model_fold3.pt`.
 2. **Inference Notebook**: [`src/notebooks/inference.ipynb`](file:///c:/Users/Precision/Onus/GitHub/image2biomass-competition/src/notebooks/inference.ipynb)
-   - Fast, offline-capable inference and ensembling notebook.
-   - **Automatic Architecture Detection**: Automatically detects whether checkpoints are DINO ViT (768 channels) or ConvNeXt-V2 (1536 channels) and dynamically loads them.
-   - Upload your trained `.pt` files as a Kaggle Dataset, attach via `+ Add Input`, and click **Run All**.
-   - Runs dual-stream inference with horizontal-flip TTA, applies soft physics post-processing, and writes `submission.csv` in ~30 seconds on GPU.
+   - Universal multi-backbone inference and ensembling notebook.
+   - **Smart Architecture Detection**: Auto-detects whether uploaded checkpoints are DINOv2-Small (384-dim, 3 targets), DINOv3 ViT-Base (768-dim, 5 targets), or ConvNeXt-V2 Large (1536-dim).
+   - Dynamically blends predictions, applies 2nd-place post-processing, and generates `submission.csv` in ~30 seconds on GPU.
+

@@ -23,9 +23,11 @@ class HyperparametersConfig:
 
 @dataclass
 class TrainingConfig:
-    stage1_epochs: int = 8
-    stage2_epochs: int = 27
+    stage1_epochs: int = 14
+    stage2_epochs: int = 16
+    stage3_epochs: int = 5
     stage2_backbone_lr_factor: float = 0.1
+    stage3_lr_factor: float = 0.1
     fusion_dim: int = 384
     dropout: float = 0.3
     use_tta: bool = True
@@ -46,6 +48,7 @@ class LossConfig:
 class TargetConfig:
     cols: List[str]
     official_weights: List[float]
+    all_cols: List[str] = None
 
 @dataclass
 class SplitConfig:

@@ -17,6 +17,41 @@ from common import (
 )
 
 
+def apply_white_balance_gray_world(image_np):
+    """Automatic white balance correction using Gray World algorithm."""
+    img = image_np.astype(np.float32)
+    avg_r = np.mean(img[:, :, 0])
+    avg_g = np.mean(img[:, :, 1])
+    avg_b = np.mean(img[:, :, 2])
+    avg_gray = (avg_r + avg_g + avg_b) / 3.0
+    if avg_r > 0: img[:, :, 0] = np.clip(img[:, :, 0] * (avg_gray / avg_r), 0, 255)
+    if avg_g > 0: img[:, :, 1] = np.clip(img[:, :, 1] * (avg_gray / avg_g), 0, 255)
+    if avg_b > 0: img[:, :, 2] = np.clip(img[:, :, 2] * (avg_gray / avg_b), 0, 255)
+    return img.astype(np.uint8)
+
+
+def apply_hsv_shadow_correction(image_np, prob=0.5):
+    """Shadow correction using HSV color space V-channel compensation."""
+    if random.random() > prob:
+        return image_np
+    hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+    h, s, v = cv2.split(hsv)
+    v_mean = np.mean(v)
+    v_std = np.std(v)
+    shadow_thresh = max(0, v_mean - 0.5 * v_std)
+    shadow_mask = v < shadow_thresh
+    if shadow_mask.any():
+        non_shadow_mean = np.mean(v[~shadow_mask]) if (~shadow_mask).any() else v_mean
+        shadow_mean = np.mean(v[shadow_mask])
+        if shadow_mean > 0:
+            scale = min(non_shadow_mean / shadow_mean, 1.8)
+            v_corr = v.copy().astype(np.float32)
+            v_corr[shadow_mask] = np.clip(v_corr[shadow_mask] * scale, 0, 255)
+            hsv = cv2.merge([h, s, v_corr.astype(np.uint8)])
+            return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+    return image_np
+
+
 def apply_camera_scale_simulation(image_np, prob=0.2):
     """
     Simulates camera focal length and viewing distance variation by randomly
@@ -51,7 +86,7 @@ def permute_vertical_strips(image_np, n_strips=4, prob=0.5):
     return image_np
 
 
-def get_dual_stream_transforms(img_size=512, is_training=True, camera_scaling_prob=0.2):
+def get_dual_stream_transforms(img_size=518, is_training=True, camera_scaling_prob=0.2):
     """
     Transforms applied independently to each sub-image (view).
     Preserves natural square aspect ratio.
@@ -84,12 +119,12 @@ class DualStreamBiomassDataset(Dataset):
     def __init__(self, 
                  df, 
                  img_dir=None,
-                 img_size=512,
+                 img_size=518,
                  is_training=True,
                  camera_scaling_prob=0.2,
                  strip_shuffle_prob=0.5,
                  view_swap_prob=0.5,
-                 target_cols=TARGET_ORDER):
+                 target_cols=None):
         self.df = df.reset_index(drop=True)
         self.img_dir = img_dir
         self.img_size = img_size
@@ -97,7 +132,7 @@ class DualStreamBiomassDataset(Dataset):
         self.camera_scaling_prob = camera_scaling_prob
         self.strip_shuffle_prob = strip_shuffle_prob
         self.view_swap_prob = view_swap_prob
-        self.target_cols = target_cols
+        self.target_cols = target_cols if target_cols is not None else ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g']
         
         self.transform = get_dual_stream_transforms(
             img_size=self.img_size, 
@@ -150,8 +185,16 @@ class DualStreamBiomassDataset(Dataset):
         left_np = raw_rgb[:, :mid_w].copy()
         right_np = raw_rgb[:, mid_w:].copy()
         
-        # 3rd-Place Augmentations during training
+        # White balance correction across all views
+        left_np = apply_white_balance_gray_world(left_np)
+        right_np = apply_white_balance_gray_world(right_np)
+        
+        # 3rd-Place & 2nd-Place Augmentations during training
         if self.is_training:
+            # Shadow correction
+            left_np = apply_hsv_shadow_correction(left_np, prob=0.4)
+            right_np = apply_hsv_shadow_correction(right_np, prob=0.4)
+
             # 1. Left/Right view swap (50% probability)
             if self.view_swap_prob > 0 and random.random() < self.view_swap_prob:
                 left_np, right_np = right_np, left_np

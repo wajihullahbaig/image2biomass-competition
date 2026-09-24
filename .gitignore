@@ -45,3 +45,4 @@ inference_images_routed/
 tiling_visualizations/
 archive/
 logs_*
+logs */

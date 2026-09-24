@@ -78,14 +78,13 @@ def run_inference(
             
     print(f"Unique test images to process: {len(unique_samples)}")
 
-    # 2. Find Models
+    # 2. Find Models (Strictly from logs/ directory)
     if model_checkpoint_dir is None:
-        # Search in standard logs directory or user-named log folders (e.g. logs_kaggle_0.62)
-        candidate_logs = sorted(glob.glob("logs/dual_stream_*") + glob.glob("logs_*/dual_stream_*"), reverse=True)
+        candidate_logs = sorted(glob.glob("logs/dual_stream_*"), reverse=True)
         if candidate_logs:
             model_checkpoint_dir = candidate_logs[0]
         else:
-            raise FileNotFoundError("No trained dual_stream checkpoints found in logs/ or logs_*/!")
+            raise FileNotFoundError("No trained dual_stream checkpoints found in logs/!")
             
     model_paths = sorted(glob.glob(os.path.join(model_checkpoint_dir, "best_model_fold*.pt")))
     if not model_paths:
@@ -118,18 +117,34 @@ def run_inference(
         
         # Detect whether checkpoint has 3 or 5 regression heads
         head_indices = [int(k.split('.')[1]) for k in state_dict.keys() if k.startswith('reg_heads.') and '.0.weight' in k]
-        ckpt_num_targets = max(head_indices) + 1 if head_indices else 5
-        print(f"  Detected {ckpt_num_targets} regression heads in checkpoint.")
+        ckpt_num_targets = max(head_indices) + 1 if head_indices else 3
+
+        # Smart detection of backbone architecture from checkpoint weights
+        clean_sd = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        if 'cross_view_attn.in_proj_weight' in clean_sd:
+            dim = clean_sd['cross_view_attn.in_proj_weight'].shape[1]
+            if dim == 1536:
+                backbone = 'convnextv2_large'
+            elif dim == 768:
+                backbone = 'vit_base_patch16_dinov3_qkvb'
+            elif dim == 384:
+                backbone = 'vit_small_patch14_dinov2'
+            else:
+                backbone = cfg.hyperparameters.backbone
+        else:
+            backbone = cfg.hyperparameters.backbone
+
+        print(f"  Architecture: {backbone} | Targets: {ckpt_num_targets}")
         
         model = DualStreamBiomassModel(
-            backbone_name=cfg.hyperparameters.backbone,
+            backbone_name=backbone,
             num_targets=ckpt_num_targets,
             num_intervals=cfg.loss.num_intervals,
             fusion_dim=cfg.training.fusion_dim,
             pretrained=False
         ).to(DEVICE)
         
-        model.load_state_dict(state_dict)
+        model.load_state_dict(clean_sd, strict=False)
         model.eval()
 
         fold_preds = []
@@ -147,12 +162,9 @@ def run_inference(
     # 5. Average Predictions across Folds
     avg_preds_raw = np.mean(all_fold_preds, axis=0)
 
-    # 6. Apply Post-Processing & Calibration
+    # 6. Apply Physical Post-Processing & Calibration
     states = unique_samples['State'].tolist() if 'State' in unique_samples.columns else None
-    if states is not None:
-        avg_preds_post = apply_2nd_place_postprocess(avg_preds_raw, states=states)
-    else:
-        avg_preds_post = soft_physics_postprocess(avg_preds_raw)
+    avg_preds_post = apply_2nd_place_postprocess(avg_preds_raw, states=states)
 
     # 7. Build Kaggle Submission
     clean_ids = unique_samples['clean_id'].tolist() if 'clean_id' in unique_samples.columns else unique_samples['sample_id'].tolist()

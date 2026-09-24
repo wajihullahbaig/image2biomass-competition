@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 
 # Ensure both workspace root, src, and src/training are on sys.path
 cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -211,15 +211,21 @@ def run_training():
     df = pd.read_csv(data_path)
     logger.info(f"Loaded {len(df)} samples from {data_path}")
 
-    # 3. Cross-Validation Split: Stratified on State
+    # 3. Anti-Leakage Cross-Validation Split: StratifiedGroupKFold on Sampling_Date & State
     n_folds = cfg.hyperparameters.n_folds
-    if 'fold' in df.columns and len(df['fold'].unique()) >= n_folds:
-        logger.info(f"Using precomputed {n_folds}-fold split from {data_path}")
-        folds_iter = [(np.where(df['fold'] != f)[0], np.where(df['fold'] == f)[0]) for f in range(n_folds)]
-    else:
-        logger.info(f"Generating {n_folds}-fold StratifiedKFold split on State (seed={cfg.hyperparameters.random_seed})")
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=cfg.hyperparameters.random_seed)
-        folds_iter = list(skf.split(df, y=df['State']))
+    group_col = getattr(cfg.split, 'group_col', 'Sampling_Date')
+    strat_col = getattr(cfg.split, 'group_stratification_col', 'State')
+    seed = cfg.hyperparameters.random_seed
+
+    logger.info(f"Generating {n_folds}-fold StratifiedGroupKFold split grouped by '{group_col}', stratified by '{strat_col}' (seed={seed})")
+    sgkf = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    folds_iter = list(sgkf.split(df, y=df[strat_col], groups=df[group_col]))
+
+    for f_idx, (tr_idx, val_idx) in enumerate(folds_iter):
+        tr_dates = set(df.iloc[tr_idx][group_col])
+        va_dates = set(df.iloc[val_idx][group_col])
+        overlap = tr_dates.intersection(va_dates)
+        logger.info(f"  Fold {f_idx + 1}: {len(val_idx)} val samples | {len(va_dates)} dates | Overlapping dates with train: {len(overlap)}")
 
     oof_predictions_raw = np.zeros((len(df), 5), dtype=np.float32)
     oof_predictions_post = np.zeros((len(df), 5), dtype=np.float32)
@@ -231,8 +237,8 @@ def run_training():
     img_size = cfg.preprocessing.image_height
     batch_size = cfg.hyperparameters.batch_size
     base_lr = cfg.hyperparameters.learning_rate
-    stage1_epochs = getattr(cfg.training, 'stage1_epochs', 9)
-    stage2_epochs = getattr(cfg.training, 'stage2_epochs', 13)
+    stage1_epochs = getattr(cfg.training, 'stage1_epochs', 8)
+    stage2_epochs = getattr(cfg.training, 'stage2_epochs', 26)
     stage3_epochs = getattr(cfg.training, 'stage3_epochs', 0)
     target_cols = cfg.targets.cols
 

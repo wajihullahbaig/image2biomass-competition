@@ -13,19 +13,19 @@ class HyperparametersConfig:
     batch_size: int = 8
     gradient_accumulation_steps: int = 1
     learning_rate: float = 0.0003
-    n_folds: int = 5
+    n_folds: int = 3
     epochs: int = 35
     weight_decay: float = 0.05
     early_stop_patience: int = 8
     backbone: str = "vit_base_patch16_dinov3_qkvb"
     max_grad_norm: float = 1.0
-    random_seed: int = 42
+    random_seed: int = 223
 
 @dataclass
 class TrainingConfig:
-    stage1_epochs: int = 6
-    stage2_epochs: int = 22
-    stage3_epochs: int = 6
+    stage1_epochs: int = 8
+    stage2_epochs: int = 26
+    stage3_epochs: int = 0
     stage2_warmup_epochs: int = 3
     stage2_backbone_lr_factor: float = 0.1
     stage3_lr_factor: float = 0.1
@@ -53,9 +53,9 @@ class TargetConfig:
 
 @dataclass
 class SplitConfig:
-    n_splits: int = 5
-    group_col: str = "State_Sampling_Date"
-    group_stratification_col: str = "State_Species"
+    n_splits: int = 3
+    group_col: str = "Sampling_Date"
+    group_stratification_col: str = "State"
 
 @dataclass
 class Config:

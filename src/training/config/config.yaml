@@ -9,18 +9,18 @@ hyperparameters:
   batch_size: 16
   gradient_accumulation_steps: 1
   learning_rate: 0.0003
-  n_folds: 5
+  n_folds: 3
   epochs: 34
   weight_decay: 0.05
   early_stop_patience: 12
   backbone: vit_small_patch14_dinov2 # Fast 21M foundation model with native 518x518 patch14
   max_grad_norm: 1.0
-  random_seed: 42
+  random_seed: 223
 
 training:
-  stage1_epochs: 6 # Warm-up for 3 regression & classification heads (backbone frozen)
-  stage2_epochs: 22 # End-to-end pasture adaptation (backbone unfrozen, lr 3e-5)
-  stage3_epochs: 6 # Head calibration (backbone re-frozen, lr 3e-5)
+  stage1_epochs: 8 # Warm-up for 3 regression & classification heads (backbone frozen)
+  stage2_epochs: 26 # End-to-end pasture adaptation (backbone unfrozen, lr 3e-5)
+  stage3_epochs: 0 # 0 = turned off / skipped
   stage2_warmup_epochs: 3 # Linear warmup for Stage 2 to eliminate unfreezing shock
   stage2_backbone_lr_factor: 0.1 # Differential LR for backbone (3e-5)
   stage3_lr_factor: 0.1
@@ -45,6 +45,6 @@ targets:
   official_weights: [0.1, 0.1, 0.1, 0.2, 0.5]
 
 split:
-  n_splits: 5
+  n_splits: 3
   group_col: "Sampling_Date"
   group_stratification_col: "State"

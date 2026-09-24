@@ -61,5 +61,5 @@ def config_str():
         f"FUSION_DIM: {FUSION_DIM} | DROPOUT: {DROPOUT} | USE_TTA: {USE_TTA}\n"
         f"INTERVALS: {NUM_INTERVALS} bins | CLS_WEIGHT: {CLS_WEIGHT}\n"
         f"CAMERA_SCALE_PROB: {CAMERA_SCALING_PROB}\n"
-        f"CROSS-VALIDATION: {N_FOLDS} folds stratified by '{GROUP_STRAT_COL}'"
+        f"CROSS-VALIDATION: {N_FOLDS} folds grouped by '{GROUP_COL}' & stratified by '{GROUP_STRAT_COL}'"
     )

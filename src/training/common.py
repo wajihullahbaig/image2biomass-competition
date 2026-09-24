@@ -169,23 +169,21 @@ def calculate_competition_r2(y_true, y_pred, weights=OFFICIAL_WEIGHTS):
 
 
 # ==============================================================================
-# Post-Processing (2nd Place Solution: WA Zero-Dead + State Multipliers + Clipping)
+# Post-Processing (Physical Consistency: WA Zero-Dead + Boundary Clipping + Identities)
 # ==============================================================================
 def apply_2nd_place_postprocess(preds_5, states=None):
     """
-    2nd Place Solution Post-Processing (+0.014 Private LB lift):
-    1. WA Dead Zeroing: Ground truth in WA has 0.0 dead biomass.
-    2. State Multiplier Scaling:
-       - NSW: Green *= 1.03
-       - Vic: Clover *= 0.85
-       - WA: Clover *= 0.80, Dead *= 0.80, Green *= 0.97
-    3. Target Range Clipping to Training Bounds:
+    Physical Post-Processing:
+    1. WA Dead Zeroing: Ground truth in Western Australia is strictly 0.0g dead biomass.
+    2. Target Range Clipping to Training Bounds:
        - Clover in [0, 71.7865]
        - Dead in [0, 83.8407]
        - Green in [0, 157.9836]
-    4. Recompute Physical Identities:
+    3. Recompute Physical Identities:
        - GDM = Green + Clover
        - Total = Green + Dead + Clover
+    Note: Artificial state scalar multipliers (e.g. WA clover *= 0.80) are omitted
+    as empirical validation proved they severely under-predict large clover plots.
     """
     preds = np.maximum(np.asarray(preds_5, dtype=np.float32).copy(), 0.0)
     if preds.ndim == 1:
@@ -195,18 +193,12 @@ def apply_2nd_place_postprocess(preds_5, states=None):
     dead = preds[:, 1].copy()
     clover = preds[:, 2].copy()
 
-    # 1. State-specific adjustments
+    # 1. State-specific ground-truth physical correction
     if states is not None:
         for idx, st in enumerate(states):
             st_str = str(st).strip()
             if st_str == 'WA':
-                dead[idx] = 0.0
-                clover[idx] *= 0.80
-                green[idx] *= 0.97
-            elif st_str == 'Vic':
-                clover[idx] *= 0.85
-            elif st_str == 'NSW':
-                green[idx] *= 1.03
+                dead[idx] = 0.0  # WA pasture thatch is strictly 0.0g
 
     # 2. Clipping to training set boundaries
     clover = np.clip(clover, 0.0, 71.7865)

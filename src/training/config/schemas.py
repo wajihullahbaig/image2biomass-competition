@@ -23,9 +23,10 @@ class HyperparametersConfig:
 
 @dataclass
 class TrainingConfig:
-    stage1_epochs: int = 14
-    stage2_epochs: int = 16
-    stage3_epochs: int = 5
+    stage1_epochs: int = 6
+    stage2_epochs: int = 22
+    stage3_epochs: int = 6
+    stage2_warmup_epochs: int = 3
     stage2_backbone_lr_factor: float = 0.1
     stage3_lr_factor: float = 0.1
     fusion_dim: int = 384

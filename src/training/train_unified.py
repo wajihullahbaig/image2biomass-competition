@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from sklearn.model_selection import StratifiedKFold
 
 # Ensure both workspace root, src, and src/training are on sys.path
@@ -239,6 +239,7 @@ def run_training():
     start_time_all = time.time()
 
     for fold, (train_idx, val_idx) in enumerate(folds_iter):
+        set_seed(cfg.hyperparameters.random_seed + fold)
         logger.info(f"\n{'='*25} FOLD {fold + 1} / {n_folds} {'='*25}")
         train_df = df.iloc[train_idx].reset_index(drop=True)
         val_df = df.iloc[val_idx].reset_index(drop=True)
@@ -257,7 +258,7 @@ def run_training():
         val_ds = DualStreamBiomassDataset(
             val_df, 
             img_size=img_size, 
-            is_training=False,
+            is_training=False, 
             target_cols=target_cols
         )
 
@@ -308,6 +309,8 @@ def run_training():
         val_post_preds_best = None
         val_raw_preds_best = None
         best_fold_model_path = os.path.join(session_dir, f"best_model_fold{fold+1}.pt")
+        best_s2_model_path = os.path.join(session_dir, f"best_s2_model_fold{fold+1}.pt")
+        best_s2_r2 = -float('inf')
 
         # ----------------------------------------------------------------------
         # STAGE 1: Freeze Backbone -> Warm up Heads
@@ -341,9 +344,9 @@ def run_training():
                 torch.save(model.state_dict(), best_fold_model_path)
 
         # ----------------------------------------------------------------------
-        # STAGE 2: Unfreeze Backbone -> Full End-to-End Fine-Tuning
+        # STAGE 2: Unfreeze Backbone -> Full End-to-End Fine-Tuning with Warmup
         # ----------------------------------------------------------------------
-        logger.info(f"\n--- [Fold {fold+1}] STAGE 2: Full Fine-Tuning ({stage2_epochs} epochs | Differential LR) ---")
+        logger.info(f"\n--- [Fold {fold+1}] STAGE 2: Full Fine-Tuning ({stage2_epochs} epochs | Differential LR + Warmup) ---")
         for p in model.backbone.parameters():
             p.requires_grad = True
 
@@ -353,7 +356,13 @@ def run_training():
             {'params': [p for n, p in model.named_parameters() if not n.startswith('backbone')], 'lr': base_lr}
         ], weight_decay=cfg.hyperparameters.weight_decay)
 
-        scheduler = CosineAnnealingLR(optimizer, T_max=stage2_epochs, eta_min=backbone_lr * 0.05)
+        warmup_epochs = getattr(cfg.training, 'stage2_warmup_epochs', 3)
+        if warmup_epochs > 0 and stage2_epochs > warmup_epochs:
+            warmup_sched = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
+            cosine_sched = CosineAnnealingLR(optimizer, T_max=stage2_epochs - warmup_epochs, eta_min=backbone_lr * 0.05)
+            scheduler = SequentialLR(optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_epochs])
+        else:
+            scheduler = CosineAnnealingLR(optimizer, T_max=stage2_epochs, eta_min=backbone_lr * 0.05)
 
         for epoch in range(1, stage2_epochs + 1):
             curr_epoch = stage1_epochs + epoch
@@ -370,6 +379,11 @@ def run_training():
                 f"Val: {val_loss:.4f} | R2 Raw: {r2_raw:.4f} | R2 Post: {r2_post:.4f} | Cls Acc: {cls_acc:.2%}"
             )
 
+            # Track Stage 2 best model independently (guarantees adapted backbone for Stage 3)
+            if r2_post > best_s2_r2:
+                best_s2_r2 = r2_post
+                torch.save(model.state_dict(), best_s2_model_path)
+
             if r2_post > best_fold_r2:
                 best_fold_r2 = r2_post
                 val_post_preds_best = val_post
@@ -382,8 +396,11 @@ def run_training():
         # ----------------------------------------------------------------------
         if stage3_epochs > 0:
             logger.info(f"\n--- [Fold {fold+1}] STAGE 3: Head Calibration ({stage3_epochs} epochs | Backbone RE-FROZEN) ---")
-            if os.path.exists(best_fold_model_path):
-                model.load_state_dict(torch.load(best_fold_model_path, map_location=cfg.device))
+            # CRITICAL: Always load the adapted backbone checkpoint from Stage 2!
+            load_path = best_s2_model_path if os.path.exists(best_s2_model_path) else best_fold_model_path
+            if os.path.exists(load_path):
+                model.load_state_dict(torch.load(load_path, map_location=cfg.device, weights_only=True))
+                logger.info(f"  Loaded adapted backbone checkpoint from {os.path.basename(load_path)} for Stage 3")
 
             for p in model.backbone.parameters():
                 p.requires_grad = False
@@ -415,7 +432,11 @@ def run_training():
                     torch.save(model.state_dict(), best_fold_model_path)
                     logger.info(f"  ★ New Best Model Saved for Fold {fold+1} (R2: {best_fold_r2:.4f})")
 
-        # Save OOF for this fold
+        # Save OOF for this fold (fallback safety if val_post_preds_best was never assigned)
+        if val_post_preds_best is None:
+            val_post_preds_best = val_post
+            val_raw_preds_best = val_raw
+
         oof_predictions_post[val_idx] = val_post_preds_best
         oof_predictions_raw[val_idx] = val_raw_preds_best
         oof_targets[val_idx] = val_df[TARGET_ORDER].values

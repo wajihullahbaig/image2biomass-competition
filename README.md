@@ -120,11 +120,11 @@ Five classification heads predict the interval class for each target alongside c
 ### 3. Decoupled Training & Soft Post-Processing
 
 - **Unconstrained Backpropagation**: No rigid mathematical equality constraints ($Total = Green + Dead + Clover$) are enforced inside the forward pass, preventing human measurement/drying noise from producing conflicting gradients.
-- **Test-Time Soft Blending**: Harmonizes components softly during post-processing:
-  - $Clover \leftarrow 0.8 \times Clover$ (corrects systematic overestimation)
-  - Piecewise dead thatch calibration (scaled up if $>20$, down if $<10$)
-  - $GDM \leftarrow 0.5 \times GDM + 0.5 \times (Green + Clover)$
-  - $Total \leftarrow 0.5 \times Total + 0.5 \times (Green + Clover + Dead)$
+- **Physical Post-Processing & Boundary Calibration**: Harmonizes predictions test-time using verified ground-truth physical constraints:
+  - **WA Dead Zeroing**: Forces `Dry_Dead_g = 0.0` for all Western Australia samples (matches ground-truth zero thatch).
+  - **Range Clipping**: Clips continuous targets to physical pasture bounds ($\text{Clover} \le 71.79$, $\text{Dead} \le 83.84$, $\text{Green} \le 157.98$).
+  - **Algebraic Derivations**: Reconstructs composite targets ($GDM = Green + Clover$, $Total = Green + Dead + Clover$).
+  *(Note: Artificial scalar multipliers like $Clover \times 0.80$ were removed after empirical 5-fold ablation proved they severely degraded large clover canopies, dropping WA $R^2$ from $+0.05$ to $-0.57$).*
 
 ### 4. 3rd-Place Kitchen Sink Augmentations
 
@@ -133,31 +133,54 @@ Five classification heads predict the interval class for each target alongside c
 - **View Swap ($p=0.5$)**: Swaps Left and Right views into cross-view attention.
 - **Camera Scaling ($p=0.2$)**: Jitters scale with black padding.
 
-### 5. 3-Stage "Sandwich" Training Schedule (LP → FT → Re-Freeze)
+### 5. Multi-Stage Training Schedule Design (LP → FT → Re-Freeze)
+
+> For full mathematical formulations, loss curves, and gradient dynamics, see the dedicated [Staged Training Schedule Design Guide](docs/training_stages_design.md).
 
 ```
-Epoch 01 ──────────────────────── Epoch 14 ──────────────────────── Epoch 30 ────── Epoch 35
-  │                                      │                                 │           │
-  ▼                                      ▼                                 ▼           ▼
-┌──────────────────────────────────────┐┌────────────────────────────────┐┌───────────┐
-│     STAGE 1: Heads Warm-up           ││  STAGE 2: Full Fine-Tuning     ││ STAGE 3:   │
-│  • Backbone: FROZEN                  ││ • Backbone: UNFROZEN (3e-5 LR) ││ Calibration│
-│  • Heads & Attention: LR = 3e-4      ││ • Heads: LR = 3e-4 (Cosine LR) ││ • Backbone:│
-│  • Heads mature to R² ≈ 0.35-0.45    ││ • Adapts to pasture textures   ││   RE-FROZEN│
-│  • Zero risk to DINO representations ││ • End-to-end multi-task loss   ││ • LR: 3e-5 │
-└──────────────────────────────────────┘└────────────────────────────────┘└───────────┘
+════════════════════════════════════════════════════════════════════════════════════════════════════
+                             STAGE PIPELINE OVERVIEW
+════════════════════════════════════════════════════════════════════════════════════════════════════
+
+       STAGE 1: Heads Warm-Up                   STAGE 2: Full Fine-Tuning                 STAGE 3: Head Calibration
+      (Linear Probing / Freeze)              (Domain Adaptation / Diff LR + Warmup)        (Re-Freeze / Decoupled Save)
+      
+ ┌─────────────────────────────────┐      ┌───────────────────────────────────┐      ┌──────────────────────────────────┐
+ │ • Backbone: FROZEN (0 grad)     │      │ • Backbone: UNFROZEN (LR = 3e-5)  │      │ • Backbone: RE-FROZEN (0 grad)   │
+ │ • Heads & Attention: LR = 3e-4  │ ───► │ • Linear Warmup (3 eps): 3e-6→3e-5│ ───► │ • ALWAYS Loads best_s2_model.pt  │
+ │ • Eliminates gradient shock     │      │ • Heads & Attention: LR = 3e-4    │      │ • Heads & Attention: LR = 3e-5   │
+ │ • R² reaches 0.28 – 0.38        │      │ • Saves best_s2_model independently│     │ • R² reaches 0.60 – 0.62+        │
+ └─────────────────────────────────┘      └───────────────────────────────────┘      └──────────────────────────────────┘
+             (6 Epochs)                                (22 Epochs)                                (6 Epochs)
 ```
 
-1. **Stage 1 (14 Epochs — Heads Warm-up / Linear Probing)**:
-   * **Backbone is FROZEN**. Trains only the cross-view multi-head attention, fusion MLP, and the 10 regression/interval heads with base LR (`3e-4`).
-   * *Benefit*: Completely eliminates early gradient shock. The heads reach full maturity ($R^2 \approx 0.35 - 0.45$) *before* the pre-trained DINOv3 backbone is touched.
-2. **Stage 2 (16 Epochs — Full Fine-Tuning / Pasture Adaptation)**:
-   * **Backbone is UNFROZEN**. Differential learning rate: `backbone_lr = 3e-5` ($0.1\times$), `heads_lr = 3e-4` with Cosine Annealing.
-   * *Benefit*: Deep end-to-end visual feature adaptation directly tailored to Australian pasture canopies.
-3. **Stage 3 (5 Epochs — Head Calibration / Re-Freeze)**:
-   * **Backbone is RE-FROZEN**. Starts from the best checkpoint saved during Stage 2.
-   * Fine-tunes only the attention, fusion, and heads at low learning rate (`3e-5` decaying to `1e-6`).
-   * *Benefit*: Eliminates backbone feature drift in the final epochs, allowing the regression heads and softplus boundaries to lock into optimal calibration against the learned pasture features.
+#### Individual Stage Roles
+
+1. **Stage 1 (6 Epochs — Heads Warm-up / Linear Probing)**:
+   * **Backbone is FROZEN** (`param.requires_grad = False`). Trains only the cross-view attention, fusion MLP, and regression/interval heads at base LR (`3e-4`).
+   * *Purpose*: Completely eliminates **early gradient shock**. Randomly initialized heads initially generate erratic loss gradients; freezing the foundation model protects pre-trained DINO representations from catastrophic forgetting while heads mature to $R^2 \approx 0.28 - 0.38$.
+2. **Stage 2 (22 Epochs — Full Fine-Tuning with 3-Epoch Linear Warmup)**:
+   * **Backbone is UNFROZEN**. Employs **Differential Learning Rates**: `backbone_lr = 3e-5` ($0.1\times$), `heads_lr = 3e-4` with 3-epoch linear warmup ($3\times 10^{-6} \to 3\times 10^{-5}$) followed by Cosine Annealing.
+   * *Purpose*: End-to-end domain adaptation. The warmup prevents optimizer momentum collapse during the unfreezing shock, allowing pre-trained attention blocks to adapt smoothly to pasture canopies, clover trifoliates, and thatch. Saves its best checkpoint independently (`best_s2_model_foldX.pt`), reaching $R^2 \approx \mathbf{0.57 - 0.61}$.
+3. **Stage 3 (6 Epochs — Head Calibration with Decoupled Checkpointing)**:
+   * **Backbone is RE-FROZEN**. **Always reloads `best_s2_model_foldX.pt`** (guaranteeing that head calibration builds on the pasture-adapted backbone rather than falling back to an unadapted model).
+   * Fine-tunes only the attention, fusion, and output heads at a gentle learning rate (`3e-5` decaying to `1e-6`).
+   * *Purpose*: Eliminates late-stage backbone feature jitter. Transformer features remain locked while lightweight heads dedicate 100% of gradient capacity to boundary and target-ratio calibration (delivers **`+0.010` to `+0.015`** pure $R^2$ lift, e.g., Folds 1 & 4 reaching $\mathbf{0.598 - 0.618}$).
+
+---
+
+#### 2-Stage Combo vs. 3-Stage Sandwich Workflows
+
+You can seamlessly switch between both workflows in [`config.yaml`](src/training/config/config.yaml):
+
+| Property | **2-Stage Combo (Stage 1 & 2)** | **3-Stage Sandwich (Stage 1, 2 & 3)** |
+| :--- | :--- | :--- |
+| **Config Setting** | `stage1_epochs: 6`, `stage2_epochs: 22`, `stage3_epochs: 0` | `stage1_epochs: 6`, `stage2_epochs: 22`, `stage3_epochs: 6` |
+| **Total Epochs / Fold** | **28 Epochs** | **34 Epochs** |
+| **5-Fold CV Time** | **~20–25 minutes** on GPU | **~28–32 minutes** on GPU |
+| **Expected OOF $R^2$** | $\approx 0.57 - 0.60$ | $\mathbf{\approx 0.60 - 0.63+}$ |
+| **Primary Use Case** | Rapid experimentation, hyperparameter sweeps, augmentation testing | Final competition model training, maximum submission ensemble score |
+| **Key Advantage** | High iteration speed without wasting GPU budget | Squeezes every decimal of precision from learned features via head calibration |
 
 ---
 
@@ -172,8 +195,8 @@ This codebase is directly influenced by the core architectural innovations and e
 | **Image Tiling** | Centerline vertical split ($1000 \times 1000 \times 2$) | Centerline vertical split ($1000 \times 1000 \times 2$) | Preserves 1:1 aspect ratio without squashing plant geometry |
 | **Backbone Architecture** | DINO ViT Base (`vit_base_patch16_dinov3_qkvb`) | Shared DINO ViT Base with Multi-Head Self-Attention | Captures lighting-invariant token embeddings across the quadrat seam |
 | **Multi-Task Objective** | SmoothL1 regression + 7-bin classification | SmoothL1 regression + 7-bin UEPNet classification | Discrete interval logits stabilize gradients and handle 38% zero-inflation |
-| **Physical Constraints** | Decoupled training + soft post-processing | Decoupled continuous heads + soft post-processing | Avoids gradient conflicts caused by human drying/weighing measurement noise |
-| **Clover Calibration** | Soft scalar dampening ($\times 0.8$) | Soft scalar dampening ($\times 0.8$) | Corrects systematic visual overestimation of dense canopy clover leaves |
+| **Physical Constraints** | Decoupled training + soft post-processing | Decoupled continuous heads + physical post-processing | Avoids gradient conflicts caused by human drying/weighing measurement noise |
+| **Clover Calibration** | Soft scalar dampening ($\times 0.8$) | Unscaled (Pure Physics) + Range Clipping | Empirical ablation showed $\times 0.8$ crushed large WA clover plots ($R^2: +0.05 \to -0.57$) |
 | **Code Structure** | Monolithic competition notebook | Modular package (`src/training`, `src/inference`, `src/scripts`, `src/notebooks`) | Enables local debugging, modular testing, and reproducible experiments |
 | **Kaggle Execution** | Single heavy all-in-one script | 3 distinct standalone notebooks (Train, Fast Inference, Pseudo-Labeling) | Decouples ~30s inference from 2-hour training; isolates online adaptation |
 | **Cross-Validation** | Standard K-Fold / Random splitting | 5-fold Stratified Group K-Fold (by `State`) | Prevents same-farm geographic/temporal leakage between train and val |
@@ -277,10 +300,11 @@ The pipeline integrates the core findings from the **2nd-Place Solution** (Publi
      $$\text{GDM} = \text{Green} + \text{Clover}$$
      $$\text{Total} = \text{Green} + \text{Dead} + \text{Clover}$$
    - Eliminates contradictory gradient backpropagation across composite quantities.
-2. **State-Level Post-Processing (+0.014 Private LB lift)**:
+2. **Physical Ground-Truth Post-Processing (+0.012 OOF lift)**:
    - **WA Dead Zeroing**: Forces `Dry_Dead_g = 0.0` for all Western Australia samples (matches ground-truth zero thatch).
-   - **State Multipliers**: Calibrates regional collection offsets: NSW ($\text{Green} \times 1.03$), Vic ($\text{Clover} \times 0.85$), WA ($\text{Clover} \times 0.80, \text{Dead} \times 0.80, \text{Green} \times 0.97$).
-   - **Training Bound Clipping**: Restricts predictions to physical pasture bounds ($\text{Clover} \le 71.79$, $\text{Dead} \le 83.84$, $\text{Green} \le 157.98$).
+   - **Physical Bound Clipping**: Restricts predictions to physical pasture bounds ($\text{Clover} \le 71.79$, $\text{Dead} \le 83.84$, $\text{Green} \le 157.98$).
+   - **Mathematical Identities**: Automatically derives $GDM = Green + Clover$ and $Total = Green + Dead + Clover$.
+   - *(Note: Artificial scalar multipliers like WA clover $\times 0.80$ were removed after empirical testing proved they crushed predictions on large clover canopies).*
 3. **Color Space Preprocessing**:
    - Gray World adaptive white balance normalizes sunlight and camera variations across states and dates.
    - HSV shadow correction boosts the $V$ channel in detected shadow regions ($V < \mu - 0.5\sigma$) to prevent shadowed living grass from being misclassified as dead material.
@@ -292,9 +316,9 @@ The pipeline integrates the core findings from the **2nd-Place Solution** (Publi
      - Fold 4: 71 samples (Tas: 27, Vic: 22, NSW: 15, WA: 7)
      - Fold 5: 71 samples (Tas: 27, Vic: 22, NSW: 15, WA: 7)
    - Backbone: `vit_small_patch14_dinov2` (21M params, native $518 \times 518$ patch14).
-   - Schedule: **7 epochs warm-up (Stage 1)** + **23 epochs fine-tuning (Stage 2)** (30 total epochs per fold) with batch size 16.
+   - Schedule: **6 epochs warm-up (Stage 1)** + **22 epochs fine-tuning with 3-epoch warmup (Stage 2)** + **6 epochs head calibration (Stage 3)** (34 total epochs per fold) with batch size 16.
    - Saves visual sample batches for each fold to inspect data entering the model.
-   - **Complete 5-fold cross-validation finishes in ~30–35 minutes on GPU**.
+   - **Wall-Clock Runtime**: ~3 hours for full 5-fold CV on local laptop/desktop GPU (~60s/epoch) or ~45–60 minutes on cloud GPUs (A100 / Kaggle P100/T4).
 
 ### 5. Running on Kaggle
 

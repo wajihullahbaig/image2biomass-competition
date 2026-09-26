@@ -2,54 +2,76 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Train Unified (Dual-Stream DINO)",
+            "name": "Train 5-Fold Dual-Stream DINO",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/src/training/train_unified.py",
+            "program": "${workspaceFolder}/train.py",
+            "args": [
+                "--backbone", "vit_base_patch14_dinov2",
+                "--img_size", "512",
+                "--batch_size", "8",
+                "--grad_accum", "2",
+                "--stage1_epochs", "8",
+                "--stage2_epochs", "26",
+                "--n_folds", "5"
+            ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
             "env": {
-                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/training"
+                "PYTHONPATH": "${workspaceFolder}"
             },
             "justMyCode": false
         },
         {
-            "name": "Run Inference (Dual-Stream DINO)",
+            "name": "Train Fast Debug (2+3 Epochs)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/src/inference/local_inference.py",
+            "program": "${workspaceFolder}/train.py",
+            "args": [
+                "--backbone", "vit_base_patch14_dinov2",
+                "--img_size", "512",
+                "--batch_size", "8",
+                "--stage1_epochs", "2",
+                "--stage2_epochs", "3",
+                "--n_folds", "5"
+            ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
             "env": {
-                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/training;${workspaceFolder}/src/inference"
+                "PYTHONPATH": "${workspaceFolder}"
             },
             "justMyCode": false
         },
         {
-            "name": "Test-Time Online Training (Pseudo-Labeling)",
+            "name": "Run Multi-Fold Inference (Generate Submission)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/src/inference/test_time_pseudolabel.py",
+            "program": "${workspaceFolder}/inference.py",
+            "args": [
+                "--model_dir", "models",
+                "--test_csv", "test.csv",
+                "--output_csv", "submission.csv"
+            ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
             "env": {
-                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/training;${workspaceFolder}/src/inference"
+                "PYTHONPATH": "${workspaceFolder}"
             },
             "justMyCode": false
         },
         {
-            "name": "Run EDA Insights",
+            "name": "Python: Current Active File",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/src/scripts/eda_insights.py",
+            "program": "${file}",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
             "env": {
-                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src/scripts"
+                "PYTHONPATH": "${workspaceFolder}"
             },
             "justMyCode": true
         }

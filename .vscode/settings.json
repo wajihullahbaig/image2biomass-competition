@@ -1,7 +1,6 @@
 {
     "python.defaultInterpreterPath": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
     "python.analysis.extraPaths": [
-        "${workspaceFolder}/src/training",
-        "${workspaceFolder}/src/inference"
+        "${workspaceFolder}"
     ]
 }

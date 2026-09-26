@@ -29,6 +29,10 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.optim.lr_scheduler")
+warnings.filterwarnings("ignore", category=UserWarning, module="timm.layers.attention")
+
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -616,6 +620,45 @@ def validate(model, loader, criterion, device, val_df, use_tta=True):
 
 
 # ==============================================================================
+# Logging Setup
+# ==============================================================================
+def setup_logging(output_dir="models", log_dir="logs"):
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_dir = os.path.join(log_dir, f"dual_stream_{timestamp}")
+    os.makedirs(session_dir, exist_ok=True)
+
+    logger = logging.getLogger("DualStreamTrainer")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+    # 1. Console StreamHandler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(console_handler)
+
+    # 2. FileHandler in session dir (logs/dual_stream_YYYYMMDD_HHMMSS/session.log)
+    session_log_path = os.path.join(session_dir, "session.log")
+    fh1 = logging.FileHandler(session_log_path, mode='w', encoding='utf-8')
+    fh1.setLevel(logging.INFO)
+    fh1.setFormatter(file_formatter)
+    logger.addHandler(fh1)
+
+    # 3. FileHandler in models dir (models/train.log)
+    output_log_path = os.path.join(output_dir, "train.log")
+    fh2 = logging.FileHandler(output_log_path, mode='w', encoding='utf-8')
+    fh2.setLevel(logging.INFO)
+    fh2.setFormatter(file_formatter)
+    logger.addHandler(fh2)
+
+    return logger, session_dir, session_log_path
+
+
+# ==============================================================================
 # Main Orchestration Loop
 # ==============================================================================
 def parse_args():
@@ -630,6 +673,7 @@ def parse_args():
     parser.add_argument('--stage2_epochs', type=int, default=26, help='Stage 2: Full model fine-tuning epochs')
     parser.add_argument('--n_folds', type=int, default=5, help='Number of cross-validation folds')
     parser.add_argument('--output_dir', type=str, default='models', help='Directory to save checkpoints and OOF predictions')
+    parser.add_argument('--log_dir', type=str, default='logs', help='Directory to save timestamped session logs')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--use_tta', action='store_true', default=True, help='Enable TTA during validation')
     return parser.parse_args()
@@ -639,37 +683,38 @@ def run_training():
     args = parse_args()
     set_seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    os.makedirs(args.output_dir, exist_ok=True)
+    logger, session_dir, session_log_path = setup_logging(args.output_dir, args.log_dir)
 
     # Automatically align image size to ViT patch size (prevents patch divisibility assertion errors)
     aligned_size = align_img_size_to_backbone(args.img_size, args.backbone)
     if aligned_size != args.img_size:
-        print(f"[RESCALE] Aligned img_size from {args.img_size} to {aligned_size} (divisible by backbone patch size)")
+        logger.info(f"[RESCALE] Aligned img_size from {args.img_size} to {aligned_size} (divisible by backbone patch size)")
         args.img_size = aligned_size
 
-    print("=" * 70)
-    print("[INIT] CSIRO IMAGE2BIOMASS: DUAL-STREAM DINO + INTERVAL CLASSIFICATION")
-    print(f"Device: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
-    print(f"Backbone: {args.backbone} | Resolution: {args.img_size}x{args.img_size}")
-    print(f"Batch Size: {args.batch_size} (Grad Accum: {args.grad_accum}) | Base LR: {args.lr}")
-    print(f"Schedule: Stage 1 = {args.stage1_epochs} eps (Heads) | Stage 2 = {args.stage2_epochs} eps (Full FT)")
-    print(f"Cross-Validation: {args.n_folds}-Fold Balanced Stratified Split (State + Biomass Quantiles)")
-    print("=" * 70)
+    logger.info("=" * 70)
+    logger.info("[INIT] CSIRO IMAGE2BIOMASS: DUAL-STREAM DINO + INTERVAL CLASSIFICATION")
+    logger.info(f"Device: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+    logger.info(f"Backbone: {args.backbone} | Resolution: {args.img_size}x{args.img_size}")
+    logger.info(f"Batch Size: {args.batch_size} (Grad Accum: {args.grad_accum}) | Base LR: {args.lr}")
+    logger.info(f"Schedule: Stage 1 = {args.stage1_epochs} eps (Heads) | Stage 2 = {args.stage2_epochs} eps (Full FT)")
+    logger.info(f"Cross-Validation: {args.n_folds}-Fold Balanced Stratified Split (State + Biomass Quantiles)")
+    logger.info(f"Logging to: {session_log_path} and {os.path.join(args.output_dir, 'train.log')}")
+    logger.info("=" * 70)
 
     # 1. Load Data
     data_path = args.data_path if os.path.exists(args.data_path) else 'train_converted.csv'
     if not os.path.exists(data_path):
         data_path = 'wide.csv'
     df = pd.read_csv(data_path)
-    print(f"[DATA] Loaded {len(df)} samples from {data_path}")
+    logger.info(f"[DATA] Loaded {len(df)} samples from {data_path}")
 
     # 2. Balanced Stratification
     df = create_balanced_stratified_folds(df, n_splits=args.n_folds, seed=args.seed)
-    print(f"[SPLIT] Generated {args.n_folds}-fold balanced stratification. Fold summary:")
+    logger.info(f"[SPLIT] Generated {args.n_folds}-fold balanced stratification. Fold summary:")
     for f in range(args.n_folds):
         sub = df[df['fold'] == f]
         st_dict = dict(sub['State'].value_counts())
-        print(f"   Fold {f+1}: N={len(sub)} | States={st_dict} | Total Biomass Mean={sub['Dry_Total_g'].mean():.1f}g")
+        logger.info(f"   Fold {f+1}: N={len(sub)} | States={st_dict} | Total Biomass Mean={sub['Dry_Total_g'].mean():.1f}g")
 
     oof_preds_post = np.zeros((len(df), 5), dtype=np.float32)
     oof_preds_raw = np.zeros((len(df), 5), dtype=np.float32)
@@ -680,7 +725,7 @@ def run_training():
 
     # 3. Iterate Folds
     for fold in range(args.n_folds):
-        print(f"\n{'='*30} FOLD {fold + 1} / {args.n_folds} {'='*30}")
+        logger.info(f"\n{'='*30} FOLD {fold + 1} / {args.n_folds} {'='*30}")
         train_df = df[df['fold'] != fold].reset_index(drop=True)
         val_df = df[df['fold'] == fold].reset_index(drop=True)
         val_indices = df[df['fold'] == fold].index.values
@@ -705,7 +750,7 @@ def run_training():
         # ------------------------------------------------------------------
         # STAGE 1: Warm-up Heads (Backbone FROZEN)
         # ------------------------------------------------------------------
-        print(f"\n--- [Fold {fold+1}] STAGE 1: Warm-up Heads ({args.stage1_epochs} epochs | Backbone FROZEN) ---")
+        logger.info(f"\n--- [Fold {fold+1}] STAGE 1: Warm-up Heads ({args.stage1_epochs} epochs | Backbone FROZEN) ---")
         for p in model.backbone.parameters():
             p.requires_grad = False
 
@@ -721,8 +766,8 @@ def run_training():
             va_loss, r2_raw, r2_post, per_target, p_raw, p_post = validate(
                 model, val_loader, criterion, device, val_df, use_tta=args.use_tta
             )
-            print(f"[S1 Ep {ep:02d}] Train: {tr_loss:.4f} (reg:{tr_reg:.3f}, cls:{tr_cls:.3f}) | "
-                  f"Val: {va_loss:.4f} | R2 Raw: {r2_raw:.4f} | R2 Post: {r2_post:.4f}")
+            logger.info(f"[S1 Ep {ep:02d}] Train: {tr_loss:.4f} (reg:{tr_reg:.3f}, cls:{tr_cls:.3f}) | "
+                        f"Val: {va_loss:.4f} | R2 Raw: {r2_raw:.4f} | R2 Post: {r2_post:.4f}")
 
             if r2_post > best_fold_r2:
                 best_fold_r2 = r2_post
@@ -733,7 +778,7 @@ def run_training():
         # ------------------------------------------------------------------
         # STAGE 2: Full End-to-End Fine-Tuning (Differential LR + Warmup)
         # ------------------------------------------------------------------
-        print(f"\n--- [Fold {fold+1}] STAGE 2: Full Fine-Tuning ({args.stage2_epochs} epochs | Differential LR) ---")
+        logger.info(f"\n--- [Fold {fold+1}] STAGE 2: Full Fine-Tuning ({args.stage2_epochs} epochs | Differential LR) ---")
         for p in model.backbone.parameters():
             p.requires_grad = True
 
@@ -757,47 +802,52 @@ def run_training():
             va_loss, r2_raw, r2_post, per_target, p_raw, p_post = validate(
                 model, val_loader, criterion, device, val_df, use_tta=args.use_tta
             )
-            print(f"[S2 Ep {curr_ep:02d}] Train: {tr_loss:.4f} (reg:{tr_reg:.3f}, cls:{tr_cls:.3f}) | "
-                  f"Val: {va_loss:.4f} | R2 Raw: {r2_raw:.4f} | R2 Post: {r2_post:.4f} "
-                  f"| Total R2: {per_target[4]:.3f} GDM R2: {per_target[3]:.3f}")
+            logger.info(f"[S2 Ep {curr_ep:02d}] Train: {tr_loss:.4f} (reg:{tr_reg:.3f}, cls:{tr_cls:.3f}) | "
+                        f"Val: {va_loss:.4f} | R2 Raw: {r2_raw:.4f} | R2 Post: {r2_post:.4f} "
+                        f"| Total R2: {per_target[4]:.3f} GDM R2: {per_target[3]:.3f}")
 
             if r2_post > best_fold_r2:
                 best_fold_r2 = r2_post
                 best_preds_post = p_post
                 best_preds_raw = p_raw
                 torch.save(model.state_dict(), ckpt_path)
-                print(f"  [BEST] New Best Model for Fold {fold+1} Saved (R2 Post: {best_fold_r2:.4f})")
+                logger.info(f"  [BEST] New Best Model for Fold {fold+1} Saved (R2 Post: {best_fold_r2:.4f})")
 
         oof_preds_post[val_indices] = best_preds_post
         oof_preds_raw[val_indices] = best_preds_raw
         fold_scores.append(best_fold_r2)
-        print(f"[OK] Fold {fold+1} Complete. Best Post R2: {best_fold_r2:.4f}")
+        logger.info(f"[OK] Fold {fold+1} Complete. Best Post R2: {best_fold_r2:.4f}")
 
     # 4. Final Out-Of-Fold Evaluation
     overall_post_r2, per_target_post = calculate_competition_r2(oof_targets, oof_preds_post)
     overall_raw_r2, per_target_raw = calculate_competition_r2(oof_targets, oof_preds_raw)
     total_time_min = (time.time() - start_total_time) / 60.0
 
-    print("\n" + "=" * 70)
-    print("[RESULTS] FINAL OUT-OF-FOLD (OOF) COMPETITION RESULTS")
-    print("=" * 70)
-    print(f"[METRIC] OVERALL OOF COMPETITION R2 (Post-Processed): {overall_post_r2:.4f}")
-    print(f"         Overall OOF Competition R2 (Raw):            {overall_raw_r2:.4f}")
-    print(f"         Per-Fold Scores: {[round(s, 4) for s in fold_scores]}")
-    print("         Per-Target Breakdown (Post-Processed):")
+    logger.info("\n" + "=" * 70)
+    logger.info("[RESULTS] FINAL OUT-OF-FOLD (OOF) COMPETITION RESULTS")
+    logger.info("=" * 70)
+    logger.info(f"[METRIC] OVERALL OOF COMPETITION R2 (Post-Processed): {overall_post_r2:.4f}")
+    logger.info(f"         Overall OOF Competition R2 (Raw):            {overall_raw_r2:.4f}")
+    logger.info(f"         Per-Fold Scores: {[round(s, 4) for s in fold_scores]}")
+    logger.info("         Per-Target Breakdown (Post-Processed):")
     for t_name, score, w in zip(TARGET_NAMES, per_target_post, OFFICIAL_WEIGHTS):
-        print(f"           - {t_name:15s} (Weight: {w:.1f}): R2 = {score:.4f}")
-    print(f"Total CV Training Time: {total_time_min:.1f} minutes")
-    print("=" * 70)
+        logger.info(f"           - {t_name:15s} (Weight: {w:.1f}): R2 = {score:.4f}")
+    logger.info(f"Total CV Training Time: {total_time_min:.1f} minutes")
+    logger.info("=" * 70)
 
     # 5. Save Out-Of-Fold Predictions CSV
     oof_df = df[['sample_id', 'State', 'Species', 'Sampling_Date'] + TARGET_NAMES].copy()
     for idx, t in enumerate(TARGET_NAMES):
         oof_df[f'pred_{t}'] = oof_preds_post[:, idx]
         oof_df[f'pred_raw_{t}'] = oof_preds_raw[:, idx]
+
     oof_path = os.path.join(args.output_dir, "oof_predictions.csv")
     oof_df.to_csv(oof_path, index=False)
-    print(f"[SAVED] Saved OOF predictions to {oof_path}")
+    oof_session_path = os.path.join(session_dir, "oof_predictions.csv")
+    oof_df.to_csv(oof_session_path, index=False)
+
+    logger.info(f"[SAVED] Saved OOF predictions to {oof_path} and {oof_session_path}")
+    logger.info(f"[LOG] Complete session log saved to {session_log_path}")
 
 
 if __name__ == '__main__':

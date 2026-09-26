@@ -587,18 +587,19 @@ def validate(model, loader, criterion, device, val_df, use_tta=True):
             t_cls = batch['targets_cls'].to(device)
             bs = img_l.size(0)
 
-            if use_tta:
-                # TTA: Standard + Horizontal flip
-                reg1, cls1 = model(img_l, img_r)
-                img_l_flip = torch.flip(img_l, [3])
-                img_r_flip = torch.flip(img_r, [3])
-                reg2, cls2 = model(img_r_flip, img_l_flip)
-                reg_preds = [(r1 + r2) * 0.5 for r1, r2 in zip(reg1, reg2)]
-                cls_preds = [(c1 + c2) * 0.5 for c1, c2 in zip(cls1, cls2)]
-            else:
-                reg_preds, cls_preds = model(img_l, img_r)
+            with torch.amp.autocast('cuda'):
+                if use_tta:
+                    # TTA: Standard + Horizontal flip
+                    reg1, cls1 = model(img_l, img_r)
+                    img_l_flip = torch.flip(img_l, [3])
+                    img_r_flip = torch.flip(img_r, [3])
+                    reg2, cls2 = model(img_r_flip, img_l_flip)
+                    reg_preds = [(r1 + r2) * 0.5 for r1, r2 in zip(reg1, reg2)]
+                    cls_preds = [(c1 + c2) * 0.5 for c1, c2 in zip(cls1, cls2)]
+                else:
+                    reg_preds, cls_preds = model(img_l, img_r)
 
-            loss, _, _ = criterion(reg_preds, cls_preds, t_reg, t_cls)
+                loss, _, _ = criterion(reg_preds, cls_preds, t_reg, t_cls)
             loss_sum += loss.item() * bs
             samples += bs
 
@@ -672,6 +673,7 @@ def parse_args():
     parser.add_argument('--stage1_epochs', type=int, default=8, help='Stage 1: Frozen backbone warm-up epochs')
     parser.add_argument('--stage2_epochs', type=int, default=26, help='Stage 2: Full model fine-tuning epochs')
     parser.add_argument('--n_folds', type=int, default=5, help='Number of cross-validation folds')
+    parser.add_argument('--start_fold', type=int, default=1, help='Starting fold index (1-based, e.g. 2 to resume from Fold 2)')
     parser.add_argument('--output_dir', type=str, default='models', help='Directory to save checkpoints and OOF predictions')
     parser.add_argument('--log_dir', type=str, default='logs', help='Directory to save timestamped session logs')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
@@ -725,10 +727,36 @@ def run_training():
 
     # 3. Iterate Folds
     for fold in range(args.n_folds):
-        logger.info(f"\n{'='*30} FOLD {fold + 1} / {args.n_folds} {'='*30}")
-        train_df = df[df['fold'] != fold].reset_index(drop=True)
+        fold_num = fold + 1
         val_df = df[df['fold'] == fold].reset_index(drop=True)
         val_indices = df[df['fold'] == fold].index.values
+        ckpt_path = os.path.join(args.output_dir, f"best_model_fold{fold_num}.pt")
+
+        # If resuming from a later fold, load cached predictions from existing checkpoint
+        if fold_num < args.start_fold:
+            if os.path.exists(ckpt_path):
+                logger.info(f"\n{'='*30} FOLD {fold_num} / {args.n_folds} [CACHED] {'='*30}")
+                logger.info(f"[RESUME] Loading existing checkpoint for Fold {fold_num}: {ckpt_path}")
+                val_ds = DualStreamBiomassDataset(val_df, img_size=args.img_size, is_training=False)
+                val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+                cached_model = DualStreamDINO(backbone_name=args.backbone, pretrained=False).to(device)
+                cached_model.load_state_dict(torch.load(ckpt_path, map_location=device))
+                criterion = WeightedBiomassLoss(cls_weight=0.3).to(device)
+                va_loss, r2_raw, r2_post, per_target, p_raw, p_post = validate(
+                    cached_model, val_loader, criterion, device, val_df, use_tta=args.use_tta
+                )
+                logger.info(f"[RESUME] Fold {fold_num} Verified: Post R2 = {r2_post:.4f} (Raw R2 = {r2_raw:.4f})")
+                oof_preds_post[val_indices] = p_post
+                oof_preds_raw[val_indices] = p_raw
+                fold_scores.append(r2_post)
+                del cached_model
+                torch.cuda.empty_cache()
+                continue
+            else:
+                logger.warning(f"[RESUME] Checkpoint {ckpt_path} not found for Fold {fold_num}. Training from scratch.")
+
+        logger.info(f"\n{'='*30} FOLD {fold_num} / {args.n_folds} {'='*30}")
+        train_df = df[df['fold'] != fold].reset_index(drop=True)
 
         # Datasets & Loaders
         train_ds = DualStreamBiomassDataset(train_df, img_size=args.img_size, is_training=True)
@@ -745,7 +773,6 @@ def run_training():
         best_fold_r2 = -float('inf')
         best_preds_post = None
         best_preds_raw = None
-        ckpt_path = os.path.join(args.output_dir, f"best_model_fold{fold + 1}.pt")
 
         # ------------------------------------------------------------------
         # STAGE 1: Warm-up Heads (Backbone FROZEN)

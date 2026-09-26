@@ -24,6 +24,29 @@
             "justMyCode": false
         },
         {
+            "name": "Resume Training from Fold 2 (Folds 2-5)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "args": [
+                "--backbone", "vit_base_patch14_dinov2",
+                "--img_size", "518",
+                "--batch_size", "8",
+                "--grad_accum", "2",
+                "--stage1_epochs", "8",
+                "--stage2_epochs", "26",
+                "--n_folds", "5",
+                "--start_fold", "2"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
             "name": "Train Fast Debug (2+3 Epochs)",
             "type": "debugpy",
             "request": "launch",

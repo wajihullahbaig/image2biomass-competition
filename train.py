@@ -105,9 +105,19 @@ def create_balanced_stratified_folds(df, n_splits=5, seed=42):
     strat_key = df['State'].astype(str) + '_' + biomass_bins.astype(str)
 
     # 4. Group any class with fewer members than n_splits to avoid split warnings
-    counts = strat_key.value_counts()
-    rare_classes = counts[counts < n_splits].index
-    strat_key = strat_key.apply(lambda k: k.split('_')[0] + '_other' if k in rare_classes else k)
+    while True:
+        vc = strat_key.value_counts()
+        rares = vc[vc < n_splits].index
+        if len(rares) == 0:
+            break
+        for r in rares:
+            st = str(r).split('_')[0]
+            st_matches = [k for k in vc.index if str(k).startswith(st) and k != r]
+            if st_matches:
+                target_class = max(st_matches, key=lambda k: vc[k])
+                strat_key = strat_key.replace(r, target_class)
+            else:
+                strat_key = strat_key.replace(r, 'other')
 
     # 5. Stratified split
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
@@ -116,6 +126,25 @@ def create_balanced_stratified_folds(df, n_splits=5, seed=42):
         df.loc[val_idx, 'fold'] = fold_idx
 
     return df
+
+
+def align_img_size_to_backbone(img_size, backbone_name):
+    """
+    Ensures input image size is cleanly divisible by the ViT patch size.
+    For patch14 models (e.g. vit_*_patch14_dinov2): native is 518 (37*14) or 1008 (72*14).
+    For patch16 models (e.g. vit_*_patch16_dinov3): native is 512 (32*16) or 1024 (64*16).
+    """
+    if 'patch14' in backbone_name:
+        patch = 14
+    elif 'patch16' in backbone_name:
+        patch = 16
+    else:
+        patch = 14 if 'dinov2' in backbone_name else 16
+
+    if img_size % patch != 0:
+        aligned = int(round(img_size / patch)) * patch
+        return aligned
+    return img_size
 
 
 def get_interval_labels(targets_np):
@@ -593,7 +622,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="CSIRO Image2Biomass Dual-Stream DINO Training")
     parser.add_argument('--data_path', type=str, default='train_converted.csv', help='Path to processed train CSV')
     parser.add_argument('--backbone', type=str, default='vit_base_patch14_dinov2', help='Vision Transformer backbone')
-    parser.add_argument('--img_size', type=int, default=512, help='Input resolution for each sub-image (512 or 1024)')
+    parser.add_argument('--img_size', type=int, default=518, help='Input resolution for each sub-image (518 for patch14, 512 for patch16)')
     parser.add_argument('--batch_size', type=int, default=8, help='Training batch size')
     parser.add_argument('--grad_accum', type=int, default=2, help='Gradient accumulation steps (effective BS = batch_size * grad_accum)')
     parser.add_argument('--lr', type=float, default=3e-4, help='Base learning rate for heads')
@@ -611,6 +640,12 @@ def run_training():
     set_seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # Automatically align image size to ViT patch size (prevents patch divisibility assertion errors)
+    aligned_size = align_img_size_to_backbone(args.img_size, args.backbone)
+    if aligned_size != args.img_size:
+        print(f"[RESCALE] Aligned img_size from {args.img_size} to {aligned_size} (divisible by backbone patch size)")
+        args.img_size = aligned_size
 
     print("=" * 70)
     print("[INIT] CSIRO IMAGE2BIOMASS: DUAL-STREAM DINO + INTERVAL CLASSIFICATION")

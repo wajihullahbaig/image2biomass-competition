@@ -262,12 +262,26 @@ def auto_detect_backbone(state_dict, default_backbone="vit_base_patch14_dinov2")
     return default_backbone
 
 
+def align_img_size_to_backbone(img_size, backbone_name):
+    """Ensures input image size is cleanly divisible by the ViT patch size."""
+    if 'patch14' in backbone_name:
+        patch = 14
+    elif 'patch16' in backbone_name:
+        patch = 16
+    else:
+        patch = 14 if 'dinov2' in backbone_name else 16
+
+    if img_size % patch != 0:
+        return int(round(img_size / patch)) * patch
+    return img_size
+
+
 def run_inference():
     parser = argparse.ArgumentParser(description="CSIRO Image2Biomass Dual-Stream DINO Inference")
     parser.add_argument('--model_dir', type=str, default='models', help='Directory with trained fold checkpoints')
     parser.add_argument('--test_csv', type=str, default='test.csv', help='Path to test.csv')
     parser.add_argument('--img_dir', type=str, default=None, help='Optional directory containing test images')
-    parser.add_argument('--img_size', type=int, default=512, help='Image resolution (512 or 1024)')
+    parser.add_argument('--img_size', type=int, default=518, help='Image resolution (518 for patch14, 512 for patch16)')
     parser.add_argument('--batch_size', type=int, default=8, help='Inference batch size')
     parser.add_argument('--output_csv', type=str, default='submission.csv', help='Output submission CSV path')
     parser.add_argument('--no_tta', action='store_true', help='Disable test-time augmentation')

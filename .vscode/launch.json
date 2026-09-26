@@ -8,7 +8,7 @@
             "program": "${workspaceFolder}/train.py",
             "args": [
                 "--backbone", "vit_base_patch14_dinov2",
-                "--img_size", "512",
+                "--img_size", "518",
                 "--batch_size", "8",
                 "--grad_accum", "2",
                 "--stage1_epochs", "8",
@@ -30,7 +30,7 @@
             "program": "${workspaceFolder}/train.py",
             "args": [
                 "--backbone", "vit_base_patch14_dinov2",
-                "--img_size", "512",
+                "--img_size", "518",
                 "--batch_size", "8",
                 "--stage1_epochs", "2",
                 "--stage2_epochs", "3",

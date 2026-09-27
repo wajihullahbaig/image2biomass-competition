@@ -277,7 +277,7 @@ def align_img_size_to_backbone(img_size, backbone_name):
 
 
 def run_inference():
-    parser = argparse.ArgumentParser(description="CSIRO Image2Biomass Dual-Stream DINO Inference")
+    parser = argparse.ArgumentParser(description="CSIRO Image2Biomass Dual-Stream DINO Local Inference")
     parser.add_argument('--model_dir', type=str, default='models', help='Directory with trained fold checkpoints')
     parser.add_argument('--test_csv', type=str, default='test.csv', help='Path to test.csv')
     parser.add_argument('--img_dir', type=str, default=None, help='Optional directory containing test images')
@@ -290,23 +290,26 @@ def run_inference():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print("=" * 70)
-    print("[INIT] CSIRO IMAGE2BIOMASS: MULTI-FOLD DUAL-STREAM INFERENCE")
+    print("[INIT] CSIRO IMAGE2BIOMASS: MULTI-FOLD DUAL-STREAM LOCAL INFERENCE")
     print(f"Device: {device} | Model Dir: {args.model_dir} | Test CSV: {args.test_csv}")
     print(f"TTA: {not args.no_tta} | Target Output: {args.output_csv}")
     print("=" * 70)
 
-    # 1. Discover Checkpoints
+    # 1. Discover Checkpoints in model_dir
     ckpt_paths = sorted(glob.glob(os.path.join(args.model_dir, "best_model_fold*.pt")))
     if not ckpt_paths:
-        # Check logs directory as fallback
-        ckpt_paths = sorted(glob.glob("logs/**/best_model_fold*.pt", recursive=True))
+        ckpt_paths = sorted(glob.glob(os.path.join(args.model_dir, "*.pt")))
     if not ckpt_paths:
-        raise FileNotFoundError(f"No fold checkpoints found in {args.model_dir} or logs/")
-    print(f"[MODEL] Found {len(ckpt_paths)} checkpoint(s): {[os.path.basename(p) for p in ckpt_paths]}")
+        raise FileNotFoundError(f"No fold checkpoints found in '{args.model_dir}'")
+
+    print(f"[MODEL] Discovered {len(ckpt_paths)} checkpoint(s) in {args.model_dir}:")
+    for cp in ckpt_paths:
+        print(f"  - {os.path.basename(cp)} ({os.path.getsize(cp) / (1024 * 1024):.1f} MB)")
 
     # 2. Load Test Metadata
     if not os.path.exists(args.test_csv):
         raise FileNotFoundError(f"Cannot find test CSV at {args.test_csv}")
+
     test_df_raw = pd.read_csv(args.test_csv)
 
     # Deduplicate image paths for efficient batch inference

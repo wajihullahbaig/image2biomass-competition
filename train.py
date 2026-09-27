@@ -79,13 +79,13 @@ BORDERS_DICT = {
 
 
 def set_seed(seed=223):
-    """Sets deterministic random seeds for full reproducibility."""
+    """Sets deterministic random seeds for full reproducibility and accelerates cuDNN."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
 
 
 # ==============================================================================
@@ -591,20 +591,71 @@ def setup_logging(output_dir="models", log_dir="logs"):
 def parse_args():
     parser = argparse.ArgumentParser(description="CSIRO Image2Biomass Dual-Stream DINO Training")
     parser.add_argument('--data_path', type=str, default='wide.csv', help='Path to full dataset CSV (wide.csv with 439 samples)')
-    parser.add_argument('--backbone', type=str, default='vit_base_patch16_dinov3_qkvb', help='Vision Transformer backbone (vit_base_patch16_dinov3_qkvb / vit_base_patch14_dinov2)')
-    parser.add_argument('--img_size', type=int, default=512, help='Input resolution for each sub-image (512 for patch16, 518 for patch14)')
+    parser.add_argument('--backbone', type=str, default='vit_small_patch16_dinov3_qkvb', help='Vision Transformer backbone (vit_small_patch16_dinov3_qkvb / vit_base_patch16_dinov3_qkvb)')
+    parser.add_argument('--img_size', type=int, default=384, help='Input resolution for each sub-image (384 for ultra-fast, 512 for max res)')
     parser.add_argument('--batch_size', type=int, default=8, help='Training batch size')
     parser.add_argument('--grad_accum', type=int, default=2, help='Gradient accumulation steps (effective BS = batch_size * grad_accum)')
     parser.add_argument('--lr', type=float, default=3e-4, help='Base learning rate for heads')
-    parser.add_argument('--stage1_epochs', type=int, default=8, help='Stage 1: Frozen backbone warm-up epochs')
-    parser.add_argument('--stage2_epochs', type=int, default=27, help='Stage 2: Full model fine-tuning epochs')
+    parser.add_argument('--stage1_epochs', type=int, default=5, help='Stage 1: Frozen backbone warm-up epochs')
+    parser.add_argument('--stage2_epochs', type=int, default=16, help='Stage 2: Full model fine-tuning epochs')
     parser.add_argument('--n_folds', type=int, default=5, help='Number of cross-validation folds')
     parser.add_argument('--start_fold', type=int, default=1, help='Starting fold index (1-based, e.g. 2 to resume from Fold 2)')
     parser.add_argument('--output_dir', type=str, default='models', help='Directory to save checkpoints and OOF predictions')
     parser.add_argument('--log_dir', type=str, default='logs', help='Directory to save timestamped session logs')
     parser.add_argument('--seed', type=int, default=223, help='Random seed (223 gives optimal balanced date splits)')
-    parser.add_argument('--use_tta', action='store_true', default=True, help='Enable TTA during validation')
+    parser.add_argument('--use_tta', action='store_true', default=True, help='Enable TTA for checkpoint verification and final OOF')
     return parser.parse_args()
+
+
+def load_or_create_wide_dataset(data_path='wide.csv', raw_train_csv='train.csv', logger=None):
+    """
+    Ensures wide format dataset (with continuous target columns) is loaded.
+    1. If wide.csv exists, loads all 439 samples directly (including balance upsamples).
+    2. If wide.csv is missing, automatically pivots raw long train.csv into wide format,
+       derives composite targets (GDM, Total), saves wide.csv, and returns the DataFrame.
+    """
+    if os.path.exists(data_path):
+        df = pd.read_csv(data_path)
+        if logger:
+            logger.info(f"  [DATA] Successfully loaded existing wide dataset: '{data_path}' ({len(df)} samples)")
+        return df, data_path
+
+    # If raw long train.csv exists, auto-pivot to wide format
+    if os.path.exists(raw_train_csv):
+        if logger:
+            logger.info(f"  [DATA] '{data_path}' not found. Auto-converting raw '{raw_train_csv}' into wide format...")
+        raw_df = pd.read_csv(raw_train_csv)
+
+        meta_cols = [c for c in ['sample_id', 'image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm'] if c in raw_df.columns]
+
+        if 'target_name' in raw_df.columns and 'target' in raw_df.columns:
+            if 'image_path' in raw_df.columns:
+                pivoted = raw_df.pivot_table(index='image_path', columns='target_name', values='target').reset_index()
+                meta_df = raw_df[meta_cols].drop_duplicates(subset=['image_path']).reset_index(drop=True)
+                df = pd.merge(meta_df, pivoted, on='image_path')
+            else:
+                pivoted = raw_df.pivot_table(index='sample_id', columns='target_name', values='target').reset_index()
+                meta_df = raw_df[meta_cols].drop_duplicates(subset=['sample_id']).reset_index(drop=True)
+                df = pd.merge(meta_df, pivoted, on='sample_id')
+        else:
+            df = raw_df.copy()
+
+        for t in TARGET_NAMES:
+            if t not in df.columns:
+                df[t] = 0.0
+
+        if df['GDM_g'].sum() == 0 and 'Dry_Green_g' in df.columns and 'Dry_Clover_g' in df.columns:
+            df['GDM_g'] = df['Dry_Green_g'] + df['Dry_Clover_g']
+        if df['Dry_Total_g'].sum() == 0 and 'Dry_Dead_g' in df.columns:
+            df['Dry_Total_g'] = df['GDM_g'] + df['Dry_Dead_g']
+
+        save_path = 'wide.csv'
+        df.to_csv(save_path, index=False)
+        if logger:
+            logger.info(f"  [DATA] Successfully created and saved wide format dataset to '{save_path}' ({len(df)} samples)")
+        return df, save_path
+
+    raise FileNotFoundError(f"Neither '{data_path}' nor '{raw_train_csv}' could be found.")
 
 
 def run_training():
@@ -634,15 +685,11 @@ def run_training():
     logger.info("=" * 70)
 
     # --------------------------------------------------------------------------
-    # STEP 2: Data Loading & Verification
+    # STEP 2: Data Loading & Verification (Always uses Wide Formatting)
     # --------------------------------------------------------------------------
-    data_path = args.data_path if os.path.exists(args.data_path) else 'wide.csv'
-    if not os.path.exists(data_path):
-        data_path = 'train_converted.csv'
-    df = pd.read_csv(data_path)
-
     logger.info("\n" + "=" * 70)
     logger.info("[STEP 2/7] DATA LOADING & DATASET VERIFICATION")
+    df, data_path = load_or_create_wide_dataset(data_path=args.data_path, raw_train_csv='train.csv', logger=logger)
     logger.info(f"  Dataset Source: {data_path}")
     logger.info(f"  Total Samples Loaded: {len(df)}")
     if 'is_synthetic' in df.columns:

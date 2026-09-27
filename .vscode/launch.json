@@ -2,7 +2,31 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Train 5-Fold Dual-Stream DINO (0.598 Recipe)",
+            "name": "Train Fast 5-Fold DINOv3 Small (~25 Mins)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "args": [
+                "--data_path", "wide.csv",
+                "--backbone", "vit_small_patch16_dinov3_qkvb",
+                "--img_size", "384",
+                "--batch_size", "8",
+                "--grad_accum", "2",
+                "--stage1_epochs", "5",
+                "--stage2_epochs", "16",
+                "--n_folds", "5",
+                "--seed", "223"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Train 5-Fold DINOv3 Base (Original 0.598 Recipe, ~5 Hours)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
@@ -32,12 +56,12 @@
             "program": "${workspaceFolder}/train.py",
             "args": [
                 "--data_path", "wide.csv",
-                "--backbone", "vit_base_patch16_dinov3_qkvb",
-                "--img_size", "512",
+                "--backbone", "vit_small_patch16_dinov3_qkvb",
+                "--img_size", "384",
                 "--batch_size", "8",
                 "--grad_accum", "2",
-                "--stage1_epochs", "8",
-                "--stage2_epochs", "27",
+                "--stage1_epochs", "5",
+                "--stage2_epochs", "16",
                 "--n_folds", "5",
                 "--seed", "223",
                 "--start_fold", "2"
@@ -57,8 +81,8 @@
             "program": "${workspaceFolder}/train.py",
             "args": [
                 "--data_path", "wide.csv",
-                "--backbone", "vit_base_patch16_dinov3_qkvb",
-                "--img_size", "512",
+                "--backbone", "vit_small_patch16_dinov3_qkvb",
+                "--img_size", "384",
                 "--batch_size", "8",
                 "--grad_accum", "2",
                 "--stage1_epochs", "2",

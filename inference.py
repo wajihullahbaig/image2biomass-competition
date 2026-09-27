@@ -187,30 +187,39 @@ class DualStreamDINO(nn.Module):
 # ==============================================================================
 def apply_soft_blend_postprocess(preds_5, states=None):
     """
-    1st & 2nd Place Winning Post-Processing Formula:
-    1. Clover scaling (0.8) to account for test set distribution shift.
-    2. Dead extreme adjustment (>20 * 1.1, <10 * 0.9).
-    3. Soft physical blend:
+    Decoupled Post-Processing Soft Blending (Winning Formulations):
+    1. Pure physics for clover (unscaled, no artificial 0.8 downscale penalty).
+    2. Dead fringe expansion: >20 * 1.1, <10 * 0.9 (2nd/3rd place solution).
+    3. Soft physical blending (1st place solution):
        - GDM = 0.5 * pred_GDM + 0.5 * (Green + Clover)
        - Total = 0.5 * pred_Total + 0.5 * (Green + Clover + Dead)
-    4. WA zero-dead clipping (pasture thatch in WA is strictly 0.0g).
-    5. Non-negative clipping.
+    4. Range clipping to pasture bounds (Clover <= 71.79, Dead <= 83.84, Green <= 157.98).
+    5. WA zero-dead correction (if state metadata is available).
+    6. Non-negativity clamp (val >= 0.0).
     """
     preds = np.maximum(np.asarray(preds_5, dtype=np.float32).copy(), 0.0)
     green = preds[:, 0]
     dead = preds[:, 1]
-    clover = preds[:, 2] * 0.8
+    clover = preds[:, 2]
     gdm = preds[:, 3]
     total = preds[:, 4]
 
+    # Dead fringe adjustment (from 2nd & 3rd place solutions)
     dead = np.where(dead > 20.0, dead * 1.1,
            np.where(dead < 10.0, dead * 0.9, dead))
 
+    # WA zero-dead physical correction
     if states is not None:
         for idx, st in enumerate(states):
             if str(st).strip() == 'WA':
                 dead[idx] = 0.0
 
+    # Range clipping to pasture bounds
+    clover = np.clip(clover, 0.0, 71.79)
+    dead = np.clip(dead, 0.0, 83.84)
+    green = np.clip(green, 0.0, 157.98)
+
+    # Soft physical blending
     derived_gdm = green + clover
     gdm_blended = 0.5 * gdm + 0.5 * derived_gdm
 
@@ -247,12 +256,18 @@ def predict_with_model(model, loader, device, use_tta=True):
     return np.concatenate(all_preds, axis=0)
 
 
-def auto_detect_backbone(state_dict, default_backbone="vit_base_patch14_dinov2"):
+def auto_detect_backbone(state_dict, default_backbone="vit_base_patch16_dinov3_qkvb"):
     clean_sd = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    patch_size = 16
+    for k in clean_sd:
+        if 'patch_embed.proj.weight' in k:
+            patch_size = clean_sd[k].shape[2]
+            break
+
     if 'cross_view_attn.in_proj_weight' in clean_sd:
         dim = clean_sd['cross_view_attn.in_proj_weight'].shape[1]
         if dim == 768:
-            return 'vit_base_patch14_dinov2'
+            return 'vit_base_patch16_dinov3_qkvb' if patch_size == 16 else 'vit_base_patch14_dinov2'
         elif dim == 384:
             return 'vit_small_patch14_dinov2'
         elif dim == 1024:
@@ -316,16 +331,19 @@ def run_inference():
     unique_images_df = test_df_raw.drop_duplicates(subset=['image_path']).reset_index(drop=True)
     print(f"[DATA] Loaded {len(test_df_raw)} test targets across {len(unique_images_df)} unique images")
 
-    # 3. Create Test Dataset & Loader
-    test_ds = DualStreamTestDataset(unique_images_df, img_dir=args.img_dir, img_size=args.img_size)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
-
     # 4. Predict Across All Fold Models
     all_fold_preds = []
     for ckpt_idx, ckpt_path in enumerate(ckpt_paths):
         print(f"Predicting with Checkpoint {ckpt_idx + 1}/{len(ckpt_paths)}: {os.path.basename(ckpt_path)}...")
         sd = torch.load(ckpt_path, map_location=device, weights_only=True)
         backbone = auto_detect_backbone(sd)
+
+        # Dynamically set resolution matching backbone patch size
+        img_size = 518 if 'patch14' in backbone else 512
+        print(f"  Detected Backbone: {backbone} | Resolution: {img_size}x{img_size}")
+
+        test_ds = DualStreamTestDataset(unique_images_df, img_dir=args.img_dir, img_size=img_size)
+        test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
 
         # Detect number of target heads
         head_indices = [int(k.split('.')[1]) for k in sd.keys() if k.startswith('reg_heads.') and '.0.weight' in k]
@@ -336,6 +354,9 @@ def run_inference():
 
         preds = predict_with_model(model, test_loader, device, use_tta=not args.no_tta)
         all_fold_preds.append(preds)
+        del model, sd
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # 5. Ensemble Average Across All Folds
     ensemble_raw = np.mean(all_fold_preds, axis=0)

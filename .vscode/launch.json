@@ -2,18 +2,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Train 5-Fold Dual-Stream DINO",
+            "name": "Train 5-Fold Dual-Stream DINO (0.598 Recipe)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
             "args": [
-                "--backbone", "vit_base_patch14_dinov2",
-                "--img_size", "518",
+                "--data_path", "wide.csv",
+                "--backbone", "vit_base_patch16_dinov3_qkvb",
+                "--img_size", "512",
                 "--batch_size", "8",
                 "--grad_accum", "2",
                 "--stage1_epochs", "8",
-                "--stage2_epochs", "26",
-                "--n_folds", "5"
+                "--stage2_epochs", "27",
+                "--n_folds", "5",
+                "--seed", "223"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -29,13 +31,15 @@
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
             "args": [
-                "--backbone", "vit_base_patch14_dinov2",
-                "--img_size", "518",
+                "--data_path", "wide.csv",
+                "--backbone", "vit_base_patch16_dinov3_qkvb",
+                "--img_size", "512",
                 "--batch_size", "8",
                 "--grad_accum", "2",
                 "--stage1_epochs", "8",
-                "--stage2_epochs", "26",
+                "--stage2_epochs", "27",
                 "--n_folds", "5",
+                "--seed", "223",
                 "--start_fold", "2"
             ],
             "console": "integratedTerminal",
@@ -52,13 +56,15 @@
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
             "args": [
-                "--backbone", "vit_base_patch14_dinov2",
-                "--img_size", "518",
+                "--data_path", "wide.csv",
+                "--backbone", "vit_base_patch16_dinov3_qkvb",
+                "--img_size", "512",
                 "--batch_size", "8",
                 "--grad_accum", "2",
                 "--stage1_epochs", "2",
                 "--stage2_epochs", "3",
-                "--n_folds", "5"
+                "--n_folds", "5",
+                "--seed", "223"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",

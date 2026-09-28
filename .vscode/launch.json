@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Train Fast 5-Fold DINOv3 Small (~25 Mins)",
+            "name": "Train 5-Fold DINOv3 Small (TTA Enabled)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
@@ -10,61 +10,13 @@
                 "--data_path", "wide.csv",
                 "--backbone", "vit_small_patch16_dinov3_qkvb",
                 "--img_size", "384",
-                "--batch_size", "8",
-                "--grad_accum", "2",
-                "--stage1_epochs", "5",
-                "--stage2_epochs", "16",
-                "--n_folds", "5",
-                "--seed", "223"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "justMyCode": false
-        },
-        {
-            "name": "Train 5-Fold DINOv3 Base (Original 0.598 Recipe, ~5 Hours)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/train.py",
-            "args": [
-                "--data_path", "wide.csv",
-                "--backbone", "vit_base_patch16_dinov3_qkvb",
-                "--img_size", "512",
                 "--batch_size", "8",
                 "--grad_accum", "2",
                 "--stage1_epochs", "8",
-                "--stage2_epochs", "27",
-                "--n_folds", "5",
-                "--seed", "223"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "justMyCode": false
-        },
-        {
-            "name": "Resume Training from Fold 2 (Folds 2-5)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/train.py",
-            "args": [
-                "--data_path", "wide.csv",
-                "--backbone", "vit_small_patch16_dinov3_qkvb",
-                "--img_size", "384",
-                "--batch_size", "8",
-                "--grad_accum", "2",
-                "--stage1_epochs", "5",
-                "--stage2_epochs", "16",
+                "--stage2_epochs", "25",
                 "--n_folds", "5",
                 "--seed", "223",
-                "--start_fold", "2"
+                "--use_tta"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -75,38 +27,16 @@
             "justMyCode": false
         },
         {
-            "name": "Train Fast Debug (2+3 Epochs)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/train.py",
-            "args": [
-                "--data_path", "wide.csv",
-                "--backbone", "vit_small_patch16_dinov3_qkvb",
-                "--img_size", "384",
-                "--batch_size", "8",
-                "--grad_accum", "2",
-                "--stage1_epochs", "2",
-                "--stage2_epochs", "3",
-                "--n_folds", "5",
-                "--seed", "223"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "justMyCode": false
-        },
-        {
-            "name": "Run Multi-Fold Inference (Generate Submission)",
+            "name": "Inference & Generate Submission (TTA Enabled)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/inference.py",
             "args": [
                 "--model_dir", "models",
                 "--test_csv", "test.csv",
-                "--output_csv", "submission.csv"
+                "--output_csv", "submission.csv",
+                "--img_size", "384",
+                "--use_tta"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -117,17 +47,29 @@
             "justMyCode": false
         },
         {
-            "name": "Python: Current Active File",
+            "name": "Debug Quick Test (1+1 Epochs)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "program": "${workspaceFolder}/train.py",
+            "args": [
+                "--data_path", "wide.csv",
+                "--backbone", "vit_small_patch16_dinov3_qkvb",
+                "--img_size", "384",
+                "--batch_size", "8",
+                "--grad_accum", "2",
+                "--stage1_epochs", "1",
+                "--stage2_epochs", "1",
+                "--n_folds", "5",
+                "--seed", "223",
+                "--use_tta"
+            ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             },
-            "justMyCode": true
+            "justMyCode": false
         }
     ]
 }

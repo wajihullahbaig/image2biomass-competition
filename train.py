@@ -21,6 +21,9 @@ Key Principles & Solutions Heritage:
    - StratifiedGroupKFold on 'Sampling_Date' stratified by 'State' (seed=223).
    - Host-confirmed: prevents temporal leakage across unseen flight dates.
    - Full 439 samples from wide.csv (including high-biomass synthetic pasture augmentations).
+5. Evaluation Metric & Soft Physics:
+   - Official competition R2 on log1p scale.
+   - Soft physics calibration (clover_scale=0.8, dead fringe expansion, mass conservation blending).
 """
 
 import os
@@ -55,7 +58,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision import transforms
 from sklearn.model_selection import StratifiedGroupKFold
 import timm
@@ -94,8 +97,6 @@ def set_seed(seed=223):
 def create_grouped_stratified_folds(df, n_splits=5, seed=223, group_col='Sampling_Date', strat_col='State'):
     """
     Creates 5 cross-validation folds grouped by Sampling_Date and stratified by State.
-    
-    Why this achieves highest Kaggle LB/PB generalization:
     Competition test images are captured on completely unseen flight dates. Grouping by
     Sampling_Date guarantees that train and validation folds never share images from the
     same flight, weather conditions, or sun angles.
@@ -137,9 +138,9 @@ def get_interval_labels(targets_np):
 # ==============================================================================
 # Augmentations (1st + 2nd + 3rd Place Solutions)
 # ==============================================================================
-def apply_camera_scaling(image_np, prob=0.2):
+def apply_camera_scale_simulation(image_np, prob=0.2):
     """Simulates focal distance variation by downscaling and zero-padding (1st/3rd place)."""
-    if random.random() < prob:
+    if prob > 0 and random.random() < prob:
         h, w = image_np.shape[:2]
         bg = np.zeros_like(image_np)
         scale = random.uniform(0.85, 1.0)
@@ -153,12 +154,14 @@ def apply_camera_scaling(image_np, prob=0.2):
     return image_np
 
 
-def apply_vertical_strip_shuffle(image_np, n_strips=4, prob=0.5):
+def permute_vertical_strips(image_np, n_strips=4, prob=0.5):
     """
-    Shuffles vertical slices of pasture quadrat (3rd-place solution).
-    Biomass is strictly conserved while eliminating spatial position bias.
+    Randomly permutes N vertical strips of the pasture quadrat sub-image.
+    Because biomass is purely additive mass, shuffling vertical slices
+    conserves total grams in the frame while preventing spatial overfitting.
+    From 3rd Place Solution (+0.02 gain).
     """
-    if random.random() < prob:
+    if prob > 0 and random.random() < prob:
         strips = np.array_split(image_np, n_strips, axis=1)
         random.shuffle(strips)
         return np.concatenate(strips, axis=1)
@@ -170,29 +173,31 @@ class DualStreamBiomassDataset(Dataset):
     Dual-Stream Dataset for Panoramic (2:1) Pasture Images.
     Splits wide images into Left and Right 1:1 views for shared ViT feature extraction.
     """
-    def __init__(self, df, img_size=512, is_training=True):
+    def __init__(self, df, img_size=384, is_training=True,
+                 camera_scaling_prob=0.2, strip_shuffle_prob=0.5, view_swap_prob=0.5, grayscale_prob=0.2):
         self.df = df.reset_index(drop=True)
         self.img_size = img_size
         self.is_training = is_training
+        self.camera_scaling_prob = camera_scaling_prob
+        self.strip_shuffle_prob = strip_shuffle_prob
+        self.view_swap_prob = view_swap_prob
 
         if self.is_training:
-            self.pil_transform = transforms.Compose([
+            self.transform = transforms.Compose([
                 transforms.Resize((img_size, img_size)),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomVerticalFlip(p=0.5),
+                transforms.RandomGrayscale(p=grayscale_prob),  # 3rd place: learns morphology over color
                 transforms.RandomApply([transforms.RandomRotation((90, 90))], p=0.5),
-                # 2nd-place: Lighting robustness
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-                # 3rd-place: Texture/morphology learning
-                transforms.RandomGrayscale(p=0.20),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ])
         else:
-            self.pil_transform = transforms.Compose([
+            self.transform = transforms.Compose([
                 transforms.Resize((img_size, img_size)),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ])
 
         self.has_targets = all(t in self.df.columns for t in TARGET_NAMES)
@@ -207,10 +212,13 @@ class DualStreamBiomassDataset(Dataset):
         if os.path.exists(rel_path):
             return rel_path
         fname = os.path.basename(rel_path)
-        for cand_dir in ['train', 'test', 'images', os.path.join('..', 'train')]:
+        for cand_dir in ['train', 'test', 'images', os.path.join('..', 'train'), os.path.join('..', 'test'), './data']:
             cand = os.path.join(cand_dir, fname)
             if os.path.exists(cand):
                 return cand
+        for root, _, files in os.walk('.'):
+            if fname in files:
+                return os.path.join(root, fname)
         raise FileNotFoundError(f"Cannot find image: {rel_path}")
 
     def __getitem__(self, idx):
@@ -225,31 +233,32 @@ class DualStreamBiomassDataset(Dataset):
         h, w, _ = raw_rgb.shape
         mid_w = w // 2
 
-        # Split 2000x1000 into Left and Right 1000x1000 views
         left_np = raw_rgb[:, :mid_w].copy()
         right_np = raw_rgb[:, mid_w:].copy()
 
+        # 3rd-Place Augmentations during training
         if self.is_training:
-            # 1. View Swap (50% prob) - models seam continuity
-            if random.random() < 0.5:
+            # 1. Left/Right view swap (symmetry)
+            if self.view_swap_prob > 0 and random.random() < self.view_swap_prob:
                 left_np, right_np = right_np, left_np
 
-            # 2. Camera Focal Scaling (20% prob)
-            left_np = apply_camera_scaling(left_np, prob=0.2)
-            right_np = apply_camera_scaling(right_np, prob=0.2)
+            # 2. Camera focal/scaling simulation
+            if self.camera_scaling_prob > 0:
+                left_np = apply_camera_scale_simulation(left_np, prob=self.camera_scaling_prob)
+                right_np = apply_camera_scale_simulation(right_np, prob=self.camera_scaling_prob)
 
-            # 3. Vertical 4-Strip Permutation (50% prob)
-            left_np = apply_vertical_strip_shuffle(left_np, n_strips=4, prob=0.5)
-            right_np = apply_vertical_strip_shuffle(right_np, n_strips=4, prob=0.5)
+            # 3. Vertical 4-strip permutation (mass-conserving spatial decorrelation)
+            if self.strip_shuffle_prob > 0:
+                left_np = permute_vertical_strips(left_np, n_strips=4, prob=self.strip_shuffle_prob)
+                right_np = permute_vertical_strips(right_np, n_strips=4, prob=self.strip_shuffle_prob)
 
-        # Independent PIL transforms
-        left_tensor = self.pil_transform(Image.fromarray(left_np))
-        right_tensor = self.pil_transform(Image.fromarray(right_np))
+        tensor_l = self.transform(Image.fromarray(left_np))
+        tensor_r = self.transform(Image.fromarray(right_np))
 
         item = {
-            'image_left': left_tensor,
-            'image_right': right_tensor,
-            'sample_id': row.get('sample_id', row.get('image_path', f'sample_{idx}')),
+            'image_left': tensor_l,
+            'image_right': tensor_r,
+            'sample_id': row.get('sample_id', row.get('clean_id', f'sample_{idx}')),
             'state': row.get('State', 'Unknown')
         }
 
@@ -263,39 +272,35 @@ class DualStreamBiomassDataset(Dataset):
 # ==============================================================================
 # Model Architecture: Dual-Stream DINO ViT with Cross-View Attention
 # ==============================================================================
-class DualStreamDINO(nn.Module):
+class DualStreamBiomassModel(nn.Module):
     """
     Dual-Stream Vision Transformer:
-    1. Shared DINO ViT Backbone (DINOv3 / DINOv2).
+    1. Shared DINO ViT Backbone (vit_small_patch16_dinov3_qkvb / vit_base_patch16_dinov3_qkvb).
     2. Multi-Head Cross-View Attention layer across Left and Right sub-quadrats.
     3. Fusion MLP projecting joint representations.
     4. 5 Independent Continuous Regression Heads (Softplus activation).
     5. 5 Auxiliary Interval Classification Heads (7 classes each).
     """
-    def __init__(self, backbone_name="vit_base_patch16_dinov3_qkvb", fusion_dim=384, dropout=0.3, pretrained=True):
+    def __init__(self, backbone_name="vit_small_patch16_dinov3_qkvb", num_targets=5, num_intervals=7, fusion_dim=384, dropout=0.3, pretrained=True):
         super().__init__()
         self.backbone_name = backbone_name
         self.fusion_dim = fusion_dim
-        self.num_targets = 5
-        self.num_intervals = 7
-
-        kwargs = {}
-        if 'dinov2' in backbone_name or 'patch14' in backbone_name or 'patch16' in backbone_name:
-            kwargs['dynamic_img_size'] = True
+        self.num_targets = num_targets
+        self.num_intervals = num_intervals
 
         self.backbone = timm.create_model(
             backbone_name,
             pretrained=pretrained,
             num_classes=0,
-            **kwargs
+            dynamic_img_size=True
         )
         self.backbone_dim = self.backbone.num_features
 
         # Cross-View Multi-Head Attention
-        n_heads = 8 if self.backbone_dim % 8 == 0 else 4
+        num_heads = 8 if self.backbone_dim % 8 == 0 else 4
         self.cross_view_attn = nn.MultiheadAttention(
             embed_dim=self.backbone_dim,
-            num_heads=n_heads,
+            num_heads=num_heads,
             dropout=0.1,
             batch_first=True
         )
@@ -351,8 +356,7 @@ class DualStreamDINO(nn.Module):
         tokens = self.attn_norm(tokens + attn_out)
 
         # Concat & Fusion
-        fused = torch.cat([tokens[:, 0], tokens[:, 1]], dim=-1)
-        fused = self.fusion_mlp(fused)
+        fused = self.fusion_mlp(torch.cat([tokens[:, 0], tokens[:, 1]], dim=-1))
 
         reg_preds = [F.softplus(head(fused)) for head in self.reg_heads]
         cls_preds = [head(fused) for head in self.cls_heads]
@@ -365,185 +369,139 @@ class DualStreamDINO(nn.Module):
 # ==============================================================================
 class WeightedBiomassLoss(nn.Module):
     """Combines SmoothL1 Continuous Regression with Auxiliary Interval Classification."""
-    def __init__(self, official_weights=OFFICIAL_WEIGHTS, cls_weight=0.3):
+    def __init__(self, loss_weights=OFFICIAL_WEIGHTS, cls_weight=0.3):
         super().__init__()
-        self.weights = official_weights
+        self.weights = loss_weights
         self.cls_weight = cls_weight
-        self.reg_loss = nn.SmoothL1Loss(beta=1.0)
-        self.cls_loss = nn.CrossEntropyLoss()
+        self.criterion_reg = nn.SmoothL1Loss()
+        self.criterion_cls = nn.CrossEntropyLoss()
 
-    def forward(self, reg_preds, cls_preds, targets_reg, targets_cls):
-        total_reg_loss = 0.0
-        total_cls_loss = 0.0
+    def forward(self, predictions_reg, predictions_cls, targets_reg, targets_cls=None):
+        device = targets_reg.device
+        w = torch.tensor(self.weights, device=device, dtype=torch.float32)
 
-        for i in range(len(reg_preds)):
-            r_pred = reg_preds[i].squeeze(-1)
-            r_true = targets_reg[:, i]
-            w = self.weights[i]
+        loss_reg = torch.tensor(0.0, device=device)
+        for i in range(5):
+            pred_i = predictions_reg[i].squeeze(-1) if isinstance(predictions_reg, list) else predictions_reg[:, i]
+            loss_reg += w[i] * self.criterion_reg(pred_i, targets_reg[:, i])
 
-            loss_r = self.reg_loss(r_pred, r_true)
-            total_reg_loss += w * loss_r
+        loss_cls = torch.tensor(0.0, device=device)
+        if predictions_cls is not None and targets_cls is not None:
+            for i in range(5):
+                loss_cls += w[i] * self.criterion_cls(predictions_cls[i], targets_cls[:, i].long())
 
-            c_pred = cls_preds[i]
-            c_true = targets_cls[:, i]
-            loss_c = self.cls_loss(c_pred, c_true)
-            total_cls_loss += w * loss_c
-
-        total_loss = total_reg_loss + (self.cls_weight * total_cls_loss)
-        return total_loss, total_reg_loss, total_cls_loss
+        total_loss = loss_reg + (self.cls_weight * loss_cls)
+        return total_loss, loss_reg, loss_cls
 
 
 # ==============================================================================
-# Evaluation Metric & Physical Post-Processing
+# Evaluation Metric & Physical Post-Processing (Exact Kaggle Benchmark Recipe)
 # ==============================================================================
 def calculate_competition_r2(y_true, y_pred, weights=OFFICIAL_WEIGHTS):
-    """Calculates official weighted multi-target R2 metric."""
-    yt = np.asarray(y_true, dtype=np.float64)
-    yp = np.asarray(y_pred, dtype=np.float64)
-    w = np.asarray(weights, dtype=np.float64)
+    """
+    Calculates official weighted multi-target R2 metric on log1p(biomass) scale.
+    Matches the Kaggle competition evaluation metric.
+    """
+    y_true = np.array(y_true, dtype=float).reshape(-1, 5)
+    y_pred = np.array(y_pred, dtype=float).reshape(-1, 5)
+    w = np.array(weights, dtype=float)
+
+    yt = np.log1p(np.maximum(0, y_true))
+    yp = np.log1p(np.maximum(0, y_pred))
 
     r2_scores = []
     for i in range(5):
-        t = yt[:, i]
-        p = yp[:, i]
-        ss_res = np.sum((t - p) ** 2)
-        ss_tot = np.sum((t - np.mean(t)) ** 2)
-        r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
-        r2_scores.append(r2)
+        ss_res = np.sum((yt[:, i] - yp[:, i]) ** 2)
+        ss_tot = np.sum((yt[:, i] - np.mean(yt[:, i])) ** 2)
+        score = 1.0 - (ss_res / ss_tot) if ss_tot != 0 else (1.0 if ss_res == 0 else 0.0)
+        r2_scores.append(score)
 
     return float(np.sum(w * np.array(r2_scores))), r2_scores
 
 
-def apply_soft_blend_postprocess(preds_5, states=None):
+def soft_physics_postprocess(preds_np, clover_scale=0.8, dead_upper_thresh=20.0, dead_upper_scale=1.1, dead_lower_thresh=10.0, dead_lower_scale=0.9, gdm_weight=0.5, total_weight=0.5):
     """
-    Decoupled Post-Processing Soft Blending (Winning Formulations):
-    1. Pure physics for clover (unscaled, no artificial 0.8 downscale penalty).
-    2. Dead fringe expansion: >20 * 1.1, <10 * 0.9 (2nd/3rd place solution).
-    3. Soft physical blending (1st place solution):
-       - GDM = 0.5 * GDM_pred + 0.5 * (Green + Clover)
-       - Total = 0.5 * Total_pred + 0.5 * (Green + Clover + Dead)
-    4. Range clipping to pasture bounds (Clover <= 71.79, Dead <= 83.84, Green <= 157.98).
-    5. WA zero-dead correction (if state metadata is available).
-    6. Non-negativity clamp (val >= 0.0).
+    Enforces physical mass relationships, thatch fringe expansion, and clover calibration:
+    1. Clover downscaling by 0.8 (corrects systematic overprediction).
+    2. Dead biomass fringe expansion (3rd Place calibration: overcomes regression compression).
+    3. Mass-conservation blends:
+       - GDM = 0.5 * GDM + 0.5 * (Green + Clover)
+       - Total = 0.5 * Total + 0.5 * (Green + Clover + Dead)
+    4. Non-negativity clamp (val >= 0.0).
     """
-    preds = np.maximum(np.asarray(preds_5, dtype=np.float32).copy(), 0.0)
+    preds = np.maximum(preds_np.copy(), 0.0)
     green = preds[:, 0]
     dead = preds[:, 1]
-    clover = preds[:, 2]
+    clover = preds[:, 2] * clover_scale
     gdm = preds[:, 3]
     total = preds[:, 4]
 
-    # Dead fringe adjustment (from 2nd & 3rd place solutions)
-    dead = np.where(dead > 20.0, dead * 1.1,
-           np.where(dead < 10.0, dead * 0.9, dead))
+    # Dead biomass fringe expansion
+    dead = np.where(dead > dead_upper_thresh, dead * dead_upper_scale,
+           np.where(dead < dead_lower_thresh, dead * dead_lower_scale, dead))
 
-    # WA zero-dead physical correction
-    if states is not None:
-        for idx, st in enumerate(states):
-            if str(st).strip() == 'WA':
-                dead[idx] = 0.0
+    gdm_blended = gdm_weight * gdm + (1.0 - gdm_weight) * (green + clover)
+    total_blended = total_weight * total + (1.0 - total_weight) * (green + clover + dead)
 
-    # Range clipping to pasture bounds
-    clover = np.clip(clover, 0.0, 71.79)
-    dead = np.clip(dead, 0.0, 83.84)
-    green = np.clip(green, 0.0, 157.98)
-
-    # Soft physical blending
-    derived_gdm = green + clover
-    gdm_blended = 0.5 * gdm + 0.5 * derived_gdm
-
-    derived_total = green + clover + dead
-    total_blended = 0.5 * total + 0.5 * derived_total
-
-    result = np.column_stack([green, dead, clover, gdm_blended, total_blended])
-    return np.maximum(result, 0.0)
+    return np.maximum(np.column_stack([green, dead, clover, gdm_blended, total_blended]), 0.0)
 
 
 # ==============================================================================
-# Training Engine
+# Evaluation Function with TTA
 # ==============================================================================
-def train_one_epoch(model, loader, optimizer, criterion, scaler, device, grad_accum_steps=1):
-    model.train()
-    loss_sum, reg_sum, cls_sum, samples = 0.0, 0.0, 0.0, 0
-    optimizer.zero_grad()
-
-    for step, batch in enumerate(tqdm(loader, desc="  Train", leave=False)):
-        img_l = batch['image_left'].to(device)
-        img_r = batch['image_right'].to(device)
-        t_reg = batch['targets_reg'].to(device)
-        t_cls = batch['targets_cls'].to(device)
-        bs = img_l.size(0)
-
-        with torch.amp.autocast('cuda'):
-            reg_preds, cls_preds = model(img_l, img_r)
-            loss, loss_reg, loss_cls = criterion(reg_preds, cls_preds, t_reg, t_cls)
-            loss = loss / grad_accum_steps
-
-        scaler.scale(loss).backward()
-
-        if (step + 1) % grad_accum_steps == 0 or (step + 1) == len(loader):
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-
-        loss_sum += loss.item() * grad_accum_steps * bs
-        reg_sum += loss_reg.item() * bs
-        cls_sum += loss_cls.item() * bs
-        samples += bs
-
-    n = max(1, samples)
-    return loss_sum / n, reg_sum / n, cls_sum / n
-
-
-def validate(model, loader, criterion, device, val_df, use_tta=True):
+def evaluate(model, val_loader, criterion, device, use_tta=True):
     model.eval()
-    loss_sum, samples = 0.0, 0
-    all_preds_raw = []
-    all_targets_raw = []
+    val_loss_total, val_loss_reg, val_loss_cls = 0.0, 0.0, 0.0
+    val_preds_list, val_true_list = [], []
+    correct_cls, total_cls = 0, 0
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc="  Val", leave=False):
+        for batch in val_loader:
             img_l = batch['image_left'].to(device)
             img_r = batch['image_right'].to(device)
             t_reg = batch['targets_reg'].to(device)
             t_cls = batch['targets_cls'].to(device)
-            bs = img_l.size(0)
 
             with torch.amp.autocast('cuda'):
                 if use_tta:
                     # Standard view
-                    reg1, cls1 = model(img_l, img_r)
-                    # Mirrored view: horizontal flip & swap left/right
-                    img_l_flip = torch.flip(img_l, [3])
-                    img_r_flip = torch.flip(img_r, [3])
-                    reg2, cls2 = model(img_r_flip, img_l_flip)
-
-                    reg_preds = [(r1 + r2) * 0.5 for r1, r2 in zip(reg1, reg2)]
-                    cls_preds = [(c1 + c2) * 0.5 for c1, c2 in zip(cls1, cls2)]
+                    r1, c1 = model(img_l, img_r)
+                    # Mirrored horizontal view (flip right view as left, flip left view as right)
+                    r2, c2 = model(torch.flip(img_r, [3]), torch.flip(img_l, [3]))
+                    r = [(a + b) * 0.5 for a, b in zip(r1, r2)]
+                    c = [(a + b) * 0.5 for a, b in zip(c1, c2)]
                 else:
-                    reg_preds, cls_preds = model(img_l, img_r)
+                    r, c = model(img_l, img_r)
 
-                loss, _, _ = criterion(reg_preds, cls_preds, t_reg, t_cls)
-            loss_sum += loss.item() * bs
-            samples += bs
+                loss, loss_reg, loss_cls = criterion(r, c, t_reg, t_cls)
 
-            preds_matrix = torch.cat(reg_preds, dim=1).cpu().numpy()
-            all_preds_raw.append(preds_matrix)
-            all_targets_raw.append(t_reg.cpu().numpy())
+            val_loss_total += loss.item() * len(img_l)
+            val_loss_reg += loss_reg.item() * len(img_l)
+            val_loss_cls += loss_cls.item() * len(img_l)
 
-    preds_raw = np.concatenate(all_preds_raw, axis=0)
-    targets_true = np.concatenate(all_targets_raw, axis=0)
+            val_preds_list.append(torch.cat(r, dim=1).cpu().numpy())
+            val_true_list.append(t_reg.cpu().numpy())
 
-    states = val_df['State'].tolist() if 'State' in val_df.columns else None
-    preds_post = apply_soft_blend_postprocess(preds_raw, states=states)
+            if c is not None and t_cls is not None:
+                for i in range(5):
+                    preds_i = c[i].argmax(dim=-1)
+                    correct_cls += (preds_i == t_cls[:, i]).sum().item()
+                total_cls += len(t_cls) * 5
 
-    r2_raw, per_target_raw = calculate_competition_r2(targets_true, preds_raw)
-    r2_post, per_target_post = calculate_competition_r2(targets_true, preds_post)
-    avg_loss = loss_sum / max(1, samples)
+    n_samples = len(val_loader.dataset)
+    val_loss = val_loss_total / n_samples
+    val_reg = val_loss_reg / n_samples
+    val_cls = val_loss_cls / n_samples
+    cls_acc = (correct_cls / total_cls) if total_cls > 0 else 0.0
 
-    return avg_loss, r2_raw, r2_post, per_target_post, preds_raw, preds_post
+    v_true = np.concatenate(val_true_list, axis=0)
+    v_pred_raw = np.concatenate(val_preds_list, axis=0)
+    v_pred_post = soft_physics_postprocess(v_pred_raw)
+
+    r2_raw, per_target_raw = calculate_competition_r2(v_true, v_pred_raw)
+    r2_post, per_target_post = calculate_competition_r2(v_true, v_pred_post)
+
+    return val_loss, val_reg, val_cls, r2_raw, r2_post, per_target_post, cls_acc, v_pred_raw, v_pred_post
 
 
 # ==============================================================================
@@ -562,20 +520,20 @@ def setup_logging(output_dir="models", log_dir="logs"):
 
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-    # Console
+    # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter('%(message)s'))
     logger.addHandler(console_handler)
 
-    # Session log
+    # Session log file
     session_log_path = os.path.join(session_dir, "session.log")
     fh1 = logging.FileHandler(session_log_path, mode='w', encoding='utf-8')
     fh1.setLevel(logging.INFO)
     fh1.setFormatter(file_formatter)
     logger.addHandler(fh1)
 
-    # Output log
+    # Output log file
     output_log_path = os.path.join(output_dir, "train.log")
     fh2 = logging.FileHandler(output_log_path, mode='w', encoding='utf-8')
     fh2.setLevel(logging.INFO)
@@ -586,85 +544,85 @@ def setup_logging(output_dir="models", log_dir="logs"):
 
 
 # ==============================================================================
-# Main Orchestration Loop
+# Data Loading & Verification (Always uses Wide Formatting)
+# ==============================================================================
+def load_and_pivot_data(data_path='wide.csv', train_csv_path='train.csv', logger=None):
+    """
+    Loads wide format dataset.
+    1. If wide.csv exists, loads all 439 samples directly (including synthetic samples).
+    2. If missing, automatically pivots train.csv into wide format.
+    """
+    if os.path.exists(data_path):
+        if logger:
+            logger.info(f"  [DATA] Successfully loaded existing wide dataset: '{data_path}'")
+        df = pd.read_csv(data_path)
+    elif os.path.exists(train_csv_path):
+        if logger:
+            logger.info(f"  [DATA] '{data_path}' not found. Auto-pivoting '{train_csv_path}' into wide format...")
+        raw_df = pd.read_csv(train_csv_path)
+        if 'target_name' in raw_df.columns:
+            raw_df['clean_id'] = raw_df['sample_id'].astype(str).apply(lambda x: x.split('__')[0])
+            targets = raw_df.pivot_table(index='clean_id', columns='target_name', values='target', aggfunc='max').reset_index()
+            meta = raw_df[['clean_id', 'image_path', 'Sampling_Date', 'State', 'Species']].drop_duplicates(subset=['clean_id']).reset_index(drop=True)
+            df = pd.merge(meta, targets, on='clean_id', how='left')
+            df['sample_id'] = df['clean_id']
+        else:
+            df = raw_df.copy()
+        df.to_csv('wide.csv', index=False)
+    else:
+        raise FileNotFoundError(f"Neither '{data_path}' nor '{train_csv_path}' could be found.")
+
+    if 'clean_id' not in df.columns:
+        df['clean_id'] = df['sample_id']
+
+    for col in TARGET_NAMES:
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = df[col].fillna(0.0)
+
+    # Derived targets if missing
+    if df['GDM_g'].sum() == 0 and 'Dry_Green_g' in df.columns and 'Dry_Clover_g' in df.columns:
+        df['GDM_g'] = df['Dry_Green_g'] + df['Dry_Clover_g']
+    if df['Dry_Total_g'].sum() == 0 and 'Dry_Dead_g' in df.columns:
+        df['Dry_Total_g'] = df['GDM_g'] + df['Dry_Dead_g']
+
+    return df
+
+
+# ==============================================================================
+# CLI Argument Parsing
 # ==============================================================================
 def parse_args():
     parser = argparse.ArgumentParser(description="CSIRO Image2Biomass Dual-Stream DINO Training")
-    parser.add_argument('--data_path', type=str, default='wide.csv', help='Path to full dataset CSV (wide.csv with 439 samples)')
-    parser.add_argument('--backbone', type=str, default='vit_small_patch16_dinov3_qkvb', help='Vision Transformer backbone (vit_small_patch16_dinov3_qkvb / vit_base_patch16_dinov3_qkvb)')
+    parser.add_argument('--data_path', type=str, default='wide.csv', help='Path to wide format dataset CSV (wide.csv with 439 samples)')
+    parser.add_argument('--backbone', type=str, default='vit_small_patch16_dinov3_qkvb',
+                        help='Vision Transformer backbone (vit_small_patch16_dinov3_qkvb / vit_base_patch16_dinov3_qkvb)')
     parser.add_argument('--img_size', type=int, default=384, help='Input resolution for each sub-image (384 for ultra-fast, 512 for max res)')
     parser.add_argument('--batch_size', type=int, default=8, help='Training batch size')
     parser.add_argument('--grad_accum', type=int, default=2, help='Gradient accumulation steps (effective BS = batch_size * grad_accum)')
     parser.add_argument('--lr', type=float, default=3e-4, help='Base learning rate for heads')
-    parser.add_argument('--stage1_epochs', type=int, default=5, help='Stage 1: Frozen backbone warm-up epochs')
-    parser.add_argument('--stage2_epochs', type=int, default=16, help='Stage 2: Full model fine-tuning epochs')
+    parser.add_argument('--backbone_lr_factor', type=float, default=0.1, help='Differential LR factor for backbone during Stage 2')
+    parser.add_argument('--stage1_epochs', type=int, default=8, help='Stage 1: Frozen backbone warm-up epochs (default: 8)')
+    parser.add_argument('--stage2_epochs', type=int, default=25, help='Stage 2: Full model fine-tuning epochs (default: 25)')
     parser.add_argument('--n_folds', type=int, default=5, help='Number of cross-validation folds')
     parser.add_argument('--start_fold', type=int, default=1, help='Starting fold index (1-based, e.g. 2 to resume from Fold 2)')
     parser.add_argument('--output_dir', type=str, default='models', help='Directory to save checkpoints and OOF predictions')
     parser.add_argument('--log_dir', type=str, default='logs', help='Directory to save timestamped session logs')
     parser.add_argument('--seed', type=int, default=223, help='Random seed (223 gives optimal balanced date splits)')
-    parser.add_argument('--use_tta', action='store_true', default=True, help='Enable TTA for checkpoint verification and final OOF')
+    parser.add_argument('--use_tta', action='store_true', default=True, help='Enable TTA for checkpoint validation and final OOF')
     return parser.parse_args()
 
 
-def load_or_create_wide_dataset(data_path='wide.csv', raw_train_csv='train.csv', logger=None):
-    """
-    Ensures wide format dataset (with continuous target columns) is loaded.
-    1. If wide.csv exists, loads all 439 samples directly (including balance upsamples).
-    2. If wide.csv is missing, automatically pivots raw long train.csv into wide format,
-       derives composite targets (GDM, Total), saves wide.csv, and returns the DataFrame.
-    """
-    if os.path.exists(data_path):
-        df = pd.read_csv(data_path)
-        if logger:
-            logger.info(f"  [DATA] Successfully loaded existing wide dataset: '{data_path}' ({len(df)} samples)")
-        return df, data_path
-
-    # If raw long train.csv exists, auto-pivot to wide format
-    if os.path.exists(raw_train_csv):
-        if logger:
-            logger.info(f"  [DATA] '{data_path}' not found. Auto-converting raw '{raw_train_csv}' into wide format...")
-        raw_df = pd.read_csv(raw_train_csv)
-
-        meta_cols = [c for c in ['sample_id', 'image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm'] if c in raw_df.columns]
-
-        if 'target_name' in raw_df.columns and 'target' in raw_df.columns:
-            if 'image_path' in raw_df.columns:
-                pivoted = raw_df.pivot_table(index='image_path', columns='target_name', values='target').reset_index()
-                meta_df = raw_df[meta_cols].drop_duplicates(subset=['image_path']).reset_index(drop=True)
-                df = pd.merge(meta_df, pivoted, on='image_path')
-            else:
-                pivoted = raw_df.pivot_table(index='sample_id', columns='target_name', values='target').reset_index()
-                meta_df = raw_df[meta_cols].drop_duplicates(subset=['sample_id']).reset_index(drop=True)
-                df = pd.merge(meta_df, pivoted, on='sample_id')
-        else:
-            df = raw_df.copy()
-
-        for t in TARGET_NAMES:
-            if t not in df.columns:
-                df[t] = 0.0
-
-        if df['GDM_g'].sum() == 0 and 'Dry_Green_g' in df.columns and 'Dry_Clover_g' in df.columns:
-            df['GDM_g'] = df['Dry_Green_g'] + df['Dry_Clover_g']
-        if df['Dry_Total_g'].sum() == 0 and 'Dry_Dead_g' in df.columns:
-            df['Dry_Total_g'] = df['GDM_g'] + df['Dry_Dead_g']
-
-        save_path = 'wide.csv'
-        df.to_csv(save_path, index=False)
-        if logger:
-            logger.info(f"  [DATA] Successfully created and saved wide format dataset to '{save_path}' ({len(df)} samples)")
-        return df, save_path
-
-    raise FileNotFoundError(f"Neither '{data_path}' nor '{raw_train_csv}' could be found.")
-
-
+# ==============================================================================
+# Main Orchestration Loop
+# ==============================================================================
 def run_training():
     args = parse_args()
     set_seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger, session_dir, session_log_path = setup_logging(args.output_dir, args.log_dir)
 
-    # Automatically align image size to ViT patch size (divisibility assertion)
+    # Automatically align image size to ViT patch size
     aligned_size = align_img_size_to_backbone(args.img_size, args.backbone)
     if aligned_size != args.img_size:
         logger.info(f"[RESCALE] Aligned img_size from {args.img_size} to {aligned_size} (divisible by backbone patch size)")
@@ -676,12 +634,14 @@ def run_training():
     logger.info("=" * 70)
     logger.info("[STEP 1/7] INITIALIZATION & CONFIGURATION")
     logger.info(f"  Device: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
-    logger.info(f"  Backbone: {args.backbone} | Sub-Image Resolution: {args.img_size}x{args.img_size}")
+    logger.info(f"  Backbone: {args.backbone} (ViT Small DINOv3, dim=384, ~21.6M params)")
+    logger.info(f"  Sub-Image Resolution: {args.img_size}x{args.img_size} per view (Effective panoramic field: {args.img_size*2}x{args.img_size})")
     logger.info(f"  Batch Size: {args.batch_size} (Grad Accum: {args.grad_accum}) | Effective Batch Size: {args.batch_size * args.grad_accum}")
-    logger.info(f"  Learning Rate: {args.lr} (Differential factor: 0.1x for backbone in Stage 2)")
-    logger.info(f"  Schedule: Stage 1 = {args.stage1_epochs} eps (Heads) | Stage 2 = {args.stage2_epochs} eps (Full FT)")
+    logger.info(f"  Learning Rate: {args.lr:.1e} (Differential factor: {args.backbone_lr_factor}x for backbone in Stage 2)")
+    logger.info(f"  Schedule: Stage 1 = {args.stage1_epochs} eps (Heads) | Stage 2 = {args.stage2_epochs} eps (Full Fine-Tuning) | Total = {args.stage1_epochs + args.stage2_epochs} eps/fold")
     logger.info(f"  Random Seed: {args.seed} | Validation TTA: {args.use_tta}")
-    logger.info(f"  Logging to: {session_log_path} and {os.path.join(args.output_dir, 'train.log')}")
+    logger.info(f"  Checkpoints Directory: '{args.output_dir}'")
+    logger.info(f"  Session Logs Directory: '{session_dir}'")
     logger.info("=" * 70)
 
     # --------------------------------------------------------------------------
@@ -689,8 +649,7 @@ def run_training():
     # --------------------------------------------------------------------------
     logger.info("\n" + "=" * 70)
     logger.info("[STEP 2/7] DATA LOADING & DATASET VERIFICATION")
-    df, data_path = load_or_create_wide_dataset(data_path=args.data_path, raw_train_csv='train.csv', logger=logger)
-    logger.info(f"  Dataset Source: {data_path}")
+    df = load_and_pivot_data(data_path=args.data_path, train_csv_path='train.csv', logger=logger)
     logger.info(f"  Total Samples Loaded: {len(df)}")
     if 'is_synthetic' in df.columns:
         n_real = (df['is_synthetic'] == False).sum()
@@ -706,7 +665,7 @@ def run_training():
     # --------------------------------------------------------------------------
     logger.info("\n" + "=" * 70)
     logger.info("[STEP 3/7] CROSS-VALIDATION GROUPING (ANTI-TEMPORAL LEAKAGE)")
-    logger.info(f"  Splitting 439 samples into {args.n_folds} folds grouped by 'Sampling_Date', stratified by 'State' (seed={args.seed})")
+    logger.info(f"  Splitting {len(df)} samples into {args.n_folds} folds grouped by 'Sampling_Date', stratified by 'State' (seed={args.seed})")
     df = create_grouped_stratified_folds(df, n_splits=args.n_folds, seed=args.seed)
 
     for f in range(args.n_folds):
@@ -718,13 +677,14 @@ def run_training():
     logger.info("=" * 70)
 
     # --------------------------------------------------------------------------
-    # STEP 4: Augmentation & Solution Items Logging
+    # STEP 4: Augmentations Logging
     # --------------------------------------------------------------------------
     logger.info("\n" + "=" * 70)
     logger.info("[STEP 4/7] MULTI-TIER AUGMENTATIONS (1st + 2nd + 3rd PLACE HERITAGE)")
-    logger.info("  1st-Place: 1000x1000 Centerline 1:1 view split, H/V flips, Cross-View Attention")
-    logger.info("  2nd-Place: ColorJitter (brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) for sunlight variation")
+    logger.info("  1st-Place: 1:1 view split, H/V flips, 90-deg rotations, Cross-View Attention, TTA")
+    logger.info("  2nd-Place: ColorJitter (brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) for lighting variation")
     logger.info("  3rd-Place: Vertical 4-strip permutation (p=0.5), RandomGrayscale (p=0.2), View Swap (p=0.5), Camera Scaling (p=0.2)")
+    logger.info("  Post-Process: soft_physics_postprocess (clover_scale=0.8, dead fringe expansion, mass conservation blends)")
     logger.info("=" * 70)
 
     oof_preds_post = np.zeros((len(df), 5), dtype=np.float32)
@@ -733,9 +693,10 @@ def run_training():
 
     fold_scores = []
     start_total_time = time.time()
+    criterion = WeightedBiomassLoss(loss_weights=OFFICIAL_WEIGHTS, cls_weight=0.3).to(device)
 
     # --------------------------------------------------------------------------
-    # STEP 5 & 6: Iterate Folds & Train
+    # STEP 5 & 6: Staged Training Across Folds
     # --------------------------------------------------------------------------
     logger.info("\n" + "=" * 70)
     logger.info(f"[STEP 5/7] EXECUTING {args.n_folds}-FOLD STAGED TRAINING PIPELINE")
@@ -753,12 +714,11 @@ def run_training():
                 logger.info(f"\n{'='*30} FOLD {fold_num} / {args.n_folds} [CACHED] {'='*30}")
                 logger.info(f"[RESUME] Loading existing checkpoint for Fold {fold_num}: {ckpt_path}")
                 val_ds = DualStreamBiomassDataset(val_df, img_size=args.img_size, is_training=False)
-                val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
-                cached_model = DualStreamDINO(backbone_name=args.backbone, pretrained=False).to(device)
+                val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+                cached_model = DualStreamBiomassModel(backbone_name=args.backbone, pretrained=False).to(device)
                 cached_model.load_state_dict(torch.load(ckpt_path, map_location=device))
-                criterion = WeightedBiomassLoss().to(device)
-                va_loss, r2_raw, r2_post, per_target, p_raw, p_post = validate(
-                    cached_model, val_loader, criterion, device, val_df, use_tta=args.use_tta
+                _, _, _, r2_raw, r2_post, per_target, _, p_raw, p_post = evaluate(
+                    cached_model, val_loader, criterion, device, use_tta=args.use_tta
                 )
                 logger.info(f"[RESUME] Fold {fold_num} Verified: Post R2 = {r2_post:.4f} (Raw R2 = {r2_raw:.4f})")
                 oof_preds_post[val_indices] = p_post
@@ -772,18 +732,15 @@ def run_training():
 
         logger.info(f"\n{'='*30} FOLD {fold_num} / {args.n_folds} {'='*30}")
         train_df = df[df['fold'] != fold].reset_index(drop=True)
-        logger.info(f"[DATA] Train samples: {len(train_df)} | Val samples: {len(val_df)}")
+        logger.info(f"Training on {len(train_df)} samples | Validation on {len(val_df)} samples.")
 
-        # Datasets & Loaders
         train_ds = DualStreamBiomassDataset(train_df, img_size=args.img_size, is_training=True)
         val_ds = DualStreamBiomassDataset(val_df, img_size=args.img_size, is_training=False)
 
-        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True)
-        val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
+        val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-        # Model & Loss
-        model = DualStreamDINO(backbone_name=args.backbone, pretrained=True).to(device)
-        criterion = WeightedBiomassLoss(cls_weight=0.3).to(device)
+        model = DualStreamBiomassModel(backbone_name=args.backbone, pretrained=True).to(device)
         scaler = torch.amp.GradScaler('cuda')
 
         best_fold_r2 = -float('inf')
@@ -793,74 +750,131 @@ def run_training():
         # ----------------------------------------------------------------------
         # STAGE 1: Warm-up Heads (Backbone FROZEN)
         # ----------------------------------------------------------------------
-        logger.info(f"\n--- [Fold {fold_num}] STAGE 1: Training Heads ({args.stage1_epochs} epochs | Backbone FROZEN) ---")
+        logger.info(f"\n--- [Fold {fold_num}] STAGE 1: Training Heads ({args.stage1_epochs} epochs | Backbone FROZEN | LR: {args.lr:.1e}) ---")
         for p in model.backbone.parameters():
             p.requires_grad = False
 
-        head_params = [p for p in model.parameters() if p.requires_grad]
-        optimizer = AdamW(head_params, lr=args.lr, weight_decay=0.05)
-        scheduler = CosineAnnealingLR(optimizer, T_max=args.stage1_epochs, eta_min=args.lr * 0.1)
+        optimizer = AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr, weight_decay=0.05)
 
-        for ep in range(1, args.stage1_epochs + 1):
-            tr_loss, tr_reg, tr_cls = train_one_epoch(
-                model, train_loader, optimizer, criterion, scaler, device, grad_accum_steps=args.grad_accum
-            )
-            scheduler.step()
-            va_loss, r2_raw, r2_post, per_target, p_raw, p_post = validate(
-                model, val_loader, criterion, device, val_df, use_tta=args.use_tta
-            )
-            logger.info(f"[S1 Ep {ep:02d}/{args.stage1_epochs:02d}] Train: {tr_loss:.4f} (reg:{tr_reg:.3f}, cls:{tr_cls:.3f}) | "
-                        f"Val: {va_loss:.4f} | R2 Raw: {r2_raw:.4f} | R2 Post: {r2_post:.4f}")
+        for epoch in range(1, args.stage1_epochs + 1):
+            t0 = time.time()
+            model.train()
+            tr_loss_sum, tr_reg_sum, tr_cls_sum = 0.0, 0.0, 0.0
+            optimizer.zero_grad()
 
-            if r2_post > best_fold_r2:
+            pbar = tqdm(train_loader, desc=f'Fold {fold_num} [S1 Ep {epoch:02d}/{args.stage1_epochs:02d}]', leave=False)
+            for step, batch in enumerate(pbar):
+                img_l = batch['image_left'].to(device)
+                img_r = batch['image_right'].to(device)
+                t_reg = batch['targets_reg'].to(device)
+                t_cls = batch['targets_cls'].to(device)
+
+                with torch.amp.autocast('cuda'):
+                    r, c = model(img_l, img_r)
+                    loss, l_reg, l_cls = criterion(r, c, t_reg, t_cls)
+                    loss_scaled = loss / args.grad_accum
+
+                scaler.scale(loss_scaled).backward()
+
+                if (step + 1) % args.grad_accum == 0 or (step + 1) == len(train_loader):
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+
+                tr_loss_sum += loss.item() * len(img_l)
+                tr_reg_sum += l_reg.item() * len(img_l)
+                tr_cls_sum += l_cls.item() * len(img_l)
+                pbar.set_postfix({'loss': f'{loss.item():.2f}', 'reg': f'{l_reg.item():.2f}', 'cls': f'{l_cls.item():.2f}'})
+
+            n_tr = len(train_loader.dataset)
+            tr_loss, tr_reg, tr_cls = tr_loss_sum / n_tr, tr_reg_sum / n_tr, tr_cls_sum / n_tr
+            val_loss, _, _, r2_raw, r2_post, per_target, cls_acc, v_raw, v_post = evaluate(
+                model, val_loader, criterion, device, use_tta=args.use_tta
+            )
+            elapsed = time.time() - t0
+
+            is_best = r2_post > best_fold_r2
+            if is_best:
                 best_fold_r2 = r2_post
-                best_preds_post = p_post
-                best_preds_raw = p_raw
+                best_preds_post = v_post
+                best_preds_raw = v_raw
                 torch.save(model.state_dict(), ckpt_path)
 
+            star = '  ★ Best Model Saved' if is_best else ''
+            logger.info(f"[S1 Ep {epoch:02d}/{args.stage1_epochs:02d}] Train: {tr_loss:.3f} (reg:{tr_reg:.2f}, cls:{tr_cls:.2f}) | "
+                        f"Val: {val_loss:.3f} | R2 Raw: {r2_raw:.4f} | R2 SoftBlend: {r2_post:.4f} | Cls Acc: {cls_acc:.1%} ({elapsed:.0f}s){star}")
+
         # ----------------------------------------------------------------------
-        # STAGE 2: Full End-to-End Fine-Tuning (Differential LR + Warmup)
+        # STAGE 2: Full End-to-End Fine-Tuning (Differential LR + CosineAnnealing)
         # ----------------------------------------------------------------------
-        logger.info(f"\n--- [Fold {fold_num}] STAGE 2: Full Fine-Tuning ({args.stage2_epochs} epochs | Differential LR) ---")
+        backbone_lr = args.lr * args.backbone_lr_factor
+        logger.info(f"\n--- [Fold {fold_num}] STAGE 2: Full Fine-Tuning ({args.stage2_epochs} epochs | Backbone LR: {backbone_lr:.1e}, Heads LR: {args.lr:.1e}) ---")
         for p in model.backbone.parameters():
             p.requires_grad = True
 
-        backbone_lr = args.lr * 0.1  # 3e-5 for backbone
         optimizer = AdamW([
             {'params': model.backbone.parameters(), 'lr': backbone_lr},
             {'params': [p for n, p in model.named_parameters() if not n.startswith('backbone')], 'lr': args.lr}
         ], weight_decay=0.05)
+        scheduler = CosineAnnealingLR(optimizer, T_max=args.stage2_epochs, eta_min=args.lr * 0.01)
 
-        warmup_epochs = 3
-        warmup_sched = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
-        cosine_sched = CosineAnnealingLR(optimizer, T_max=max(1, args.stage2_epochs - warmup_epochs), eta_min=backbone_lr * 0.05)
-        scheduler = SequentialLR(optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_epochs])
+        for epoch in range(1, args.stage2_epochs + 1):
+            t0 = time.time()
+            model.train()
+            tr_loss_sum, tr_reg_sum, tr_cls_sum = 0.0, 0.0, 0.0
+            optimizer.zero_grad()
 
-        for ep in range(1, args.stage2_epochs + 1):
-            curr_ep = args.stage1_epochs + ep
-            total_eps = args.stage1_epochs + args.stage2_epochs
-            tr_loss, tr_reg, tr_cls = train_one_epoch(
-                model, train_loader, optimizer, criterion, scaler, device, grad_accum_steps=args.grad_accum
-            )
+            pbar = tqdm(train_loader, desc=f'Fold {fold_num} [S2 Ep {epoch:02d}/{args.stage2_epochs:02d}]', leave=False)
+            for step, batch in enumerate(pbar):
+                img_l = batch['image_left'].to(device)
+                img_r = batch['image_right'].to(device)
+                t_reg = batch['targets_reg'].to(device)
+                t_cls = batch['targets_cls'].to(device)
+
+                with torch.amp.autocast('cuda'):
+                    r, c = model(img_l, img_r)
+                    loss, l_reg, l_cls = criterion(r, c, t_reg, t_cls)
+                    loss_scaled = loss / args.grad_accum
+
+                scaler.scale(loss_scaled).backward()
+
+                if (step + 1) % args.grad_accum == 0 or (step + 1) == len(train_loader):
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+
+                tr_loss_sum += loss.item() * len(img_l)
+                tr_reg_sum += l_reg.item() * len(img_l)
+                tr_cls_sum += l_cls.item() * len(img_l)
+                pbar.set_postfix({'loss': f'{loss.item():.2f}', 'reg': f'{l_reg.item():.2f}', 'cls': f'{l_cls.item():.2f}'})
+
             scheduler.step()
-            va_loss, r2_raw, r2_post, per_target, p_raw, p_post = validate(
-                model, val_loader, criterion, device, val_df, use_tta=args.use_tta
+            n_tr = len(train_loader.dataset)
+            tr_loss, tr_reg, tr_cls = tr_loss_sum / n_tr, tr_reg_sum / n_tr, tr_cls_sum / n_tr
+            val_loss, _, _, r2_raw, r2_post, per_target, cls_acc, v_raw, v_post = evaluate(
+                model, val_loader, criterion, device, use_tta=args.use_tta
             )
-            logger.info(f"[S2 Ep {curr_ep:02d}/{total_eps:02d}] Train: {tr_loss:.4f} (reg:{tr_reg:.3f}, cls:{tr_cls:.3f}) | "
-                        f"Val: {va_loss:.4f} | R2 Raw: {r2_raw:.4f} | R2 Post: {r2_post:.4f} "
-                        f"| Total R2: {per_target[4]:.3f} GDM R2: {per_target[3]:.3f}")
+            elapsed = time.time() - t0
 
-            if r2_post > best_fold_r2:
+            is_best = r2_post > best_fold_r2
+            if is_best:
                 best_fold_r2 = r2_post
-                best_preds_post = p_post
-                best_preds_raw = p_raw
+                best_preds_post = v_post
+                best_preds_raw = v_raw
                 torch.save(model.state_dict(), ckpt_path)
-                logger.info(f"  ✓ [SAVED] New Best Model Saved for Fold {fold_num} (R2 Post: {best_fold_r2:.4f}) -> {ckpt_path}")
 
+            star = '  ★ Best Model Saved' if is_best else ''
+            logger.info(f"[S2 Ep {epoch:02d}/{args.stage2_epochs:02d}] Train: {tr_loss:.3f} (reg:{tr_reg:.2f}, cls:{tr_cls:.2f}) | "
+                        f"Val: {val_loss:.3f} | R2 Raw: {r2_raw:.4f} | R2 SoftBlend: {r2_post:.4f} | Cls Acc: {cls_acc:.1%} ({elapsed:.0f}s){star}")
+
+        logger.info(f"\n>>> Fold {fold_num} Finished! Best SoftBlend R2: {best_fold_r2:.4f} <<<\n")
         oof_preds_post[val_indices] = best_preds_post
         oof_preds_raw[val_indices] = best_preds_raw
         fold_scores.append(best_fold_r2)
-        logger.info(f"[OK] Fold {fold_num} Complete. Final Best Post R2: {best_fold_r2:.4f}")
 
     # --------------------------------------------------------------------------
     # STEP 7: Final Out-Of-Fold Evaluation & Export
@@ -872,10 +886,10 @@ def run_training():
     logger.info("\n" + "=" * 70)
     logger.info("[STEP 7/7] FINAL OUT-OF-FOLD (OOF) COMPETITION RESULTS")
     logger.info("=" * 70)
-    logger.info(f"[METRIC] OVERALL OOF COMPETITION R2 (Post-Processed): {overall_post_r2:.4f}")
-    logger.info(f"         Overall OOF Competition R2 (Raw):            {overall_raw_r2:.4f}")
+    logger.info(f"[METRIC] OVERALL OOF COMPETITION R2 (SoftBlend): {overall_post_r2:.4f}")
+    logger.info(f"         Overall OOF Competition R2 (Raw):       {overall_raw_r2:.4f}")
     logger.info(f"         Per-Fold Scores: {[round(s, 4) for s in fold_scores]}")
-    logger.info("         Per-Target Breakdown (Post-Processed):")
+    logger.info("         Per-Target Breakdown (SoftBlend):")
     for t_name, score, w in zip(TARGET_NAMES, per_target_post, OFFICIAL_WEIGHTS):
         logger.info(f"           - {t_name:15s} (Weight: {w:.1f}): R2 = {score:.4f}")
     logger.info(f"Total CV Training Time: {total_time_min:.1f} minutes")

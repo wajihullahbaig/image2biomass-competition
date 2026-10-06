@@ -2,21 +2,13 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Train 5-Fold DINOv3 Small (TTA Enabled)",
+            "name": "Train 5-Fold CV (DINOv3-L @512)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
             "args": [
-                "--data_path", "wide.csv",
-                "--backbone", "vit_small_patch16_dinov3_qkvb",
-                "--img_size", "384",
-                "--batch_size", "8",
-                "--grad_accum", "2",
-                "--stage1_epochs", "8",
-                "--stage2_epochs", "25",
-                "--n_folds", "5",
-                "--seed", "223",
-                "--use_tta"
+                "--data_path",
+                "wide.csv"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -27,16 +19,37 @@
             "justMyCode": false
         },
         {
-            "name": "Inference & Generate Submission (TTA Enabled)",
+            "name": "Train Full Data for Submission (DINOv3-L @512)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "args": [
+                "--data_path",
+                "wide.csv",
+                "--full_train",
+                "--output_dir",
+                "models_full"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "C:/Users/Precision/anaconda3/envs/audio_signal_processing/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Inference & Generate Submission",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/inference.py",
             "args": [
-                "--model_dir", "models",
-                "--test_csv", "test.csv",
-                "--output_csv", "submission.csv",
-                "--img_size", "384",
-                "--use_tta"
+                "--model_dir",
+                "models",
+                "--test_csv",
+                "test.csv",
+                "--output_csv",
+                "submission.csv"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -47,21 +60,33 @@
             "justMyCode": false
         },
         {
-            "name": "Debug Quick Test (1+1 Epochs)",
+            "name": "Debug Quick Test (DINOv3-S @64, 2 folds)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
             "args": [
-                "--data_path", "wide.csv",
-                "--backbone", "vit_small_patch16_dinov3_qkvb",
-                "--img_size", "384",
-                "--batch_size", "8",
-                "--grad_accum", "2",
-                "--stage1_epochs", "1",
-                "--stage2_epochs", "1",
-                "--n_folds", "5",
-                "--seed", "223",
-                "--use_tta"
+                "--data_path",
+                "wide.csv",
+                "--backbone",
+                "vit_small_patch16_dinov3_qkvb",
+                "--img_size",
+                "64",
+                "--batch_size",
+                "16",
+                "--grad_accum",
+                "1",
+                "--stage1_epochs",
+                "1",
+                "--stage2_epochs",
+                "2",
+                "--swa_epochs",
+                "2",
+                "--n_folds",
+                "2",
+                "--output_dir",
+                "models_debug",
+                "--log_dir",
+                "logs_debug"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",

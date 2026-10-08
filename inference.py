@@ -1,7 +1,7 @@
 """
 CSIRO Image2Biomass: Multi-Checkpoint Inference & Submission (inference.py)
 
-- Averages raw predictions of every checkpoint found in --model_dir (fold models and/or full-data models).
+- Averages raw predictions of every checkpoint matching --models (one or more paths or glob patterns).
 - Each checkpoint carries its backbone and img_size; legacy raw state_dicts are detected by embedding dim.
 - Mirrored-panorama TTA. 1st-place post-processing is off by default: it lowered OOF R2 in every run so far.
 """
@@ -52,9 +52,9 @@ def build_submission(test_long, images, preds):
 
 def run_inference(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    checkpoints = sorted(glob.glob(os.path.join(args.model_dir, '**', '*.pt'), recursive=True))
+    checkpoints = sorted({os.path.abspath(f) for pattern in args.models for f in glob.glob(pattern, recursive=True)})
     if not checkpoints:
-        sys.exit(f"[ERROR] No .pt checkpoints found under '{args.model_dir}'")
+        sys.exit(f"[ERROR] No checkpoints match {args.models}")
 
     test_long, images = load_test_images(args.test_csv)
     print(f"Device: {device} | Test images: {len(images)} | Checkpoints: {len(checkpoints)} | Post-process: {args.postprocess}")
@@ -83,7 +83,8 @@ def run_inference(args):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="CSIRO Image2Biomass Dual-Stream Inference")
-    parser.add_argument('--model_dir', type=str, default='models')
+    parser.add_argument('--models', nargs='+', default=['models/*.pt'],
+                        help="Checkpoint paths or glob patterns, e.g. 'models_full/*.pt' '/kaggle/input/**/model_fold*.pt'")
     parser.add_argument('--test_csv', type=str, default='test.csv')
     parser.add_argument('--img_root', type=str, default='.', help='Directory that image_path entries are relative to')
     parser.add_argument('--postprocess', choices=['none', 'first_place'], default='none')

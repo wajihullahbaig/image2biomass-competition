@@ -11,6 +11,7 @@ Gold zone (private LB) ≈ **0.679**. 1st place ≈ 0.67–0.68.
 | 2026-09 | ViT-B @512, SmoothL1, 439 rows incl. synthetic, best-epoch, 1st-place post-proc (run 1) | ~0.746¹ | 0.624 | **0.598** |
 | 2026-09 | Same recipe (run 2) | — | 0.631 | 0.596 |
 | 2026-10-08 | **Run C** — ViT-B @512, weighted MSE, SWA, clean folds, no post-proc | **0.759** | **0.656** | 0.588 |
+| 2026-10-08 | Run C + 1st-place post-proc | 0.751 | 0.656 | **0.599** |
 
 ¹ Re-scored with the official metric on real rows minus the 19 duplicated images; still inflated by best-epoch picking.
 
@@ -28,12 +29,12 @@ Gold zone (private LB) ≈ **0.679**. 1st place ≈ 0.67–0.68.
 - **The metric had been implemented inconsistently** (per-target raw vs log1p). Now one official implementation.
 - **Best-epoch picking inflates OOF** by 0.01–0.04 per fold. Replaced with a fixed budget + SWA of the last 5 epochs.
 - **L1-type losses compress predictions** toward the mean (predicted Total sd 19 g vs true 28 g) and under-predict heavy NSW pastures. Weighted MSE matches the metric: +0.06 OOF.
-- **1st-place post-processing** (clover ×0.8, dead fringe, mass blends) lowered OOF in every run (−0.007 to −0.031). Not yet A/B-tested on the leaderboard with the new models.
+- **1st-place post-processing** (clover ×0.8, dead fringe, mass blends) lowered OOF in every run (−0.007 to −0.031) but **adds +0.011 on private LB** (public unchanged) with run C. The test set needs this calibration; CV cannot judge it. Use it for submissions.
 - **CV gains did not reach the private LB** (CV +0.06, private −0.01). Private scores sit within ~±0.01 of each other, and public–private gaps of 0.03–0.07 suggest the private test differs from training. Prefer test-adaptive ideas (pseudo-labelling) and large changes over small CV-tuned tweaks.
 
 ## Queue
 
-- [ ] Run C checkpoints with `--postprocess first_place` (LB A/B, no training)
-- [ ] Full-data ViT-B MSE model (`models_full/`)
-- [ ] ViT-L @512 MSE 5-fold CV (`models_vitl_mse/`)
+- [x] Run C checkpoints with `--postprocess first_place` → private 0.599 (+0.011)
+- [x] Full-data ViT-B MSE model trained (`models_full/`) — submit with post-proc
+- [ ] ViT-L @512 MSE 5-fold CV (`models_vitl_mse/`) — folds 1–4: 0.768 / 0.692 / 0.766 / 0.762
 - [ ] Test-time pseudo-labelling in the inference notebook

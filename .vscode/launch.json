@@ -44,8 +44,8 @@
             "request": "launch",
             "program": "${workspaceFolder}/inference.py",
             "args": [
-                "--model_dir",
-                "models",
+                "--models",
+                "models/*.pt",
                 "--test_csv",
                 "test.csv",
                 "--output_csv",

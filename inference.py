@@ -3,7 +3,8 @@ CSIRO Image2Biomass: Multi-Checkpoint Inference & Submission (inference.py)
 
 - Averages raw predictions of every checkpoint matching --models (one or more paths or glob patterns).
 - Each checkpoint carries its backbone and img_size; legacy raw state_dicts are detected by embedding dim.
-- Mirrored-panorama TTA. 1st-place post-processing is off by default: it lowered OOF R2 in every run so far.
+- Mirrored-panorama TTA, then 1st-place post-processing (default): it lowers OOF R2 but added +0.008 to +0.011
+  on the private leaderboard, so the test set needs this calibration.
 """
 
 import os
@@ -87,7 +88,7 @@ def parse_args(argv=None):
                         help="Checkpoint paths or glob patterns, e.g. 'models_full/*.pt' '/kaggle/input/**/model_fold*.pt'")
     parser.add_argument('--test_csv', type=str, default='test.csv')
     parser.add_argument('--img_root', type=str, default='.', help='Directory that image_path entries are relative to')
-    parser.add_argument('--postprocess', choices=['none', 'first_place'], default='none')
+    parser.add_argument('--postprocess', choices=['first_place', 'none'], default='first_place')
     parser.add_argument('--output_csv', type=str, default='submission.csv')
     return parser.parse_args(argv)
 

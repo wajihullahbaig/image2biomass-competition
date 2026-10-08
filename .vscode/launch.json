@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Train 5-Fold CV (DINOv3-L @512)",
+            "name": "Train 5-Fold CV (DINOv3-B @512)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
@@ -19,7 +19,7 @@
             "justMyCode": false
         },
         {
-            "name": "Train Full Data for Submission (DINOv3-L @512)",
+            "name": "Train Full Data for Submission (DINOv3-B @512)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
@@ -73,13 +73,9 @@
                 "64",
                 "--batch_size",
                 "16",
-                "--grad_accum",
-                "1",
                 "--stage1_epochs",
                 "1",
                 "--stage2_epochs",
-                "2",
-                "--swa_epochs",
                 "2",
                 "--n_folds",
                 "2",

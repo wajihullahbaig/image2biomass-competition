@@ -4,9 +4,10 @@ CSIRO Image2Biomass: Dual-Stream DINOv3 + Interval Classification (train.py)
 Recipe (1st-place solution, with our CV fixes):
 - Panorama split into Left/Right 1:1 views -> shared DINOv3 backbone -> cross-view attention -> fusion MLP.
 - 5 regression heads + 5 auxiliary 7-interval classification heads (UEPNet).
-- Regression loss: epsilon-insensitive L1 (1st place's best single model) or SmoothL1.
+- Regression loss: metric-weighted MSE on raw grams (the official metric is a weighted squared error;
+  L1-type losses compressed predictions toward the mean and under-predicted heavy pastures).
 - Two stages: frozen backbone (heads warm-up) -> full fine-tune with differential LR.
-- Fixed epoch budget; the saved model is the SWA average of the last `swa_epochs` epochs
+- Fixed epoch budget; the saved model is the SWA average of the last SWA_EPOCHS epochs
   (no best-epoch picking on ~70 validation images).
 - CV: StratifiedGroupKFold grouped by Sampling_Date, stratified by State, real images only.
 - Metric: official globally weighted R2 over all (image, target) pairs on raw grams.
@@ -56,6 +57,11 @@ TARGET_NAMES = ['Dry_Green_g', 'Dry_Dead_g', 'Dry_Clover_g', 'GDM_g', 'Dry_Total
 OFFICIAL_WEIGHTS = [0.1, 0.1, 0.1, 0.2, 0.5]
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+
+LR = 3e-4                 # heads; the backbone uses LR * BACKBONE_LR_FACTOR in Stage 2
+BACKBONE_LR_FACTOR = 0.1
+SWA_EPOCHS = 5            # average the weights of the last N Stage-2 epochs
+CLS_WEIGHT = 0.3
 
 # Non-uniform 7-interval thresholds from the 1st-place solution (UEPNet formulation)
 BORDERS_DICT = {
@@ -301,33 +307,17 @@ def save_checkpoint(model, path, backbone, img_size):
 # ==============================================================================
 # Losses
 # ==============================================================================
-class EpsilonInsensitiveLoss(nn.Module):
-    """1st-place L1 with a label-dependent dead zone: eps=1 for y<=20 g, else 0.1*y capped at 5."""
-    def __init__(self, eps_point=20.0, scale_ratio=0.1, max_eps=5.0):
-        super().__init__()
-        self.eps_point, self.scale_ratio, self.max_eps = eps_point, scale_ratio, max_eps
-
-    def forward(self, pred, target):
-        eps = torch.where(target <= self.eps_point, torch.ones_like(target), target * self.scale_ratio)
-        eps = torch.clamp(eps, max=self.max_eps)
-        return torch.relu(torch.abs(pred - target) - eps).mean()
-
-
 class WeightedBiomassLoss(nn.Module):
-    """Metric-weighted regression loss + auxiliary interval cross-entropy."""
-    def __init__(self, reg_loss='eps', cls_weight=0.3):
-        super().__init__()
-        self.weights = OFFICIAL_WEIGHTS
-        self.cls_weight = cls_weight
-        self.criterion_reg = EpsilonInsensitiveLoss() if reg_loss == 'eps' else nn.SmoothL1Loss()
-        self.criterion_cls = nn.CrossEntropyLoss()
+    """Metric-weighted MSE + auxiliary interval cross-entropy. MSE is divided by MSE_SCALE so that at
+    typical ~10 g errors it has the same magnitude as the old L1-type loss, keeping CLS_WEIGHT meaningful."""
+    MSE_SCALE = 10.0
 
     def forward(self, preds_reg, preds_cls, targets_reg, targets_cls):
-        loss_reg = sum(w * self.criterion_reg(p.squeeze(-1).float(), targets_reg[:, i])
-                       for i, (w, p) in enumerate(zip(self.weights, preds_reg)))
-        loss_cls = sum(w * self.criterion_cls(c.float(), targets_cls[:, i])
-                       for i, (w, c) in enumerate(zip(self.weights, preds_cls)))
-        return loss_reg + self.cls_weight * loss_cls, loss_reg, loss_cls
+        loss_reg = sum(w * F.mse_loss(p.squeeze(-1).float(), targets_reg[:, i]) / self.MSE_SCALE
+                       for i, (w, p) in enumerate(zip(OFFICIAL_WEIGHTS, preds_reg)))
+        loss_cls = sum(w * F.cross_entropy(c.float(), targets_cls[:, i])
+                       for i, (w, c) in enumerate(zip(OFFICIAL_WEIGHTS, preds_cls)))
+        return loss_reg + CLS_WEIGHT * loss_cls, loss_reg, loss_cls
 
 
 # ==============================================================================
@@ -377,24 +367,21 @@ def predict(model, loader, device, use_tta=True):
     return np.concatenate(preds, axis=0)
 
 
-def train_one_epoch(model, loader, criterion, optimizer, scaler, device, grad_accum, desc):
+def train_one_epoch(model, loader, criterion, optimizer, scaler, device, desc):
     model.train()
     sums, n = np.zeros(3), 0
-    optimizer.zero_grad()
-    for step, batch in enumerate(tqdm(loader, desc=desc, leave=False)):
+    for batch in tqdm(loader, desc=desc, leave=False):
         img_l, img_r = batch['image_left'].to(device), batch['image_right'].to(device)
         t_reg, t_cls = batch['targets_reg'].to(device), batch['targets_cls'].to(device)
         with torch.amp.autocast(device.type, enabled=device.type == 'cuda'):
             r, c = model(img_l, img_r)
             loss, l_reg, l_cls = criterion(r, c, t_reg, t_cls)
-        scaler.scale(loss / grad_accum).backward()
-
-        if (step + 1) % grad_accum == 0 or (step + 1) == len(loader):
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
+        optimizer.zero_grad()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
 
         sums += np.array([loss.item(), l_reg.item(), l_cls.item()]) * len(img_l)
         n += len(img_l)
@@ -403,15 +390,21 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device, grad_ac
 
 def fit(model, train_loader, val_loader, val_targets, args, device, logger, tag):
     """Stage 1 (frozen backbone) -> Stage 2 (full fine-tune). Returns the model loaded with the
-    SWA average of the last `args.swa_epochs` Stage-2 epochs. Validation is only logged."""
-    criterion = WeightedBiomassLoss(reg_loss=args.reg_loss, cls_weight=0.3)
+    SWA average of the last SWA_EPOCHS Stage-2 epochs. Validation is only logged."""
+    criterion = WeightedBiomassLoss()
     scaler = torch.amp.GradScaler(device.type, enabled=device.type == 'cuda')
     head_params = [p for n, p in model.named_parameters() if not n.startswith('backbone')]
+
+    # Start each regression head at its training-set mean (inverse softplus) instead of ~0.7 g,
+    # so Stage 1 learns from image features rather than spending its epochs climbing to the mean.
+    with torch.no_grad():
+        for head, mean in zip(model.reg_heads, train_loader.dataset.targets_reg.mean(axis=0)):
+            head[-1].bias.fill_(float(np.log(np.expm1(max(mean, 0.1)))))
 
     def log_epoch(stage, epoch, total, losses, t0, swa_note=''):
         msg = f"[{tag} {stage} Ep {epoch:02d}/{total:02d}] Train: {losses[0]:.3f} (reg:{losses[1]:.2f}, cls:{losses[2]:.2f})"
         if val_loader is not None:
-            raw = predict(model, val_loader, device, args.tta)
+            raw = predict(model, val_loader, device)
             msg += (f" | Val R2 raw: {calculate_competition_r2(val_targets, raw)[0]:.4f}"
                     f" | post: {calculate_competition_r2(val_targets, soft_physics_postprocess(raw))[0]:.4f}")
         logger.info(f"{msg} ({time.time() - t0:.0f}s){swa_note}")
@@ -419,27 +412,26 @@ def fit(model, train_loader, val_loader, val_targets, args, device, logger, tag)
     # Stage 1: heads warm-up with the backbone frozen
     for p in model.backbone.parameters():
         p.requires_grad = False
-    optimizer = AdamW(head_params, lr=args.lr, weight_decay=0.05)
+    optimizer = AdamW(head_params, lr=LR, weight_decay=0.05)
     for epoch in range(1, args.stage1_epochs + 1):
         t0 = time.time()
-        losses = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, args.grad_accum,
+        losses = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device,
                                  f'{tag} S1 Ep {epoch}')
         log_epoch('S1', epoch, args.stage1_epochs, losses, t0)
 
     # Stage 2: full fine-tune, differential LR, cosine decay, SWA over the final epochs
     for p in model.backbone.parameters():
         p.requires_grad = True
-    if args.grad_ckpt:
-        model.backbone.set_grad_checkpointing(True)
+    model.backbone.set_grad_checkpointing(True)  # fits ViT-L @512 in 16 GB
     optimizer = AdamW([
-        {'params': model.backbone.parameters(), 'lr': args.lr * args.backbone_lr_factor},
-        {'params': head_params, 'lr': args.lr},
+        {'params': model.backbone.parameters(), 'lr': LR * BACKBONE_LR_FACTOR},
+        {'params': head_params, 'lr': LR},
     ], weight_decay=0.05)
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.stage2_epochs, eta_min=args.lr * 0.01)
-    swa_model, swa_start = None, args.stage2_epochs - args.swa_epochs + 1
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.stage2_epochs, eta_min=LR * 0.01)
+    swa_model, swa_start = None, args.stage2_epochs - SWA_EPOCHS + 1
     for epoch in range(1, args.stage2_epochs + 1):
         t0 = time.time()
-        losses = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, args.grad_accum,
+        losses = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device,
                                  f'{tag} S2 Ep {epoch}')
         scheduler.step()
         if epoch >= swa_start:
@@ -479,27 +471,19 @@ def setup_logging(output_dir="models", log_dir="logs"):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="CSIRO Image2Biomass Dual-Stream DINOv3 Training")
-    parser.add_argument('--data_path', type=str, default='wide.csv', help='wide.csv or long-format train.csv')
+    parser.add_argument('--data_path', type=str, default='wide.csv')
     parser.add_argument('--img_root', type=str, default='.', help='Directory that image_path entries are relative to')
-    parser.add_argument('--backbone', type=str, default='vit_large_patch16_dinov3_qkvb')
+    parser.add_argument('--backbone', type=str, default='vit_base_patch16_dinov3_qkvb')
     parser.add_argument('--img_size', type=int, default=512, help='Resolution of each 1:1 view')
-    parser.add_argument('--batch_size', type=int, default=4)
-    parser.add_argument('--grad_accum', type=int, default=4, help='Effective batch = batch_size * grad_accum')
-    parser.add_argument('--grad_ckpt', action=argparse.BooleanOptionalAction, default=True,
-                        help='Gradient checkpointing in Stage 2 (needed for ViT-L on 16 GB)')
-    parser.add_argument('--lr', type=float, default=3e-4, help='Heads learning rate')
-    parser.add_argument('--backbone_lr_factor', type=float, default=0.1, help='Backbone LR = lr * factor in Stage 2')
+    parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--stage1_epochs', type=int, default=8)
     parser.add_argument('--stage2_epochs', type=int, default=25)
-    parser.add_argument('--swa_epochs', type=int, default=5, help='Average weights of the last N Stage-2 epochs')
-    parser.add_argument('--reg_loss', choices=['eps', 'smoothl1'], default='eps')
     parser.add_argument('--n_folds', type=int, default=5)
     parser.add_argument('--start_fold', type=int, default=1, help='Resume: folds before this load existing checkpoints')
     parser.add_argument('--full_train', action='store_true', help='Train one model on all data (no CV) for submission')
     parser.add_argument('--output_dir', type=str, default='models')
     parser.add_argument('--log_dir', type=str, default='logs')
     parser.add_argument('--seed', type=int, default=223)
-    parser.add_argument('--tta', action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args(argv)
 
 
@@ -563,7 +547,7 @@ def run_training(args):
             model = fit(make_model(), train_loader, val_loader, targets[val_mask], args, device, logger, f'F{fold_num}')
             save_checkpoint(model, ckpt_path, args.backbone, args.img_size)
 
-        oof_raw[val_mask] = predict(model, val_loader, device, args.tta)
+        oof_raw[val_mask] = predict(model, val_loader, device)
         r2_raw = calculate_competition_r2(targets[val_mask], oof_raw[val_mask])[0]
         r2_post = calculate_competition_r2(targets[val_mask], soft_physics_postprocess(oof_raw[val_mask]))[0]
         fold_scores.append(r2_raw)

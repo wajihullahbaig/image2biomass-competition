@@ -3,7 +3,7 @@ CSIRO Image2Biomass: Multi-Checkpoint Inference & Submission (inference.py)
 
 - Averages raw predictions of every checkpoint found in --model_dir (fold models and/or full-data models).
 - Each checkpoint carries its backbone and img_size; legacy raw state_dicts are detected by embedding dim.
-- Mirrored-panorama TTA, then optional 1st-place post-processing (--postprocess first_place|none).
+- Mirrored-panorama TTA. 1st-place post-processing is off by default: it lowered OOF R2 in every run so far.
 """
 
 import os
@@ -23,14 +23,14 @@ LEGACY_BACKBONES = {384: 'vit_small_patch16_dinov3_qkvb', 768: 'vit_base_patch16
                     1024: 'vit_large_patch16_dinov3_qkvb', 1536: 'convnextv2_large'}
 
 
-def load_checkpoint(path, default_img_size):
+def load_checkpoint(path, legacy_img_size=512):
     """Returns (state_dict, backbone, img_size) for new-format or legacy checkpoints."""
     ckpt = torch.load(path, map_location='cpu', weights_only=True)
     if 'state_dict' in ckpt and 'backbone' in ckpt:
         return ckpt['state_dict'], ckpt['backbone'], ckpt['img_size']
     state = {k.replace('module.', ''): v for k, v in ckpt.items()}
     dim = state['cross_view_attn.in_proj_weight'].shape[1]
-    return state, LEGACY_BACKBONES[dim], default_img_size
+    return state, LEGACY_BACKBONES[dim], legacy_img_size
 
 
 def load_test_images(test_csv):
@@ -61,13 +61,13 @@ def run_inference(args):
 
     all_preds = []
     for path in checkpoints:
-        state, backbone, img_size = load_checkpoint(path, args.img_size)
+        state, backbone, img_size = load_checkpoint(path)
         print(f"  {os.path.basename(path)}: {backbone} @ {img_size}")
         model = DualStreamBiomassModel(backbone_name=backbone, pretrained=False).to(device)
         model.load_state_dict(state)
         loader = DataLoader(DualStreamBiomassDataset(images, img_size, False, args.img_root),
-                            batch_size=args.batch_size, shuffle=False, num_workers=0)
-        all_preds.append(predict(model, loader, device, args.tta))
+                            batch_size=8, shuffle=False, num_workers=0)
+        all_preds.append(predict(model, loader, device))
         del model
         torch.cuda.empty_cache()
 
@@ -86,11 +86,8 @@ def parse_args(argv=None):
     parser.add_argument('--model_dir', type=str, default='models')
     parser.add_argument('--test_csv', type=str, default='test.csv')
     parser.add_argument('--img_root', type=str, default='.', help='Directory that image_path entries are relative to')
-    parser.add_argument('--img_size', type=int, default=512, help='Only used for legacy checkpoints without metadata')
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--postprocess', choices=['first_place', 'none'], default='first_place')
+    parser.add_argument('--postprocess', choices=['none', 'first_place'], default='none')
     parser.add_argument('--output_csv', type=str, default='submission.csv')
-    parser.add_argument('--tta', action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args(argv)
 
 
